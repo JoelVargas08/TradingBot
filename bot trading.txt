@@ -1,0 +1,1225 @@
+Entendido. Estoy en modo planificación, así que solo leeré y analizaré. Antes de crear un plan completo, necesito aclarar algunos puntos:
+Preguntas para definir el plan:
+# Questions
+¿Qué lenguaje de programación prefieres para el bot?
+Golang
+¿Dónde planeas alojar el bot? Esto afecta cómo configures el servidor web para recibir webhooks.
+Otro/Solo código
+¿El bot será solo para uso personal o quieres que múltiples usuarios puedan recibir alertas?
+Multiusuario
++ Thought: 2.2s
+Perfecto, Golang. Déjame investigar sobre cómo funcionan los bots de Telegram en Go y el formato de webhooks de TradingView para crear un plan sólido.
+◈ Exa Web Search "TradingView webhook alert payload format JSON 2024" 
++ Thought: 898ms
+◈ Exa Web Search "TradingView Candelier Exit indicator alert webhook buy sell signal pine script" 
++ Thought: 1.7s
+Tengo toda la información necesaria. Aquí está el plan:
+Plan: Bot de Telegram para Chandelier Exit Alerts
+Arquitectura General
+TradingView → Webhook (POST JSON) → Bot Go (HTTP Server) → Telegram Bot API → Usuario
+Estructura del Proyecto
+tradingview-bot/
+├── main.go           # Entry point, configura router y bot
+├── go.mod
+├── config/
+│   └── config.go     # Variables de entorno (token, secret)
+├── handlers/
+│   ├── webhook.go    # Recibe webhooks de TradingView
+│   └── commands.go   # Maneja /start, /close
+├── models/
+│   └── user.go       # Estado del usuario (activo/inactivo, último señal)
+├── services/
+│   └── telegram.go   # Lógica para enviar mensajes via Telegram API
+└── storage/
+    └── storage.go    # Persistencia en memoria o JSON (usuarios activos)
+Componentes Principales
+1. Webhook Handler (handlers/webhook.go)
+- Endpoint: POST /webhook
+- Recibe JSON de TradingView con formato:
+{
+  "symbol": "BTCUSDT",
+  "action": "buy",  // o "sell"
+  "price": 65000.50,
+  "secret": "TU_SECRET_TOKEN"
+}
+- Valida el secret contra variable de entorno
+- Compara con el último estado del usuario/símbolo
+- Si cambió, envía alerta por Telegram
+2. Bot Commands (handlers/commands.go)
+- /start <chat_id>: Activa las alertas para ese usuario
+- Registra el chat_id en storage
+- Responde "Alertas activadas"
+- /close: Desactiva las alertas
+- Elimina del storage
+- Responde "Alertas desactivadas"
+3. Storage (storage/storage.go)
+- Mapa en memoria: map[int64]*UserState
+- UserState:
+type UserState struct {
+    ChatID      int64
+    Active      bool
+    LastSignals map[string]string  // symbol -> "buy"/"sell"
+}
+4. Telegram Service (services/telegram.go)
+- Usa go-telegram-bot-api o llama directamente a la API HTTP
+- Función SendMessage(chatID, text) para enviar alertas
+Flujo de Datos
+1. Usuario envía /start al bot → Se guarda su chat_id como activo
+2. TradingView detecta cambio en Chandelier Exit → Envía webhook al servidor
+3. Servidor recibe webhook, valida secret
+4. Busca si hay usuarios activos suscritos a ese símbolo
+5. Compara estado anterior vs nuevo ("buy"/"sell")
+6. Si hay cambio, envía mensaje:
+🔔 Alerta: BTCUSDT
+Señal cambió a: BUY (verde)
+Precio: $65,000.50
+Configuración Necesaria
+Variable	Descripción
+TELEGRAM_BOT_TOKEN	Token del bot de @BotFather
+WEBHOOK_SECRET	Secret compartido con TradingView
+PORT	Puerto del servidor HTTP (ej: 8080)
+Dependencias Go
+require (
+    github.com/go-telegram-bot-api/telegram-bot-api/v5  // Bot API
+)
+Formato del Webhook en TradingView
+El usuario debe configurar en TradingView:
+1. URL del webhook: https://tu-dominio/webhook
+2. Message (JSON):
+{
+  "symbol": "{{ticker}}",
+  "action": "{{strategy.order.action}}",
+  "price": {{close}},
+  "secret": "TU_SECRET_TOKEN"
+}
+Notas Importantes
+- El indicador Chandelier Exit ya tiene alertas built-in (Buy/Sell)
+- TradingView reemplaza {{ticker}} y {{close}} automáticamente
+- El bot debe correr en un servidor con HTTPS para que TradingView pueda enviar webhooks
+- Se recomienda rate limiting para evitar spam de alertas
+¿Quieres que implemente este plan? ¿Necesitas algún ajuste o tienes dudas sobre alguna parte?
+
+
+
+
+
+
+
+Estoy en Modo Plan (solo lectura), por lo que no puedo crear archivos de código aún. Sin embargo, puedo mostrarte el código completo que implementaría en el siguiente paso.
+Aquí está el código completo del bot:
+Estructura de Archivos
+tradingview-bot/
+├── main.go
+├── go.mod
+├── config/
+│   └── config.go
+├── handlers/
+│   ├── webhook.go
+│   └── commands.go
+├── models/
+│   └── user.go
+├── services/
+│   └── telegram.go
+└── storage/
+    └── storage.go
+1. go.mod
+module tradingview-bot
+go 1.21
+require (
+    github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+)
+2. config/config.go
+package config
+import (
+    "os"
+)
+type Config struct {
+    TelegramBotToken string
+    WebhookSecret    string
+    Port             string
+}
+func Load() *Config {
+    return &Config{
+        TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
+        WebhookSecret:    getEnv("WEBHOOK_SECRET", "default-secret-change-me"),
+        Port:             getEnv("PORT", "8080"),
+    }
+}
+func getEnv(key, fallback string) string {
+    if value, exists := os.LookupEnv(key); exists {
+        return value
+    }
+    return fallback
+}
+3. models/user.go
+package models
+import "sync"
+type UserState struct {
+    ChatID      int64
+    Active      bool
+    LastSignals map[string]string // symbol -> "buy" o "sell"
+    mu          sync.RWMutex
+}
+type UserManager struct {
+    users map[int64]*UserState
+    mu    sync.RWMutex
+}
+func NewUserManager() *UserManager {
+    return &UserManager{
+        users: make(map[int64]*UserState),
+    }
+}
+func (um *UserManager) Activate(chatID int64) {
+    um.mu.Lock()
+    defer um.mu.Unlock()
+    if user, exists := um.users[chatID]; exists {
+        user.Active = true
+    } else {
+        um.users[chatID] = &UserState{
+            ChatID:      chatID,
+            Active:      true,
+            LastSignals: make(map[string]string),
+        }
+    }
+}
+func (um *UserManager) Deactivate(chatID int64) {
+    um.mu.Lock()
+    defer um.mu.Unlock()
+    if user, exists := um.users[chatID]; exists {
+        user.Active = false
+    }
+}
+func (um *UserManager) GetActiveUsers() []*UserState {
+    um.mu.RLock()
+    defer um.mu.RWMUnlock()
+    var active []*UserState
+    for _, user := range um.users {
+        if user.Active {
+            active = append(active, user)
+        }
+    }
+    return active
+}
+func (u *UserState) GetLastSignal(symbol string) string {
+    u.mu.RLock()
+    defer u.mu.RUnlock()
+    return u.LastSignals[symbol]
+}
+func (u *UserState) SetLastSignal(symbol, signal string) {
+    u.mu.Lock()
+    defer u.mu.Unlock()
+    u.LastSignals[symbol] = signal
+}
+4. storage/storage.go
+package storage
+import (
+    "encoding/json"
+    "os"
+    "sync"
+    "tradingview-bot/models"
+)
+type FileStorage struct {
+    filePath string
+    mu       sync.RWMutex
+}
+func NewFileStorage(filePath string) *FileStorage {
+    return &FileStorage{filePath: filePath}
+}
+type PersistedData struct {
+    Users map[int64]*UserStateData `json:"users"`
+}
+type UserStateData struct {
+    ChatID      int64             `json:"chat_id"`
+    Active      bool              `json:"active"`
+    LastSignals map[string]string `json:"last_signals"`
+}
+func (fs *FileStorage) Load() map[int64]*models.UserState {
+    fs.mu.RLock()
+    defer fs.mu.RUnlock()
+    data, err := os.ReadFile(fs.filePath)
+    if err != nil {
+        return make(map[int64]*models.UserState)
+    }
+    var persisted PersistedData
+    if err := json.Unmarshal(data, &persisted); err != nil {
+        return make(map[int64]*models.UserState)
+    }
+    users := make(map[int64]*models.UserState)
+    for chatID, userData := range persisted.Users {
+        users[chatID] = &models.UserState{
+            ChatID:      userData.ChatID,
+            Active:      userData.Active,
+            LastSignals: userData.LastSignals,
+        }
+    }
+    return users
+}
+func (fs *FileStorage) Save(users map[int64]*models.UserState) {
+    fs.mu.Lock()
+    defer fs.mu.Unlock()
+    persisted := PersistedData{
+        Users: make(map[int64]*UserStateData),
+    }
+    for chatID, user := range users {
+        persisted.Users[chatID] = &UserStateData{
+            ChatID:      user.ChatID,
+            Active:      user.Active,
+            LastSignals: user.LastSignals,
+        }
+    }
+    data, err := json.MarshalIndent(persisted, "", "  ")
+    if err != nil {
+        return
+    }
+    os.WriteFile(fs.filePath, data, 0644)
+}
+5. services/telegram.go
+package services
+import (
+    "fmt"
+    "log"
+    tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
+type TelegramService struct {
+    bot *tgbotapi.BotAPI
+}
+func NewTelegramService(token string) (*TelegramService, error) {
+    bot, err := tgbotapi.NewBotAPI(token)
+    if err != nil {
+        return nil, err
+    }
+    log.Printf("Bot autorizado: %s", bot.Self.UserName)
+    return &TelegramService{bot: bot}, nil
+}
+func (ts *TelegramService) SendMessage(chatID int64, text string) error {
+    msg := tgbotapi.NewMessage(chatID, text)
+    msg.ParseMode = "HTML"
+    _, err := ts.bot.Send(msg)
+    return err
+}
+func (ts *TelegramService) SendAlert(chatID int64, symbol, action, price string) {
+    var emoji, signalText string
+    switch action {
+    case "buy":
+        emoji = "🟢"
+        signalText = "BUY"
+    case "sell":
+        emoji = "🔴"
+        signalText = "SELL"
+    default:
+        emoji = "⚪"
+        signalText = action
+    }
+    text := fmt.Sprintf(
+        "%s <b>Alerta: %s</b>\n\nSeñal cambió a: <b>%s</b>\nPrecio: $%s",
+        emoji, symbol, signalText, price,
+    )
+    if err := ts.SendMessage(chatID, text); err != nil {
+        log.Printf("Error enviando alerta a %d: %v", chatID, err)
+    }
+}
+6. handlers/commands.go
+package handlers
+import (
+    "fmt"
+    "strings"
+    "tradingview-bot/models"
+    "tradingview-bot/services"
+)
+type CommandsHandler struct {
+    userManager *models.UserManager
+    telegram    *services.TelegramService
+}
+func NewCommandsHandler(um *models.UserManager, tg *services.TelegramService) *CommandsHandler {
+    return &CommandsHandler{
+        userManager: um,
+        telegram:    tg,
+    }
+}
+func (ch *CommandsHandler) HandleStart(chatID int64, args string) {
+    parts := strings.Fields(args)
+    if len(parts) < 1 {
+        ch.telegram.SendMessage(chatID, 
+            "uso: /start <tu_chat_id>\n\n "+
+            "Para obtener tu chat_id, envía /myid al bot @userinfobot")
+        return
+    }
+    var targetChatID int64
+    fmt.Sscanf(parts[0], "%d", &targetChatID)
+    if targetChatID == 0 {
+        ch.telegram.SendMessage(chatID, "❌ Chat ID inválido")
+        return
+    }
+    ch.userManager.Activate(targetChatID)
+    ch.telegram.SendMessage(targetChatID, 
+        "✅ <b>Alertas activadas</b>\n\n"+
+        "Recibirás notificaciones cuando el indicador Chandelier Exit cambie de señal.\n\n"+
+        "Para desactivar: /close")
+    
+    if targetChatID != chatID {
+        ch.telegram.SendMessage(chatID, fmt.Sprintf("✅ Alertas activadas para chat ID: %d", targetChatID))
+    }
+}
+func (ch *CommandsHandler) HandleClose(chatID int64) {
+    ch.userManager.Deactivate(chatID)
+    ch.telegram.SendMessage(chatID, 
+        "❌ <b>Alertas desactivadas</b>\n\n"+
+        "No recibirás más notificaciones.\n"+
+        "Para reactivar: /start <tu_chat_id>")
+}
+func (ch *CommandsHandler) HandleMyID(chatID int64) {
+    ch.telegram.SendMessage(chatID, fmt.Sprintf("Tu chat ID es: <code>%d</code>", chatID))
+}
+func (ch *CommandsHandler) HandleHelp(chatID int64) {
+    text := "📚 <b>Comandos disponibles:</b>\n\n" +
+        "/start <chat_id> - Activar alertas\n" +
+        "/close - Desactivar alertas\n" +
+        "/myid - Obtener tu chat ID\n" +
+        "/help - Mostrar esta ayuda"
+    ch.telegram.SendMessage(chatID, text)
+}
+7. handlers/webhook.go
+package handlers
+import (
+    "encoding/json"
+    "log"
+    "net/http"
+    "tradingview-bot/models"
+    "tradingview-bot/services"
+)
+type WebhookPayload struct {
+    Symbol string `json:"symbol"`
+    Action string `json:"action"`
+    Price  string `json:"price"`
+    Secret string `json:"secret"`
+}
+type WebhookHandler struct {
+    userManager *models.UserManager
+    telegram    *services.TelegramService
+    secret      string
+}
+func NewWebhookHandler(um *models.UserManager, tg *services.TelegramService, secret string) *WebhookHandler {
+    return &WebhookHandler{
+        userManager: um,
+        telegram:    tg,
+        secret:      secret,
+    }
+}
+func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodPost {
+        http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)
+        return
+    }
+    var payload WebhookPayload
+    if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+        log.Printf("Error decodificando webhook: %v", err)
+        http.Error(w, "JSON inválido", http.StatusBadRequest)
+        return
+    }
+    if payload.Secret != wh.secret {
+        log.Printf("Webhook rechazado: secret inválido")
+        http.Error(w, "Unauthorized", http.StatusUnauthorized)
+        return
+    }
+    if payload.Symbol == "" || payload.Action == "" {
+        http.Error(w, "Campos requeridos: symbol, action", http.StatusBadRequest)
+        return
+    }
+    log.Printf("Webhook recibido: %s %s @ %s", payload.Symbol, payload.Action, payload.Price)
+    activeUsers := wh.userManager.GetActiveUsers()
+    for _, user := range activeUsers {
+        lastSignal := user.GetLastSignal(payload.Symbol)
+        if lastSignal != payload.Action {
+            user.SetLastSignal(payload.Symbol, payload.Action)
+            wh.telegram.SendAlert(user.ChatID, payload.Symbol, payload.Action, payload.Price)
+        }
+    }
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusOK)
+    json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+8. main.go
+package main
+import (
+    "log"
+    "net/http"
+    "os"
+    "os/signal"
+    "syscall"
+    "tradingview-bot/config"
+    "tradingview-bot/handlers"
+    "tradingview-bot/models"
+    "tradingview-bot/services"
+    tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
+func main() {
+    cfg := config.Load()
+    if cfg.TelegramBotToken == "" {
+        log.Fatal("TELEGRAM_BOT_TOKEN no está configurado")
+    }
+    // Servicio de Telegram
+    telegram, err := services.NewTelegramService(cfg.TelegramBotToken)
+    if err != nil {
+        log.Fatalf("Error inicializando Telegram: %v", err)
+    }
+    // Gestión de usuarios
+    userManager := models.NewUserManager()
+    // Handlers
+    commandsHandler := handlers.NewCommandsHandler(userManager, telegram)
+    webhookHandler := handlers.NewWebhookHandler(userManager, telegram, cfg.WebhookSecret)
+    // Configurar bot de Telegram para polling
+    bot, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
+    if err != nil {
+        log.Fatalf("Error creando bot: %v", err)
+    }
+    u := tgbotapi.NewUpdate(0)
+    u.Timeout = 60
+    updates := bot.GetUpdatesChan(u)
+    // Procesar comandos en goroutine
+    go func() {
+        for update := range updates {
+            if update.Message == nil {
+                continue
+            }
+            chatID := update.Message.Chat.ID
+            text := update.Message.Text
+            if !update.Message.IsCommand() {
+                continue
+            }
+            switch update.Message.Command() {
+            case "start":
+                commandsHandler.HandleStart(chatID, update.Message.CommandArguments())
+            case "close":
+                commandsHandler.HandleClose(chatID)
+            case "myid":
+                commandsHandler.HandleMyID(chatID)
+            case "help":
+                commandsHandler.HandleHelp(chatID)
+            default:
+                telegram.SendMessage(chatID, "Comando no reconocido. Usa /help")
+            }
+        }
+    }()
+    // Servidor HTTP para webhooks
+    http.HandleFunc("/webhook", webhookHandler.HandleWebhook)
+    http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("OK"))
+    })
+    log.Printf("Bot iniciado: @%s", bot.Self.UserName)
+    log.Printf("Servidor HTTP en puerto %s", cfg.Port)
+    log.Println("Endpoints:")
+    log.Println("  POST /webhook - Recibir alertas de TradingView")
+    log.Println("  GET /health - Health check")
+    // Manejar señal de apagado
+    stop := make(chan os.Signal, 1)
+    signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+    go func() {
+        if err := http.ListenAndServe(":"+cfg.Port, nil); err != nil {
+            log.Fatalf("Error en servidor HTTP: %v", err)
+        }
+    }()
+    <-stop
+    log.Println("Apagando bot...")
+    bot.StopReceivingUpdates()
+}
+Configuración en TradingView
+En el indicador Chandelier Exit, configura las alertas con este formato de mensaje:
+{
+  "symbol": "{{ticker}}",
+  "action": "buy",
+  "price": "{{close}}",
+  "secret": "TU_SECRET_TOKEN"
+}
+Y para sell:
+{
+  "symbol": "{{ticker}}",
+  "action": "sell",
+  "price": "{{close}}",
+  "secret": "TU_SECRET_TOKEN"
+}
+Variables de Entorno
+export TELEGRAM_BOT_TOKEN="tu_token_de_botfather"
+export WEBHOOK_SECRET="tu_secret_seguro"
+export PORT="8080"
+
+
+
+y y si en un futuro quisiera que el bot aprendiera estrategias de trading que yo le puedo enviar en formato pdf y con estas estrategias puedo mientras tenga la sesión abierta 
+pedirle al bot que las implemente y asi me envie señales de cuando vender y comprar
+
+
+
+Excelente pregunta. Esto sería una expansión significativa del bot. Déjame investigar cómo se podría implementar esa funcionalidad de "aprendizaje" de estrategias.
+◈ Exa Web Search "LLM extract trading strategy from PDF generate Pine Script TradingView 2024 2025" 
++ Thought: 3.4s
+Excelente pregunta. Esto es totalmente posible. Déjame investigar más sobre las opciones disponibles.
+◈ Exa Web Search "Go golang extract text PDF library poppler pdfcpu" 
++ Thought: 3.0s
+Perfecto. Aquí está el plan expandido para incluir la funcionalidad de aprendizaje de estrategias desde PDFs:
+Plan Expandido: Bot de Telegram con Aprendizaje de Estrategias
+Arquitectura General (Actualizada)
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         FLUJO DE DATOS                                  │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  USUARIO                BOT TELEGRAM              TRADINGVIEW           │
+│     │                       │                         │                  │
+│     │─ /start ─────────────►│─ Activa sesión ───────►│                  │
+│     │                       │                         │                  │
+│     │─ envía PDF ──────────►│─ Extrae texto ────────►│                  │
+│     │                       │─ Envía a LLM ─────────►│                  │
+│     │                       │─ Genera Pine Script ───►│                  │
+│     │◄─ recibe código ──────│                         │                  │
+│     │                       │                         │                  │
+│     │─ /strategy 1 ────────►│─ Activa estrategia ───►│                  │
+│     │                       │                         │                  │
+│     │                       │◄── Webhook (señal) ─────│                  │
+│     │◄─ Alerta BUY/SELL ────│                         │                  │
+│     │                       │                         │                  │
+│     │─ /close ─────────────►│─ Cierra sesión ───────►│                  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+Nuevos Componentes
+1. services/pdf extractor.go - Extracción de texto de PDFs
+package services
+import (
+    "bytes"
+    "fmt"
+    "io"
+    "os"
+)
+// PDFExtractor extrae texto de archivos PDF
+type PDFExtractor struct{}
+func NewPDFExtractor() *PDFExtractor {
+    return &PDFExtractor{}
+}
+// ExtractText usa pdftotext (poppler) para extraer texto
+func (pe *PDFExtractor) ExtractText(filePath string) (string, error) {
+    // Opción 1: Usar pdftotext (requiere poppler instalado)
+    cmd := exec.Command("pdftotext", filePath, "-")
+    var out bytes.Buffer
+    cmd.Stdout = &out
+    if err := cmd.Run(); err != nil {
+        return "", fmt.Errorf("error ejecutando pdftotext: %w", err)
+    }
+    return out.String(), nil
+    
+    // Opción 2: Usar pdfcpu (pure Go, sin dependencias externas)
+    // ctx, err := pdfcpu.ReadContextFile(filePath)
+    // if err != nil {
+    //     return "", err
+    // }
+    // text, _ := pdfcpu.ExtractText(ctx, ...)
+    // return text, nil
+}
+2. services/llm.go - Servicio LLM para generar Pine Script
+package services
+import (
+    "bytes"
+    "encoding/json"
+    "fmt"
+    "io"
+    "net/http"
+)
+type LLMService struct {
+    APIKey     string
+    Provider   string // "openai", "anthropic", "deepseek"
+    Model      string
+    HTTPClient *http.Client
+}
+type ChatMessage struct {
+    Role    string `json:"role"`
+    Content string `json:"content"`
+}
+type OpenAIRequest struct {
+    Model    string        `json:"model"`
+    Messages []ChatMessage `json:"messages"`
+    MaxTokens int          `json:"max_tokens"`
+}
+type OpenAIResponse struct {
+    Choices []struct {
+        Message struct {
+            Content string `json:"content"`
+        } `json:"message"`
+    } `json:"choices"`
+}
+func NewLLMService(apiKey, provider, model string) *LLMService {
+    return &LLMService{
+        APIKey:     apiKey,
+        Provider:   provider,
+        Model:      model,
+        HTTPClient: &http.Client{},
+    }
+}
+const PINE_SCRIPT_SYSTEM_PROMPT = `Eres un experto en TradingView Pine Script v6. Tu tarea es:
+1. ANALIZAR la estrategia de trading descrita en el texto
+2. EXTRAER la lógica de trading (indicadores, condiciones de entrada/salida)
+3. GENERAR código Pine Script v6 válido y funcional
+REGLAS:
+- Usa // @version=6
+- Incluye strategy() con parámetros completos
+- Añade alertcondition() para señales buy/sell
+- Incluye inputs configurables
+- Añade comentarios explicativos
+- El código debe compilar sin errores en TradingView
+RESPUESTA: Solo el código Pine Script, sin explicaciones adicionales.`
+func (ls *LLMService) GeneratePineScript(strategyText string) (string, error) {
+    userPrompt := fmt.Sprintf(`Analiza esta estrategia de trading y genera Pine Script v6:
+---
+%s
+---
+Genera el código Pine Script completo con alertas para buy/sell.`, strategyText)
+    messages := []ChatMessage{
+        {Role: "system", Content: PINE_SCRIPT_SYSTEM_PROMPT},
+        {Role: "user", Content: userPrompt},
+    }
+    switch ls.Provider {
+    case "openai":
+        return ls.callOpenAI(messages)
+    case "anthropic":
+        return ls.callAnthropic(messages)
+    case "deepseek":
+        return ls.callDeepSeek(messages)
+    default:
+        return "", fmt.Errorf("proveedor no soportado: %s", ls.Provider)
+    }
+}
+func (ls *LLMService) callOpenAI(messages []ChatMessage) (string, error) {
+    reqBody := OpenAIRequest{
+        Model:     ls.Model,
+        Messages:  messages,
+        MaxTokens: 2000,
+    }
+    
+    jsonBody, _ := json.Marshal(reqBody)
+    
+    req, _ := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", 
+        bytes.NewBuffer(jsonBody))
+    req.Header.Set("Content-Type", "application/json")
+    req.Header.Set("Authorization", "Bearer "+ls.APIKey)
+    
+    resp, err := ls.HTTPClient.Do(req)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+    
+    body, _ := io.ReadAll(resp.Body)
+    
+    var openAIResp OpenAIResponse
+    if err := json.Unmarshal(body, &openAIResp); err != nil {
+        return "", err
+    }
+    
+    if len(openAIResp.Choices) == 0 {
+        return "", fmt.Errorf("no se recibió respuesta del LLM")
+    }
+    
+    return openAIResp.Choices[0].Message.Content, nil
+}
+// Similar para Anthropic y DeepSeek...
+3. models/strategy.go - Modelo de estrategia
+package models
+import (
+    "sync"
+    "time"
+)
+type Strategy struct {
+    ID          string    `json:"id"`
+    Name        string    `json:"name"`
+    Description string    `json:"description"`
+    PineScript  string    `json:"pine_script"`
+    Active      bool      `json:"active"`
+    CreatedAt   time.Time `json:"created_at"`
+    Symbols     []string  `json:"symbols"` // Pares que monitorea
+    mu          sync.RWMutex
+}
+type StrategyManager struct {
+    strategies map[string]*Strategy
+    mu         sync.RWMutex
+}
+func NewStrategyManager() *StrategyManager {
+    return &StrategyManager{
+        strategies: make(map[string]*Strategy),
+    }
+}
+func (sm *StrategyManager) Create(name, description, pineScript string) *Strategy {
+    sm.mu.Lock()
+    defer sm.mu.Unlock()
+    
+    id := generateID()
+    strategy := &Strategy{
+        ID:          id,
+        Name:        name,
+        Description: description,
+        PineScript:  pineScript,
+        Active:      false,
+        CreatedAt:   time.Now(),
+        Symbols:     []string{},
+    }
+    
+    sm.strategies[id] = strategy
+    return strategy
+}
+func (sm *StrategyManager) Get(id string) *Strategy {
+    sm.mu.RLock()
+    defer sm.mu.RUnlock()
+    return sm.strategies[id]
+}
+func (sm *StrategyManager) GetAll() []*Strategy {
+    sm.mu.RLock()
+    defer sm.mu.RUnlock()
+    
+    var strategies []*Strategy
+    for _, s := range sm.strategies {
+        strategies = append(strategies, s)
+    }
+    return strategies
+}
+func (sm *StrategyManager) Activate(id string) error {
+    sm.mu.Lock()
+    defer sm.mu.Unlock()
+    
+    if s, exists := sm.strategies[id]; exists {
+        s.Active = true
+        return nil
+    }
+    return fmt.Errorf("estrategia no encontrada: %s", id)
+}
+func (sm *StrategyManager) Deactivate(id string) error {
+    sm.mu.Lock()
+    defer sm.mu.Unlock()
+    
+    if s, exists := sm.strategies[id]; exists {
+        s.Active = false
+        return nil
+    }
+    return fmt.Errorf("estrategia no encontrada: %s", id)
+}
+func generateID() string {
+    // Generar ID único
+    b := make([]byte, 8)
+    rand.Read(b)
+    return hex.EncodeToString(b)
+}
+4. handlers/commands.go - Comandos expandidos
+package handlers
+import (
+    "fmt"
+    "io"
+    "os"
+    "path/filepath"
+    "strings"
+    "tradingview-bot/models"
+    "tradingview-bot/services"
+    tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
+type CommandsHandler struct {
+    userManager    *models.UserManager
+    strategyManager *models.StrategyManager
+    telegram       *services.TelegramService
+    pdfExtractor   *services.PDFExtractor
+    llmService     *services.LLMService
+    bot            *tgbotapi.BotAPI
+    uploadDir      string
+}
+func NewCommandsHandler(
+    um *models.UserManager,
+    sm *models.StrategyManager,
+    tg *services.TelegramService,
+    pdf *services.PDFExtractor,
+    llm *services.LLMService,
+    bot *tgbotapi.BotAPI,
+) *CommandsHandler {
+    return &CommandsHandler{
+        userManager:     um,
+        strategyManager: sm,
+        telegram:        tg,
+        pdfExtractor:    pdf,
+        llmService:      llm,
+        bot:             bot,
+        uploadDir:       "./uploads",
+    }
+}
+func (ch *CommandsHandler) HandleStart(chatID int64, args string) {
+    parts := strings.Fields(args)
+    if len(parts) < 1 {
+        ch.telegram.SendMessage(chatID, 
+            "uso: /start <tu_chat_id>\n\n "+
+            "Para obtener tu chat_id, envía /myid al bot @userinfobot")
+        return
+    }
+    var targetChatID int64
+    fmt.Sscanf(parts[0], "%d", &targetChatID)
+    if targetChatID == 0 {
+        ch.telegram.SendMessage(chatID, "❌ Chat ID inválido")
+        return
+    }
+    ch.userManager.Activate(targetChatID)
+    ch.telegram.SendMessage(targetChatID, 
+        "✅ <b>Alertas activadas</b>\n\n"+
+        "Recibirás notificaciones cuando el indicador Chandelier Exit cambie de señal.\n\n"+
+        "Para desactivar: /close")
+    
+    if targetChatID != chatID {
+        ch.telegram.SendMessage(chatID, fmt.Sprintf("✅ Alertas activadas para chat ID: %d", targetChatID))
+    }
+}
+func (ch *CommandsHandler) HandleClose(chatID int64) {
+    ch.userManager.Deactivate(chatID)
+    ch.telegram.SendMessage(chatID, 
+        "❌ <b>Alertas desactivadas</b>\n\n"+
+        "No recibirás más notificaciones.\n"+
+        "Para reactivar: /start <tu_chat_id>")
+}
+func (ch *CommandsHandler) HandleMyID(chatID int64) {
+    ch.telegram.SendMessage(chatID, fmt.Sprintf("Tu chat ID es: <code>%d</code>", chatID))
+}
+func (ch *CommandsHandler) HandleHelp(chatID int64) {
+    text := "📚 <b>Comandos disponibles:</b>\n\n" +
+        "/start <chat_id> - Activar alertas\n" +
+        "/close - Desactivar alertas\n" +
+        "/myid - Obtener tu chat ID\n" +
+        "/learn - Aprender estrategia desde PDF\n" +
+        "/strategies - Ver estrategias aprendidas\n" +
+        "/strategy <id> - Activar/desactivar estrategia\n" +
+        "/help - Mostrar esta ayuda"
+    ch.telegram.SendMessage(chatID, text)
+}
+func (ch *CommandsHandler) HandleLearn(chatID int64) {
+    ch.telegram.SendMessage(chatID, 
+        "📥 <b>Envía un PDF con la estrategia de trading</b>\n\n"+
+        "El bot analizará el documento y generará código Pine Script.\n\n"+
+        "Formatos soportados: PDF\n"+
+        "Tamaño máximo: 20MB")
+}
+func (ch *CommandsHandler) HandleDocument(message *tgbotapi.Message) {
+    chatID := message.Chat.ID
+    document := message.Document
+    
+    if document == nil {
+        ch.telegram.SendMessage(chatID, "❌ No se recibió ningún documento")
+        return
+    }
+    
+    // Validar que sea PDF
+    if !strings.HasSuffix(document.FileName, ".pdf") {
+        ch.telegram.SendMessage(chatID, "❌ Solo se aceptan archivos PDF")
+        return
+    }
+    
+    // Validar tamaño (20MB max)
+    if document.FileSize > 20*1024*1024 {
+        ch.telegram.SendMessage(chatID, "❌ El archivo excede el límite de 20MB")
+        return
+    }
+    
+    // Descargar archivo
+    ch.telegram.SendMessage(chatID, "📥 Descargando PDF...")
+    
+    fileConfig := tgbotapi.FileConfig{FileID: document.FileID}
+    file, err := ch.bot.GetFile(fileConfig)
+    if err != nil {
+        ch.telegram.SendMessage(chatID, "❌ Error descargando el archivo")
+        return
+    }
+    
+    // Crear directorio de uploads
+    os.MkdirAll(ch.uploadDir, 0755)
+    
+    // Guardar archivo
+    filePath := filepath.Join(ch.uploadDir, fmt.Sprintf("%d_%s", chatID, document.FileName))
+    out, err := os.Create(filePath)
+    if err != nil {
+        ch.telegram.SendMessage(chatID, "❌ Error guardando el archivo")
+        return
+    }
+    defer out.Close()
+    
+    // URL de descarga de Telegram
+    fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", 
+        ch.bot.Token, file.FilePath)
+    
+    resp, err := http.Get(fileURL)
+    if err != nil {
+        ch.telegram.SendMessage(chatID, "❌ Error descargando contenido")
+        return
+    }
+    defer resp.Body.Close()
+    
+    io.Copy(out, resp.Body)
+    
+    // Extraer texto del PDF
+    ch.telegram.SendMessage(chatID, "🔍 Analizando PDF...")
+    
+    text, err := ch.pdfExtractor.ExtractText(filePath)
+    if err != nil {
+        ch.telegram.SendMessage(chatID, fmt.Sprintf("❌ Error extrayendo texto: %v", err))
+        return
+    }
+    
+    if len(text) < 100 {
+        ch.telegram.SendMessage(chatID, "❌ El PDF no contiene suficiente texto legible")
+        return
+    }
+    
+    // Generar Pine Script con LLM
+    ch.telegram.SendMessage(chatID, "🧠 Generando estrategia con IA...")
+    
+    pineScript, err := ch.llmService.GeneratePineScript(text)
+    if err != nil {
+        ch.telegram.SendMessage(chatID, fmt.Sprintf("❌ Error generando código: %v", err))
+        return
+    }
+    
+    // Guardar estrategia
+    strategy := ch.strategyManager.Create(
+        document.FileName,
+        fmt.Sprintf("Estrategia extraída de %s", document.FileName),
+        pineScript,
+    )
+    
+    // Enviar código al usuario
+    response := fmt.Sprintf(
+        "✅ <b>Estrategia generada exitosamente</b>\n\n"+
+        "📄 <b>Archivo:</b> %s\n"+
+        "🆔 <b>ID:</b> <code>%s</code>\n\n"+
+        "📝 <b>Código Pine Script:</b>\n\n"+
+        "<code>%s</code>\n\n"+
+        "Para usar esta estrategia:\n"+
+        "1. Copia el código\n"+
+        "2. Pégalo en TradingView (Pine Editor)\n"+
+        "3. Añade alertas con webhook a tu bot\n"+
+        "4. Activa la estrategia: /strategy %s",
+        document.FileName, strategy.ID, pineScript, strategy.ID,
+    )
+    
+    ch.telegram.SendMessage(chatID, response)
+    
+    // Limpiar archivo
+    os.Remove(filePath)
+}
+func (ch *CommandsHandler) HandleStrategies(chatID int64) {
+    strategies := ch.strategyManager.GetAll()
+    
+    if len(strategies) == 0 {
+        ch.telegram.SendMessage(chatID, 
+            "📭 No hay estrategias aprendidas aún.\n\n"+
+            "Usa /learn y envía un PDF para empezar.")
+        return
+    }
+    
+    text := "📋 <b>Estrategias aprendidas:</b>\n\n"
+    for _, s := range strategies {
+        status := "❌ Inactiva"
+        if s.Active {
+            status = "✅ Activa"
+        }
+        text += fmt.Sprintf(
+            "🆔 <code>%s</code>\n"+
+            "📄 %s\n"+
+            "Estado: %s\n\n",
+            s.ID, s.Name, status,
+        )
+    }
+    
+    text += "Para activar/desactivar: /strategy <id>"
+    ch.telegram.SendMessage(chatID, text)
+}
+func (ch *CommandsHandler) HandleStrategy(chatID int64, args string) {
+    parts := strings.Fields(args)
+    if len(parts) < 1 {
+        ch.telegram.SendMessage(chatID, "uso: /strategy <id>")
+        return
+    }
+    
+    strategyID := parts[0]
+    strategy := ch.strategyManager.Get(strategyID)
+    
+    if strategy == nil {
+        ch.telegram.SendMessage(chatID, fmt.Sprintf("❌ Estrategia no encontrada: %s", strategyID))
+        return
+    }
+    
+    // Toggle active state
+    if strategy.Active {
+        ch.strategyManager.Deactivate(strategyID)
+        ch.telegram.SendMessage(chatID, fmt.Sprintf("❌ Estrategia <code>%s</code> desactivada", strategyID))
+    } else {
+        ch.strategyManager.Activate(strategyID)
+        ch.telegram.SendMessage(chatID, 
+            fmt.Sprintf("✅ Estrategia <code>%s</code> activada\n\n"+
+                "Ahora recibirás alertas cuando la estrategia genere señales.\n"+
+                "Asegúrate de tener alertas configuradas en TradingView con webhook a tu bot.", 
+                strategyID))
+    }
+}
+5. main.go - Entry point actualizado
+package main
+import (
+    "log"
+    "net/http"
+    "os"
+    "os/signal"
+    "syscall"
+    "tradingview-bot/config"
+    "tradingview-bot/handlers"
+    "tradingview-bot/models"
+    "tradingview-bot/services"
+    tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+)
+func main() {
+    cfg := config.Load()
+    if cfg.TelegramBotToken == "" {
+        log.Fatal("TELEGRAM_BOT_TOKEN no está configurado")
+    }
+    if cfg.LLMAPIKey == "" {
+        log.Fatal("LLM_API_KEY no está configurado (OpenAI/Anthropic/DeepSeek)")
+    }
+    // Servicios
+    telegram, err := services.NewTelegramService(cfg.TelegramBotToken)
+    if err != nil {
+        log.Fatalf("Error inicializando Telegram: %v", err)
+    }
+    pdfExtractor := services.NewPDFExtractor()
+    llmService := services.NewLLMService(cfg.LLMAPIKey, cfg.LLMProvider, cfg.LLMModel)
+    // Gestión
+    userManager := models.NewUserManager()
+    strategyManager := models.NewStrategyManager()
+    // Bot de Telegram
+    bot, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
+    if err != nil {
+        log.Fatalf("Error creando bot: %v", err)
+    }
+    // Handlers
+    commandsHandler := handlers.NewCommandsHandler(
+        userManager, strategyManager, telegram, 
+        pdfExtractor, llmService, bot,
+    )
+    webhookHandler := handlers.NewWebhookHandler(userManager, strategyManager, telegram, cfg.WebhookSecret)
+    // Polling de Telegram
+    u := tgbotapi.NewUpdate(0)
+    u.Timeout = 60
+    updates := bot.GetUpdatesChan(u)
+    go func() {
+        for update := range updates {
+            if update.Message == nil {
+                continue
+            }
+            chatID := update.Message.Chat.ID
+            // Manejar documentos (PDFs)
+            if update.Message.Document != nil {
+                commandsHandler.HandleDocument(update.Message)
+                continue
+            }
+            if !update.Message.IsCommand() {
+                continue
+            }
+            switch update.Message.Command() {
+            case "start":
+                commandsHandler.HandleStart(chatID, update.Message.CommandArguments())
+            case "close":
+                commandsHandler.HandleClose(chatID)
+            case "myid":
+                commandsHandler.HandleMyID(chatID)
+            case "help":
+                commandsHandler.HandleHelp(chatID)
+            case "learn":
+                commandsHandler.HandleLearn(chatID)
+            case "strategies":
+                commandsHandler.HandleStrategies(chatID)
+            case "strategy":
+                commandsHandler.HandleStrategy(chatID, update.Message.CommandArguments())
+            default:
+                telegram.SendMessage(chatID, "Comando no reconocido. Usa /help")
+            }
+        }
+    }()
+    // Servidor HTTP para webhooks
+    http.HandleFunc("/webhook", webhookHandler.HandleWebhook)
+    http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+        w.WriteHeader(http.StatusOK)
+        w.Write([]byte("OK"))
+    })
+    log.Printf("Bot iniciado: @%s", bot.Self.UserName)
+    log.Printf("Servidor HTTP en puerto %s", cfg.Port)
+    log.Println("Endpoints:")
+    log.Println("  POST /webhook - Recibir alertas de TradingView")
+    log.Println("  GET /health - Health check")
+    stop := make(chan os.Signal, 1)
+    signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+    go func() {
+        if err := http.ListenAndServe(":"+cfg.Port, nil); err != nil {
+            log.Fatalf("Error en servidor HTTP: %v", err)
+        }
+    }()
+    <-stop
+    log.Println("Apagando bot...")
+    bot.StopReceivingUpdates()
+}
+6. config/config.go - Configuración expandida
+package config
+import "os"
+type Config struct {
+    TelegramBotToken string
+    WebhookSecret    string
+    Port             string
+    LLMAPIKey        string
+    LLMProvider      string
+    LLMModel         string
+}
+func Load() *Config {
+    return &Config{
+        TelegramBotToken: getEnv("TELEGRAM_BOT_TOKEN", ""),
+        WebhookSecret:    getEnv("WEBHOOK_SECRET", "default-secret-change-me"),
+        Port:             getEnv("PORT", "8080"),
+        LLMAPIKey:        getEnv("LLM_API_KEY", ""),
+        LLMProvider:      getEnv("LLM_PROVIDER", "openai"),
+        LLMModel:         getEnv("LLM_MODEL", "gpt-4"),
+    }
+}
+func getEnv(key, fallback string) string {
+    if value, exists := os.LookupEnv(key); exists {
+        return value
+    }
+    return fallback
+}
+Variables de Entorno (Actualizadas)
+# Telegram
+export TELEGRAM_BOT_TOKEN="tu_token_de_botfather"
+# Webhook
+export WEBHOOK_SECRET="tu_secret_seguro"
+# Servidor
+export PORT="8080"
+# LLM (para aprendizaje de estrategias)
+export LLM_API_KEY="tu_api_key_de_openai_o_anthropic"
+export LLM_PROVIDER="openai"  # o "anthropic", "deepseek"
+export LLM_MODEL="gpt-4"      # o "claude-3-opus", "deepseek-chat"
+Flujo de Aprendizaje (Paso a Paso)
+1. Usuario envía /learn → Bot responde indicando que envíe un PDF
+2. Usuario envía PDF → Bot:
+- Valida formato y tamaño
+- Descarga el archivo
+- Extrae texto con pdftotext
+- Envía texto a LLM con prompt especializado
+- Recibe Pine Script generado
+- Guarda estrategia en StrategyManager
+- Envía código al usuario
+3. Usuario copia código a TradingView → Configura alertas con webhook
+4. Usuario activa estrategia → /strategy <id>
+5. TradingView envía webhook → Bot procesa y envía alerta
+Dependencias Adicionales (Go)
+require (
+    github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+    // Para PDF: pdftotext (requiere poppler instalado en el sistema)
+    // o usar pdfcpu para solución pure-Go
+)
+Instalación de Dependencias del Sistema
+# Ubuntu/Debian
+sudo apt-get install poppler-utils
+# macOS
+brew install poppler
+# Windows
+# Descargar poppler desde: https://github.com/osber/poppler-windows/releases
+¿Quieres que implemente este plan completo? (Necesito salir del Modo Plan para crear los archivos)
