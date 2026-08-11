@@ -9,8 +9,14 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
 	"tradingview-bot/config"
 	"tradingview-bot/handlers"
+	"tradingview-bot/internal/bus"
+	"tradingview-bot/internal/evaluator"
+	"tradingview-bot/internal/notifier"
+	"tradingview-bot/internal/processor"
+	"tradingview-bot/internal/store"
 	"tradingview-bot/models"
 	"tradingview-bot/services"
 	"tradingview-bot/storage"
@@ -28,14 +34,22 @@ func main() {
 	if cfg.TelegramBotToken == "" {
 		log.Fatal("TELEGRAM_BOT_TOKEN no está configurado")
 	}
-	// Crear bot de Telegram (una sola instancia)
+
+	// Persistencia de señales (SQLite)
+	sqliteStore, err := store.Open(cfg.DBFile)
+	if err != nil {
+		log.Fatalf("Error abriendo base de datos: %v", err)
+	}
+	defer sqliteStore.Close()
+
+	// Bot de Telegram y servicio de envío
 	bot, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
 	if err != nil {
 		log.Fatalf("Error creando bot: %v", err)
 	}
-	// Servicio de Telegram
 	telegram := services.NewTelegramService(bot)
-	// Gestión de usuarios con persistencia
+
+	// Gestión de usuarios con persistencia (archivo)
 	userManager := models.NewUserManager()
 	fileStorage := storage.NewFileStorage(cfg.StorageFile)
 	users, err := fileStorage.Load()
@@ -44,27 +58,35 @@ func main() {
 	}
 	userManager.Load(users)
 	saveUsers := func() {
-		if err := fileStorage.Save(userManager.GetAllUsers()); err != nil {
+		if err := fileStorage.Save(userManager.SnapshotUsers()); err != nil {
 			log.Printf("Error guardando estado: %v", err)
 		}
 	}
+
+	// Pipeline de señales: bus → evaluador → notifier (rate-limit + retry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	eventBus := bus.New(512)
+	evaluatorSvc := evaluator.New(sqliteStore)
+	notifierSvc := notifier.New(telegram, userManager, notifier.Config{})
+	notifierSvc.Start(ctx)
+	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, 10000)
+	processorSvc.Start(ctx)
+
 	// Handlers
 	commandsHandler := handlers.NewCommandsHandler(userManager, telegram)
-	webhookHandler := handlers.NewWebhookHandler(userManager, telegram, cfg.WebhookSecret)
+	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret)
+
 	// Configurar bot de Telegram para polling
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
-	// Procesar comandos en goroutine
 	go func() {
 		for update := range updates {
-			if update.Message == nil {
+			if update.Message == nil || !update.Message.IsCommand() {
 				continue
 			}
 			chatID := update.Message.Chat.ID
-			if !update.Message.IsCommand() {
-				continue
-			}
 			switch update.Message.Command() {
 			case "start":
 				commandsHandler.HandleStart(chatID, update.Message.CommandArguments())
@@ -79,6 +101,7 @@ func main() {
 			}
 		}
 	}()
+
 	// Servidor HTTP para webhooks
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhook", webhookHandler.HandleWebhook)
@@ -100,6 +123,7 @@ func main() {
 	log.Println("Endpoints:")
 	log.Println("  POST /webhook - Recibir alertas de TradingView")
 	log.Println("  GET /health - Health check")
+
 	// Guardado periódico del estado de usuarios
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
@@ -108,6 +132,7 @@ func main() {
 			saveUsers()
 		}
 	}()
+
 	// Manejar señal de apagado
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -118,9 +143,10 @@ func main() {
 	}()
 	<-stop
 	log.Println("Apagando bot...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("Error en shutdown: %v", err)
 	}
 	saveUsers()

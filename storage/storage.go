@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+
 	"tradingview-bot/models"
 )
 
@@ -22,9 +23,8 @@ type PersistedData struct {
 	Users map[int64]*UserStateData `json:"users"`
 }
 type UserStateData struct {
-	ChatID      int64             `json:"chat_id"`
-	Active      bool              `json:"active"`
-	LastSignals map[string]string `json:"last_signals"`
+	ChatID int64 `json:"chat_id"`
+	Active bool  `json:"active"`
 }
 
 func (fs *FileStorage) Load() (map[int64]*models.UserState, error) {
@@ -41,31 +41,26 @@ func (fs *FileStorage) Load() (map[int64]*models.UserState, error) {
 	if err := json.Unmarshal(data, &persisted); err != nil {
 		return nil, fmt.Errorf("estado guardado corrupto: %w", err)
 	}
-	users := make(map[int64]*models.UserState)
+	users := make(map[int64]*models.UserState, len(persisted.Users))
 	for chatID, userData := range persisted.Users {
-		if userData.LastSignals == nil {
-			userData.LastSignals = make(map[string]string)
-		}
 		users[chatID] = &models.UserState{
-			ChatID:      userData.ChatID,
-			Active:      userData.Active,
-			LastSignals: userData.LastSignals,
+			ChatID: userData.ChatID,
+			Active: userData.Active,
 		}
 	}
 	return users, nil
 }
-func (fs *FileStorage) Save(users map[int64]*models.UserState) error {
+
+func (fs *FileStorage) Save(users []models.UserState) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	persisted := PersistedData{
-		Users: make(map[int64]*UserStateData),
+		Users: make(map[int64]*UserStateData, len(users)),
 	}
 	for _, user := range users {
-		uid, active, signals := user.Snapshot()
-		persisted.Users[uid] = &UserStateData{
-			ChatID:      uid,
-			Active:      active,
-			LastSignals: signals,
+		persisted.Users[user.ChatID] = &UserStateData{
+			ChatID: user.ChatID,
+			Active: user.Active,
 		}
 	}
 	data, err := json.MarshalIndent(persisted, "", "  ")

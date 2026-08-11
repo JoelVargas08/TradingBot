@@ -12,13 +12,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	fs := NewFileStorage(filepath.Join(dir, "data", "users.json"))
 
-	users := map[int64]*models.UserState{
-		42: {
-			ChatID:      42,
-			Active:      true,
-			LastSignals: map[string]string{"BTCUSDT": "buy"},
-		},
-	}
+	users := []models.UserState{{ChatID: 42, Active: true}}
 	if err := fs.Save(users); err != nil {
 		t.Fatalf("Save error: %v", err)
 	}
@@ -31,7 +25,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		t.Fatalf("loaded = %d usuarios, want 1", len(loaded))
 	}
 	u := loaded[42]
-	if u == nil || !u.Active || u.GetLastSignal("BTCUSDT") != "buy" {
+	if u == nil || !u.Active || u.ChatID != 42 {
 		t.Errorf("estado cargado incorrecto: %+v", u)
 	}
 }
@@ -70,7 +64,7 @@ func TestSaveOverwritesExisting(t *testing.T) {
 	}
 	fs := NewFileStorage(path)
 
-	users := map[int64]*models.UserState{1: {ChatID: 1, Active: true, LastSignals: map[string]string{}}}
+	users := []models.UserState{{ChatID: 1, Active: true}}
 	if err := fs.Save(users); err != nil {
 		t.Fatalf("Save error: %v", err)
 	}

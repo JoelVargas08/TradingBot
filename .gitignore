@@ -1,0 +1,26 @@
+# Binarios
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/tradingview-bot
+
+# Datos de runtime (usuarios + SQLite)
+/data/
+
+# Entorno y secretos
+.env
+.env.*
+
+# Tests / cobertura
+*.test
+*.out
+coverage.*
+
+# IDE / sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

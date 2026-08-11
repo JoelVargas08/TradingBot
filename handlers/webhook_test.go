@@ -1,25 +1,27 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"tradingview-bot/models"
+
+	"tradingview-bot/internal/domain"
 )
 
-type recorder struct {
-	alerts []string
+type fakePublisher struct {
+	published []domain.SignalEvent
+	err       error
 }
 
-func (r *recorder) SendAlert(chatID int64, symbol, action string, price float64) {
-	r.alerts = append(r.alerts, symbol+" "+action)
-}
-
-func newTestHandler(secret string, um *models.UserManager) (*WebhookHandler, *recorder) {
-	rec := &recorder{}
-	return NewWebhookHandler(um, rec, secret), rec
+func (f *fakePublisher) Publish(ctx context.Context, ev domain.SignalEvent) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.published = append(f.published, ev)
+	return nil
 }
 
 func postJSON(h *WebhookHandler, body string) *httptest.ResponseRecorder {
@@ -57,8 +59,7 @@ func TestFlexPriceInvalid(t *testing.T) {
 }
 
 func TestWebhookRejectsBadSecret(t *testing.T) {
-	um := models.NewUserManager()
-	h, _ := newTestHandler("correct-secret", um)
+	h := NewWebhookHandler(&fakePublisher{}, "correct-secret")
 	w := postJSON(h, `{"symbol":"BTCUSDT","action":"buy","price":60000,"secret":"wrong"}`)
 	if w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", w.Code)
@@ -66,8 +67,7 @@ func TestWebhookRejectsBadSecret(t *testing.T) {
 }
 
 func TestWebhookRejectsBadAction(t *testing.T) {
-	um := models.NewUserManager()
-	h, _ := newTestHandler("correct-secret", um)
+	h := NewWebhookHandler(&fakePublisher{}, "correct-secret")
 	w := postJSON(h, `{"symbol":"BTCUSDT","action":"hold","price":60000,"secret":"correct-secret"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
@@ -75,50 +75,66 @@ func TestWebhookRejectsBadAction(t *testing.T) {
 }
 
 func TestWebhookRejectsBadPrice(t *testing.T) {
-	um := models.NewUserManager()
-	h, _ := newTestHandler("correct-secret", um)
+	h := NewWebhookHandler(&fakePublisher{}, "correct-secret")
 	w := postJSON(h, `{"symbol":"BTCUSDT","action":"buy","price":-5,"secret":"correct-secret"}`)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
 
-func TestWebhookSendsAlertAndDedupsByBar(t *testing.T) {
-	um := models.NewUserManager()
-	um.Activate(1)
-	h, rec := newTestHandler("correct-secret", um)
-
-	body := `{"symbol":"BTCUSDT","action":"buy","price":"60000.5","time":1700000000,"secret":"correct-secret"}`
-	w := postJSON(h, body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", w.Code)
-	}
-	if len(rec.alerts) != 1 {
-		t.Fatalf("alerts = %d, want 1", len(rec.alerts))
-	}
-
-	w2 := postJSON(h, body)
-	if w2.Code != http.StatusOK {
-		t.Fatalf("duplicado: status = %d, want 200", w2.Code)
-	}
-	if len(rec.alerts) != 1 {
-		t.Errorf("duplicado: alerts = %d, want 1 (cooldown por barra)", len(rec.alerts))
+func TestWebhookRejectsMissingSymbol(t *testing.T) {
+	h := NewWebhookHandler(&fakePublisher{}, "correct-secret")
+	w := postJSON(h, `{"action":"buy","price":60000,"secret":"correct-secret"}`)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", w.Code)
 	}
 }
 
-func TestWebhookTogglesOnNewBar(t *testing.T) {
-	um := models.NewUserManager()
-	um.Activate(1)
-	h, rec := newTestHandler("correct-secret", um)
+func TestWebhookPublishesAndReturns202(t *testing.T) {
+	pub := &fakePublisher{}
+	h := NewWebhookHandler(pub, "correct-secret")
 
-	postJSON(h, `{"symbol":"BTCUSDT","action":"buy","price":60000,"time":1,"secret":"correct-secret"}`)
-	postJSON(h, `{"symbol":"BTCUSDT","action":"sell","price":61000,"time":2,"secret":"correct-secret"}`)
-
-	if len(rec.alerts) != 2 {
-		t.Errorf("alerts = %d, want 2 (buy y sell en barras distintas)", len(rec.alerts))
+	w := postJSON(h, `{"strategy":"chandelier","timeframe":"1h","symbol":"BTCUSDT","action":"buy","price":"60000.5","time":1700000000,"secret":"correct-secret"}`)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w.Code)
 	}
-	if rec.alerts[0] != "BTCUSDT buy" || rec.alerts[1] != "BTCUSDT sell" {
-		t.Errorf("alertas inesperadas: %v", rec.alerts)
+	if len(pub.published) != 1 {
+		t.Fatalf("published = %d, want 1", len(pub.published))
+	}
+	ev := pub.published[0]
+	if ev.StrategyID != "chandelier" || ev.Symbol != "BTCUSDT" || ev.Timeframe != "1h" {
+		t.Errorf("evento con datos incorrectos: %+v", ev)
+	}
+	if ev.Direction != domain.DirectionBuy || ev.Price != 60000.5 {
+		t.Errorf("evento con dirección/precio incorrectos: %+v", ev)
+	}
+	if ev.BarTS.Unix() != 1700000000 {
+		t.Errorf("BarTS = %d, want 1700000000", ev.BarTS.Unix())
+	}
+	if ev.ReceivedAt.IsZero() {
+		t.Error("ReceivedAt no debería ser cero")
+	}
+}
+
+func TestWebhookDefaultsStrategyAndTimeframe(t *testing.T) {
+	pub := &fakePublisher{}
+	h := NewWebhookHandler(pub, "correct-secret")
+
+	postJSON(h, `{"symbol":"BTCUSDT","action":"sell","price":60000,"secret":"correct-secret"}`)
+	if len(pub.published) != 1 {
+		t.Fatalf("published = %d, want 1", len(pub.published))
+	}
+	ev := pub.published[0]
+	if ev.StrategyID != defaultStrategy || ev.Timeframe != defaultTimeframe {
+		t.Errorf("defaults no aplicados: %+v", ev)
+	}
+}
+
+func TestWebhookServiceUnavailableOnFullBus(t *testing.T) {
+	h := NewWebhookHandler(&fakePublisher{err: context.DeadlineExceeded}, "correct-secret")
+	w := postJSON(h, `{"symbol":"BTCUSDT","action":"buy","price":60000,"secret":"correct-secret"}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", w.Code)
 	}
 }
 

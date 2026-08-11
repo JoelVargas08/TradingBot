@@ -10,6 +10,7 @@ type Config struct {
 	WebhookSecret    string
 	Port             string
 	StorageFile      string
+	DBFile           string
 }
 
 func Load() (*Config, error) {
@@ -18,6 +19,7 @@ func Load() (*Config, error) {
 		WebhookSecret:    os.Getenv("WEBHOOK_SECRET"),
 		Port:             getEnv("PORT", "8080"),
 		StorageFile:      getEnv("STORAGE_FILE", "data/users.json"),
+		DBFile:           getEnv("DB_FILE", "data/bot.db"),
 	}
 	if cfg.WebhookSecret == "" {
 		return nil, errors.New("WEBHOOK_SECRET no está configurado")

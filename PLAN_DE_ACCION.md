@@ -2,6 +2,7 @@
 
 > Plan consolidado elaborado a partir del análisis de 6 especialistas (TradingView, backend, IA/CNN, datos, scraping, estrategia crypto).
 > Estado actual del proyecto: bot Go que recibe webhooks de TradingView (Chandelier Exit) y reenvía alertas a Telegram.
+> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada → siguiente: Fase 2 (ingesta de datos).
 
 ---
 
