@@ -96,3 +96,32 @@ type Evaluator interface {
 type UserRegistry interface {
 	ActiveUserIDs() []int64
 }
+
+type Kline struct {
+	Symbol    string
+	Timeframe string
+	Start     time.Time
+	Open      float64
+	High      float64
+	Low       float64
+	Close     float64
+	Volume    float64
+	Closed    bool
+}
+
+type Trade struct {
+	Symbol   string
+	Price    float64
+	Quantity float64
+	Notional float64
+	Time     time.Time
+}
+
+type CandleStore interface {
+	SaveCandle(ctx context.Context, k Kline) error
+	RecentCandles(ctx context.Context, symbol, timeframe string, limit int) ([]Kline, error)
+}
+
+type TextNotifier interface {
+	NotifyText(ctx context.Context, text string) error
+}

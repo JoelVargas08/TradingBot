@@ -103,3 +103,68 @@ func TestStrategyNotFound(t *testing.T) {
 		t.Errorf("want ErrNotFound, got %v", err)
 	}
 }
+
+func candle(symbol, tf string, ts int64, close, volume float64) domain.Kline {
+	return domain.Kline{
+		Symbol:    symbol,
+		Timeframe: tf,
+		Start:     time.UnixMilli(ts),
+		Open:      close,
+		High:      close + 1,
+		Low:       close - 1,
+		Close:     close,
+		Volume:    volume,
+		Closed:    true,
+	}
+}
+
+func TestSaveAndRecentCandles(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+
+	if err := s.SaveCandle(ctx, candle("BTCUSDT", "1h", 3, 100, 10)); err != nil {
+		t.Fatalf("SaveCandle: %v", err)
+	}
+	if err := s.SaveCandle(ctx, candle("BTCUSDT", "1h", 1, 90, 10)); err != nil {
+		t.Fatalf("SaveCandle: %v", err)
+	}
+	if err := s.SaveCandle(ctx, candle("BTCUSDT", "1h", 2, 95, 10)); err != nil {
+		t.Fatalf("SaveCandle: %v", err)
+	}
+	if err := s.SaveCandle(ctx, candle("ETHUSDT", "1h", 2, 3000, 10)); err != nil {
+		t.Fatalf("SaveCandle: %v", err)
+	}
+
+	got, err := s.RecentCandles(ctx, "BTCUSDT", "1h", 2)
+	if err != nil {
+		t.Fatalf("RecentCandles: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("velas = %d, want 2", len(got))
+	}
+	if got[0].Start.UnixMilli() != 2 || got[1].Start.UnixMilli() != 3 {
+		t.Errorf("orden ascendente esperado (más reciente al final): %+v", got)
+	}
+	if !got[0].Closed {
+		t.Error("velas históricas deberían marcarse como cerradas")
+	}
+}
+
+func TestSaveCandleDeduplicates(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	k := candle("BTCUSDT", "1h", 1, 100, 10)
+	if err := s.SaveCandle(ctx, k); err != nil {
+		t.Fatalf("primer guardado: %v", err)
+	}
+	if err := s.SaveCandle(ctx, k); err != nil {
+		t.Fatalf("guardo duplicado de vela no debería fallar (INSERT OR IGNORE): %v", err)
+	}
+	got, err := s.RecentCandles(ctx, "BTCUSDT", "1h", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Errorf("velas = %d, want 1 (sin duplicados)", len(got))
+	}
+}

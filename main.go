@@ -13,9 +13,13 @@ import (
 	"tradingview-bot/config"
 	"tradingview-bot/handlers"
 	"tradingview-bot/internal/bus"
+	"tradingview-bot/internal/detect"
+	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/evaluator"
+	"tradingview-bot/internal/ingest"
 	"tradingview-bot/internal/notifier"
 	"tradingview-bot/internal/processor"
+	"tradingview-bot/internal/sentiment"
 	"tradingview-bot/internal/store"
 	"tradingview-bot/models"
 	"tradingview-bot/services"
@@ -72,6 +76,121 @@ func main() {
 	notifierSvc.Start(ctx)
 	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, 10000)
 	processorSvc.Start(ctx)
+
+	// Ingesta de mercado (Binance WS) → detector de eventos → notifier
+	if cfg.IngestEnabled {
+		ingestCfg := ingest.Config{
+			WSURL:       cfg.BinanceWSURL,
+			RestURL:     cfg.BinanceRestURL,
+			Symbols:     cfg.Symbols,
+			Timeframes:  cfg.Timeframes,
+			WatchTrades: cfg.WatchTrades,
+		}
+		source := ingest.NewBinance(ingestCfg)
+		detector := detect.New(detect.Config{WhaleUSD: cfg.WhaleUSD})
+
+		for _, symbol := range cfg.Symbols {
+			for _, timeframe := range cfg.Timeframes {
+				history, err := sqliteStore.RecentCandles(ctx, symbol, timeframe, detector.Window())
+				if err != nil {
+					log.Printf("cargando historia %s %s: %v", symbol, timeframe, err)
+					continue
+				}
+				if len(history) > 0 {
+					detector.Seed(symbol, timeframe, history)
+				}
+			}
+		}
+
+		backfiller := ingest.NewBackfiller(sqliteStore, cfg.BinanceRestURL)
+		go func() {
+			since := time.Now().AddDate(0, -1, 0)
+			for _, symbol := range cfg.Symbols {
+				n, err := backfiller.Backfill(ctx, symbol, "1h", since)
+				if err != nil {
+					log.Printf("backfill %s 1h: %v", symbol, err)
+					continue
+				}
+				log.Printf("backfill %s 1h completado: %d velas", symbol, n)
+			}
+		}()
+
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case k, ok := <-source.Candles():
+					if !ok {
+						return
+					}
+					if err := sqliteStore.SaveCandle(ctx, k); err != nil && !errors.Is(err, domain.ErrDuplicate) {
+						log.Printf("guardando vela %s %s: %v", k.Symbol, k.Timeframe, err)
+					}
+					for _, ev := range detector.OnCandle(k) {
+						if err := notifierSvc.NotifyText(ctx, detect.Format(ev)); err != nil {
+							log.Printf("notificando evento de mercado: %v", err)
+						}
+					}
+				}
+			}
+		}()
+
+		if cfg.WatchTrades {
+			go func() {
+				for {
+					select {
+					case <-ctx.Done():
+						return
+					case t, ok := <-source.Trades():
+						if !ok {
+							return
+						}
+						for _, ev := range detector.OnTrade(t) {
+							if err := notifierSvc.NotifyText(ctx, detect.Format(ev)); err != nil {
+								log.Printf("notificando whale trade: %v", err)
+							}
+						}
+					}
+				}
+			}()
+		}
+
+		go func() {
+			if err := source.Start(ctx); err != nil {
+				log.Fatalf("Error iniciando ingesta: %v", err)
+			}
+		}()
+	}
+
+	// Sentimiento (Fear & Greed + CoinGecko trending) periódico
+	if cfg.SentimentEnabled {
+		sentimentClient := sentiment.New(sentiment.Config{CoinGeckoKey: cfg.CoinGeckoKey})
+		go func() {
+			ticker := time.NewTicker(cfg.SentimentInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					fg, err := sentimentClient.FearAndGreed(ctx)
+					if err != nil {
+						log.Printf("fear&greed: %v", err)
+						continue
+					}
+					trending, err := sentimentClient.Trending(ctx)
+					if err != nil {
+						log.Printf("coingecko trending: %v", err)
+						trending = nil
+					}
+					if err := notifierSvc.NotifyText(ctx, sentiment.BuildDigest(fg, trending)); err != nil {
+						log.Printf("enviando digest de sentimiento: %v", err)
+					}
+				}
+			}
+		}()
+	}
 
 	// Handlers
 	commandsHandler := handlers.NewCommandsHandler(userManager, telegram)

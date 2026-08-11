@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/throttle"
 )
 
 type Sender interface {
@@ -65,7 +66,7 @@ type Notifier struct {
 	sender   Sender
 	users    domain.UserRegistry
 	queue    chan job
-	limiter  *tokenBucket
+	limiter  *throttle.Limiter
 	cfg      Config
 	started  bool
 	startedM sync.Mutex
@@ -77,7 +78,7 @@ func New(sender Sender, users domain.UserRegistry, cfg Config) *Notifier {
 		sender:  sender,
 		users:   users,
 		queue:   make(chan job, cfg.QueueSize),
-		limiter: newTokenBucket(cfg.MsgPerSec, float64(cfg.Burst)),
+		limiter: throttle.New(cfg.MsgPerSec, float64(cfg.Burst)),
 		cfg:     cfg,
 	}
 }
@@ -108,14 +109,26 @@ func (n *Notifier) Notify(ctx context.Context, ev domain.SignalEvent) error {
 	return nil
 }
 
+func (n *Notifier) NotifyText(ctx context.Context, text string) error {
+	for _, chatID := range n.users.ActiveUserIDs() {
+		select {
+		case n.queue <- job{chatID: chatID, text: text}:
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+			log.Printf("cola de notificaciones llena: mensaje descartado para %d", chatID)
+		}
+	}
+	return nil
+}
+
 func (n *Notifier) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case j := <-n.queue:
-			n.limiter.wait(ctx)
-			if ctx.Err() != nil {
+			if err := n.limiter.Wait(ctx); err != nil {
 				return
 			}
 			n.sendWithRetry(ctx, j)

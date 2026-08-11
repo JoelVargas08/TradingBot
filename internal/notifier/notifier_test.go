@@ -128,19 +128,3 @@ func TestFormatSignalIncludesMeta(t *testing.T) {
 		t.Errorf("formato de precio preciso incorrecto: %q", text)
 	}
 }
-
-func TestRateLimiterWaits(t *testing.T) {
-	rb := newTokenBucket(10, 1)
-	start := time.Now()
-	ctx := context.Background()
-	for i := 0; i < 3; i++ {
-		rb.wait(ctx)
-	}
-	elapsed := time.Since(start)
-	if elapsed < 200*time.Millisecond {
-		t.Errorf("3 tokens a 10/s deberían tardar ≥200ms, tardó %v", elapsed)
-	}
-	if elapsed > 2*time.Second {
-		t.Errorf("el limiter se quedó bloqueado: %v", elapsed)
-	}
-}

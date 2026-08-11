@@ -177,6 +177,53 @@ func (s *Store) LastSignal(ctx context.Context, strategyID, symbol, timeframe st
 	return ev, nil
 }
 
+func (s *Store) SaveCandle(ctx context.Context, k domain.Kline) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO candles (symbol, timeframe, ts, open, high, low, close, volume)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		k.Symbol, k.Timeframe, k.Start.UnixMilli(), k.Open, k.High, k.Low, k.Close, k.Volume)
+	if err != nil {
+		return fmt.Errorf("guardando vela: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) RecentCandles(ctx context.Context, symbol, timeframe string, limit int) ([]domain.Kline, error) {
+	if limit <= 0 {
+		limit = 1
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ts, open, high, low, close, volume
+		FROM candles
+		WHERE symbol = ? AND timeframe = ?
+		ORDER BY ts DESC
+		LIMIT ?`, symbol, timeframe, limit)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo velas recientes: %w", err)
+	}
+	defer rows.Close()
+	var klines []domain.Kline
+	for rows.Next() {
+		var k domain.Kline
+		var ts int64
+		if err := rows.Scan(&ts, &k.Open, &k.High, &k.Low, &k.Close, &k.Volume); err != nil {
+			return nil, fmt.Errorf("escaneando vela: %w", err)
+		}
+		k.Symbol = symbol
+		k.Timeframe = timeframe
+		k.Start = time.UnixMilli(ts)
+		k.Closed = true
+		klines = append(klines, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i, j := 0, len(klines)-1; i < j; i, j = i+1, j-1 {
+		klines[i], klines[j] = klines[j], klines[i]
+	}
+	return klines, nil
+}
+
 func (s *Store) UpsertStrategy(ctx context.Context, st domain.Strategy) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO strategies (id, name, description, status, created_at)

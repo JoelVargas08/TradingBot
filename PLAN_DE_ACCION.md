@@ -2,7 +2,7 @@
 
 > Plan consolidado elaborado a partir del análisis de 6 especialistas (TradingView, backend, IA/CNN, datos, scraping, estrategia crypto).
 > Estado actual del proyecto: bot Go que recibe webhooks de TradingView (Chandelier Exit) y reenvía alertas a Telegram.
-> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada → siguiente: Fase 2 (ingesta de datos).
+> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada — ✅ Fase 2 (ingesta de datos) completada → siguiente: Fase 3 (estrategia Chandelier Multi-Confirm).
 
 ---
 
@@ -31,7 +31,7 @@
 7. Dedupe por clave `(strategyID, symbol, timeframe)` en vez de solo símbolo (hoy `models/user.go` se pisan las estrategias sobre BTCUSDT).
 8. Persistencia a **SQLite** (`modernc.org/sqlite`, puro Go) con esquema de `candles`, `signals`, `trades`, `strategies`, `performance`.
 
-## Fase 2 — Ingesta de datos y detección de movimientos (1 semana)
+## Fase 2 — Ingesta de datos y detección de movimientos (1 semana) ✅
 
 9. Paquete `internal/ingest`: cliente **WebSocket de Binance** (o Bybit si la región lo bloquea) para `kline_1m/1h` de BTCUSDT/ETHUSDT + backfill REST; throttler token-bucket y reconexión con backoff.
 10. Detector de eventos: vela grande, spike de volumen (z≥3σ), quiebre S/R, whale trades — emiten alertas al mismo pipeline de Telegram.
