@@ -65,6 +65,22 @@ func TestTrending(t *testing.T) {
 	}
 }
 
+func TestDominance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":{"market_cap_percentage":{"btc":55.4,"eth":17.2}}}`))
+	}))
+	defer srv.Close()
+
+	c := New(Config{FearGreedURL: "http://unused", CoinGeckoURL: srv.URL})
+	d, err := c.Dominance(context.Background())
+	if err != nil {
+		t.Fatalf("Dominance: %v", err)
+	}
+	if d.BTC != 55.4 || d.ETH != 17.2 {
+		t.Errorf("dominance = %+v, want BTC 55.4 ETH 17.2", d)
+	}
+}
+
 func TestBuildDigest(t *testing.T) {
 	text := BuildDigest(FearGreed{Value: 45, Classification: "Fear"}, []string{"BTC", "ETH"})
 	for _, want := range []string{"Sentimiento", "45", "Fear", "BTC", "ETH"} {

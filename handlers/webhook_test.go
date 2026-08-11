@@ -130,6 +130,42 @@ func TestWebhookDefaultsStrategyAndTimeframe(t *testing.T) {
 	}
 }
 
+func TestWebhookParsesEnrichedMeta(t *testing.T) {
+	pub := &fakePublisher{}
+	h := NewWebhookHandler(pub, "correct-secret")
+
+	postJSON(h, `{"strategy":"chandelier_multi_confirm","timeframe":"1h","symbol":"BTCUSDT","action":"buy","price":"60000.5","time":1700000000,"secret":"correct-secret","rsi":58.5,"volume_ratio":1.4,"trend4h":"bull","stop_loss":59000,"take_profit":65000,"regime":"alts"}`)
+	if len(pub.published) != 1 {
+		t.Fatalf("published = %d, want 1", len(pub.published))
+	}
+	meta := pub.published[0].Meta
+	if meta[domain.MetaKeyRSI] != 58.5 {
+		t.Errorf("rsi = %v, want 58.5", meta[domain.MetaKeyRSI])
+	}
+	if meta[domain.MetaKeyVolumeR] != 1.4 {
+		t.Errorf("volume_ratio = %v, want 1.4", meta[domain.MetaKeyVolumeR])
+	}
+	if meta[domain.MetaKeyTrend4H] != "bull" || meta[domain.MetaKeyRegime] != "alts" {
+		t.Errorf("trend/regime incorrectos: %+v", meta)
+	}
+	if meta[domain.MetaKeyStopLoss] != 59000.0 || meta[domain.MetaKeyTakeProfit] != 65000.0 {
+		t.Errorf("stop/target incorrectos: %+v", meta)
+	}
+}
+
+func TestWebhookOmitsEmptyMeta(t *testing.T) {
+	pub := &fakePublisher{}
+	h := NewWebhookHandler(pub, "correct-secret")
+
+	postJSON(h, `{"symbol":"BTCUSDT","action":"buy","price":60000,"secret":"correct-secret"}`)
+	if len(pub.published) != 1 {
+		t.Fatalf("published = %d, want 1", len(pub.published))
+	}
+	if len(pub.published[0].Meta) != 0 {
+		t.Errorf("meta debería estar vacía: %+v", pub.published[0].Meta)
+	}
+}
+
 func TestWebhookServiceUnavailableOnFullBus(t *testing.T) {
 	h := NewWebhookHandler(&fakePublisher{err: context.DeadlineExceeded}, "correct-secret")
 	w := postJSON(h, `{"symbol":"BTCUSDT","action":"buy","price":60000,"secret":"correct-secret"}`)

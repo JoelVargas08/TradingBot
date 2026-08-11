@@ -119,12 +119,55 @@ func TestFormatSignalIncludesMeta(t *testing.T) {
 		Meta:       map[string]any{"rsi": 70, "volume_ratio": 2.1},
 	}
 	text := formatSignal(ev)
-	for _, want := range []string{"SELL", "BTCUSDT", "chandelier", "4h", "rsi: 70"} {
+	for _, want := range []string{"SELL", "BTCUSDT", "chandelier", "4h", "RSI 70.0", "vol 2.10x", "Nivel de riesgo"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("texto no contiene %q: %q", want, text)
 		}
 	}
 	if !strings.Contains(text, "0.000120") {
 		t.Errorf("formato de precio preciso incorrecto: %q", text)
+	}
+}
+
+func TestFormatPlaybookStopAndTarget(t *testing.T) {
+	ev := domain.SignalEvent{
+		StrategyID: "chandelier_multi_confirm",
+		Symbol:     "BTCUSDT",
+		Timeframe:  "1h",
+		Direction:  domain.DirectionBuy,
+		Price:      60000,
+		Meta: map[string]any{
+			"trend4h":     "bull",
+			"stop_loss":   58000.0,
+			"take_profit": 65000.0,
+		},
+	}
+	text := formatSignal(ev)
+	for _, want := range []string{"Contexto 4H: bull", "Stop loss: $58000.00", "Objetivo: $65000.00", "Distancia stop: 3.3%", "R/R: 2.5:1"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("texto no contiene %q: %q", want, text)
+		}
+	}
+}
+
+func TestRiskLevel(t *testing.T) {
+	cases := []struct {
+		name string
+		meta map[string]any
+		dir  domain.Direction
+		want RiskLevel
+	}{
+		{"limpio", map[string]any{"rsi": 55, "volume_ratio": 1.5, "trend4h": "bull"}, domain.DirectionBuy, RiskLow},
+		{"rsi extremo", map[string]any{"rsi": 85, "volume_ratio": 1.5, "trend4h": "bull"}, domain.DirectionBuy, RiskHigh},
+		{"vol bajo", map[string]any{"rsi": 55, "volume_ratio": 0.7, "trend4h": "bull"}, domain.DirectionBuy, RiskMedium},
+		{"contra tendencia", map[string]any{"rsi": 55, "volume_ratio": 1.5, "trend4h": "bear"}, domain.DirectionBuy, RiskMedium},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := domain.SignalEvent{Direction: tc.dir, Meta: tc.meta}
+			if got := riskLevel(ev); got != tc.want {
+				t.Errorf("riskLevel = %s, want %s", got, tc.want)
+			}
+		})
 	}
 }

@@ -2,7 +2,7 @@
 
 > Plan consolidado elaborado a partir del análisis de 6 especialistas (TradingView, backend, IA/CNN, datos, scraping, estrategia crypto).
 > Estado actual del proyecto: bot Go que recibe webhooks de TradingView (Chandelier Exit) y reenvía alertas a Telegram.
-> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada — ✅ Fase 2 (ingesta de datos) completada → siguiente: Fase 3 (estrategia Chandelier Multi-Confirm).
+> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada — ✅ Fase 2 (ingesta de datos) completada — ✅ Fase 3 (estrategia Chandelier Multi-Confirm) completada → siguiente: Fase 4 (aprendizaje desde PDF).
 
 ---
 
@@ -37,7 +37,7 @@
 10. Detector de eventos: vela grande, spike de volumen (z≥3σ), quiebre S/R, whale trades — emiten alertas al mismo pipeline de Telegram.
 11. Sentimiento: Fear&Greed (alternative.me, gratis) + CoinGecko trending + RSS de noticias. **No** scrapear X/Reddit HTML.
 
-## Fase 3 — Estrategia "Chandelier Multi-Confirm" (1–2 semanas)
+## Fase 3 — Estrategia "Chandelier Multi-Confirm" (1–2 semanas) ✅
 
 12. Pine Script v6 mejorado en TradingView (Chandelier 22/3.0 en 1H + filtros vol 1.2×, RSI 40–70, EMA 20/50, régimen EMA100 4H sin repaint) con `alert.freq_once_per_bar_close` y payload JSON enriquecido (`timeframe`, `rsi`, `volume_ratio`, `trend4h`, `stop_loss`).
 13. Playbook de alerta enriquecido en `services/telegram.go` (contexto + nivel de riesgo + stop/objetivo).

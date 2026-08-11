@@ -30,7 +30,29 @@ func (r *recordingNotifier) count() int {
 	return len(r.calls)
 }
 
+type recordingPosition struct {
+	mu    sync.Mutex
+	calls []domain.SignalEvent
+}
+
+func (r *recordingPosition) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, ev)
+	return nil
+}
+
+func (r *recordingPosition) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.calls)
+}
+
 func newTestPipeline(t *testing.T) (*Processor, *bus.Bus, *recordingNotifier, *store.Store) {
+	return newTestPipelineWith(t, nil)
+}
+
+func newTestPipelineWith(t *testing.T, position domain.PositionController) (*Processor, *bus.Bus, *recordingNotifier, *store.Store) {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -40,7 +62,7 @@ func newTestPipeline(t *testing.T) (*Processor, *bus.Bus, *recordingNotifier, *s
 	b := bus.New(32)
 	eval := evaluator.New(st)
 	rec := &recordingNotifier{}
-	p := New(b, st, eval, rec, 1000)
+	p := New(b, st, eval, rec, position, 1000)
 	ctx, cancel := context.WithCancel(context.Background())
 	p.Start(ctx)
 	t.Cleanup(cancel)
@@ -169,4 +191,21 @@ func TestProcessorPersistsSignals(t *testing.T) {
 	if last.Direction != domain.DirectionBuy {
 		t.Errorf("señal persistida incorrecta: %+v", last)
 	}
+}
+
+func TestProcessorCallsPositionControllerOnDirectionChange(t *testing.T) {
+	pos := &recordingPosition{}
+	_, b, rec, _ := newTestPipelineWith(t, pos)
+	ctx := context.Background()
+
+	if err := b.Publish(ctx, ev("BTCUSDT", domain.DirectionBuy, 1)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return pos.count() == 1 })
+	waitFor(t, 2*time.Second, func() bool { return rec.count() == 1 })
+
+	if err := b.Publish(ctx, ev("BTCUSDT", domain.DirectionSell, 2)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return pos.count() == 2 })
 }

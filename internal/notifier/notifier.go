@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -179,23 +178,7 @@ func asRetryAware(err error, target *RetryAware) bool {
 }
 
 func formatSignal(ev domain.SignalEvent) string {
-	emoji, label := "⚪", ev.Direction
-	switch ev.Direction {
-	case domain.DirectionBuy:
-		emoji, label = "🟢", "BUY"
-	case domain.DirectionSell:
-		emoji, label = "🔴", "SELL"
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s <b>%s — %s</b>\n\n", emoji, label, ev.Symbol)
-	fmt.Fprintf(&b, "Estrategia: %s\nTimeframe: %s\n", ev.StrategyID, ev.Timeframe)
-	fmt.Fprintf(&b, "Precio: $%s", formatPrice(ev.Price))
-	for _, key := range []string{"rsi", "volume_ratio", "trend4h", "stop_loss"} {
-		if v, ok := ev.Meta[key]; ok {
-			fmt.Fprintf(&b, "\n%s: %v", key, v)
-		}
-	}
-	return b.String()
+	return formatPlaybook(ev)
 }
 
 func formatPrice(p float64) string {

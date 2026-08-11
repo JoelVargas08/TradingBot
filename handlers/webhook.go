@@ -39,13 +39,19 @@ func (p *FlexPrice) UnmarshalJSON(data []byte) error {
 }
 
 type WebhookPayload struct {
-	Strategy  string    `json:"strategy"`
-	Timeframe string    `json:"timeframe"`
-	Symbol    string    `json:"symbol"`
-	Action    string    `json:"action"`
-	Price     FlexPrice `json:"price"`
-	Time      int64     `json:"time"`
-	Secret    string    `json:"secret"`
+	Strategy    string    `json:"strategy"`
+	Timeframe   string    `json:"timeframe"`
+	Symbol      string    `json:"symbol"`
+	Action      string    `json:"action"`
+	Price       FlexPrice `json:"price"`
+	Time        int64     `json:"time"`
+	Secret      string    `json:"secret"`
+	RSI         *float64  `json:"rsi,omitempty"`
+	VolumeRatio *float64  `json:"volume_ratio,omitempty"`
+	Trend4H     string    `json:"trend4h,omitempty"`
+	StopLoss    *float64  `json:"stop_loss,omitempty"`
+	TakeProfit  *float64  `json:"take_profit,omitempty"`
+	Regime      string    `json:"regime,omitempty"`
 }
 
 type Publisher interface {
@@ -111,6 +117,7 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 		Price:      float64(payload.Price),
 		BarTS:      barTS,
 		ReceivedAt: time.Now(),
+		Meta:       buildMeta(payload),
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), publishTimeout)
 	defer cancel()
@@ -125,6 +132,29 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 
 func formatLogPrice(p float64) string {
 	return strconv.FormatFloat(p, 'f', -1, 64)
+}
+
+func buildMeta(payload WebhookPayload) map[string]any {
+	meta := make(map[string]any)
+	if payload.RSI != nil {
+		meta[domain.MetaKeyRSI] = *payload.RSI
+	}
+	if payload.VolumeRatio != nil {
+		meta[domain.MetaKeyVolumeR] = *payload.VolumeRatio
+	}
+	if payload.Trend4H != "" {
+		meta[domain.MetaKeyTrend4H] = payload.Trend4H
+	}
+	if payload.StopLoss != nil && *payload.StopLoss > 0 {
+		meta[domain.MetaKeyStopLoss] = *payload.StopLoss
+	}
+	if payload.TakeProfit != nil && *payload.TakeProfit > 0 {
+		meta[domain.MetaKeyTakeProfit] = *payload.TakeProfit
+	}
+	if payload.Regime != "" {
+		meta[domain.MetaKeyRegime] = payload.Regime
+	}
+	return meta
 }
 
 func respondAccepted(w http.ResponseWriter) {

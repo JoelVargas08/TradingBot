@@ -1,0 +1,101 @@
+//@version=6
+strategy("Chandelier Multi-Confirm", shorttitle="Chandelier MC", overlay=true,
+     initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=0,
+     commission_type=strategy.commission.percent, commission_value=0.075,
+     slippage=2, process_orders_on_close=true)
+
+// ============================================================
+// Estrategia de referencia: Chandelier Exit (22 ATR, mult 3.0)
+// con filtros de confirmación (vol, RSI, EMA, régimen 4H) y
+// alerta JSON enriquecida (once per bar close) para el bot.
+//
+// Webhook esperado (handlers/webhook.go):
+//   strategy, timeframe, symbol, action, price, time,
+//   rsi, volume_ratio, trend4h, stop_loss, take_profit, regime, secret
+// ============================================================
+
+// Sustituir por la misma variable de entorno del bot (WEBHOOK_SECRET).
+var string WEBHOOK_SECRET = input.string("TU_SECRETO_CAMBIAME", "Webhook secret", group="Webhook")
+
+// --- Chandelier Exit -------------------------------------------------
+atrLen  = input.int(22, "ATR length", minval=1, group="Chandelier")
+chMult  = input.float(3.0, "Multiplicador ATR", minval=0.1, step=0.1, group="Chandelier")
+useLong  = input.bool(true, "Long", group="Chandelier")
+useShort = input.bool(true, "Short", group="Chandelier")
+
+// --- Filtros de confirmación ----------------------------------------
+emaFastLen = input.int(20, "EMA rápida", minval=1, group="Filtros")
+emaSlowLen = input.int(50, "EMA lenta", minval=1, group="Filtros")
+rsiLen     = input.int(14, "RSI length", minval=1, group="Filtros")
+rsiMin     = input.int(40, "RSI mínimo (long)", minval=1, maxval=100, group="Filtros")
+rsiMax     = input.int(70, "RSI máximo (long)", minval=1, maxval=100, group="Filtros")
+volMult    = input.float(1.2, "Volumen mínimo vs SMA 20", minval=0.1, step=0.1, group="Filtros")
+
+// --- Régimen 4H (sin repaint: lookahead off) -------------------------
+emaRegLen = input.int(100, "EMA régimen 4H", minval=1, group="Régimen")
+regTF     = input.timeframe("240", "Timeframe régimen", group="Régimen")
+
+// --- Cálculo Chandelier ----------------------------------------------
+atr = ta.atr(atrLen)
+longStop  = useLong ? ta.highest(high, atrLen) - chMult * atr : na
+shortStop = useShort ? ta.lowest(low, atrLen) + chMult * atr : na
+
+plot(longStop,  color=color.new(color.green, 0), style=plot.style_linebr, title="Long stop")
+plot(shortStop, color=color.new(color.red,   0), style=plot.style_linebr, title="Short stop")
+
+// --- Filtros ---------------------------------------------------------
+emaFast = ta.ema(close, emaFastLen)
+emaSlow = ta.ema(close, emaSlowLen)
+rsi     = ta.rsi(close, rsiLen)
+volSMA  = ta.sma(volume, 20)
+volRatio = volSMA > 0 ? volume / volSMA : 0.0
+
+// EMA100 de 4H confirmada (sin anticipar la vela en curso)
+emaReg = request.security(syminfo.tickerid, regTF, ta.ema(close, emaRegLen),
+     lookahead=barmerge.lookahead_off, gaps=barmerge.gaps_off)
+regime = close > emaReg ? "bull" : "bear"
+trend4h = close > emaReg ? "bull" : "bear"
+
+// --- Condiciones de entrada -------------------------------------------
+longOK  = volRatio >= volMult and rsi >= rsiMin and rsi <= rsiMax and emaFast > emaSlow and regime == "bull"
+shortOK = volRatio >= volMult and rsi <= 100 - rsiMin and rsi >= 100 - rsiMax and emaFast < emaSlow and regime == "bear"
+
+longCondition  = useLong and ta.crossover(close, longStop) and longOK
+shortCondition = useShort and ta.crossunder(close, shortStop) and shortOK
+
+// --- Señal y detección de cambio de dirección -------------------------
+sig = longCondition ? "buy" : shortCondition ? "sell" : na
+sigChanged = sig != na and sig != sig[1]
+
+// --- Stop loss y objetivo (para el playbook del bot) ------------------
+sl = sig == "buy" ? close - chMult * atr : close + chMult * atr
+tp = sig == "buy" ? close + (close - sl) * 2.0 : close - (sl - close) * 2.0
+
+// --- Entradas de referencia para backtest -----------------------------
+if sigChanged and sig == "buy"
+    strategy.entry("Long", strategy.long)
+if sigChanged and sig == "sell"
+    strategy.entry("Short", strategy.short)
+strategy.exit("Exit", from_entry="Long", stop=sl, limit=tp)
+strategy.exit("Exit", from_entry="Short", stop=sl, limit=tp)
+
+// --- Payload JSON enriquecido ------------------------------------------
+dir = sig
+payload = '{"strategy":"chandelier_multi_confirm","timeframe":"' + timeframe.period +
+     '","symbol":"' + syminfo.ticker +
+     '","action":"' + dir +
+     '","price":' + str.tostring(close) +
+     ',"time":' + str.tostring(int(time / 1000)) +
+     ',"rsi":' + str.tostring(rsi) +
+     ',"volume_ratio":' + str.tostring(volRatio) +
+     ',"trend4h":"' + trend4h +
+     '","stop_loss":' + str.tostring(sl) +
+     ',"take_profit":' + str.tostring(tp) +
+     ',"regime":"' + regime +
+     '","secret":"' + WEBHOOK_SECRET + '"}'
+
+if sigChanged
+    alert(payload, alert.freq_once_per_bar_close)
+
+// --- Traza para depuración --------------------------------------------
+bgcolor(sigChanged ? (sig == "buy" ? color.new(color.green, 75) : color.new(color.red, 75)) : na)

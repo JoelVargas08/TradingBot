@@ -111,6 +111,38 @@ func (c *Client) Trending(ctx context.Context) ([]string, error) {
 	return out, nil
 }
 
+type Dominance struct {
+	BTC float64
+	ETH float64
+}
+
+func (c *Client) Dominance(ctx context.Context) (Dominance, error) {
+	u := c.cfg.CoinGeckoURL + "/global"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return Dominance{}, err
+	}
+	if c.cfg.CoinGeckoKey != "" {
+		req.Header.Set("x-cg-demo-api-key", c.cfg.CoinGeckoKey)
+	}
+	body, err := c.do(req)
+	if err != nil {
+		return Dominance{}, err
+	}
+	var resp struct {
+		Data struct {
+			MarketCapPercentage map[string]float64 `json:"market_cap_percentage"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return Dominance{}, err
+	}
+	return Dominance{
+		BTC: resp.Data.MarketCapPercentage["btc"],
+		ETH: resp.Data.MarketCapPercentage["eth"],
+	}, nil
+}
+
 func (c *Client) do(req *http.Request) ([]byte, error) {
 	resp, err := c.http.Do(req)
 	if err != nil {

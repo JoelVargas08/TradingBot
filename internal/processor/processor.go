@@ -14,23 +14,25 @@ type Source interface {
 }
 
 type Processor struct {
-	src    Source
-	store  domain.SignalStore
-	dedupe *dedupe.Deduplicator
-	eval   domain.Evaluator
-	notify domain.Notifier
+	src      Source
+	store    domain.SignalStore
+	dedupe   *dedupe.Deduplicator
+	eval     domain.Evaluator
+	notify   domain.Notifier
+	position domain.PositionController
 }
 
-func New(src Source, store domain.SignalStore, eval domain.Evaluator, notify domain.Notifier, dedupeLimit int) *Processor {
+func New(src Source, store domain.SignalStore, eval domain.Evaluator, notify domain.Notifier, position domain.PositionController, dedupeLimit int) *Processor {
 	if dedupeLimit <= 0 {
 		dedupeLimit = 10000
 	}
 	return &Processor{
-		src:    src,
-		store:  store,
-		dedupe: dedupe.New(dedupeLimit),
-		eval:   eval,
-		notify: notify,
+		src:      src,
+		store:    store,
+		dedupe:   dedupe.New(dedupeLimit),
+		eval:     eval,
+		notify:   notify,
+		position: position,
 	}
 }
 
@@ -76,5 +78,10 @@ func (p *Processor) handle(ctx context.Context, ev domain.SignalEvent) {
 	}
 	if err := p.notify.Notify(ctx, ev); err != nil {
 		log.Printf("error notificando señal %s: %v", ev.Key(), err)
+	}
+	if p.position != nil {
+		if err := p.position.OnSignal(ctx, ev); err != nil {
+			log.Printf("error gestionando posición %s: %v", ev.Key(), err)
+		}
 	}
 }

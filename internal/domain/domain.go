@@ -32,6 +32,15 @@ type SignalEvent struct {
 	Meta       map[string]any
 }
 
+const (
+	MetaKeyRSI        = "rsi"
+	MetaKeyVolumeR    = "volume_ratio"
+	MetaKeyTrend4H    = "trend4h"
+	MetaKeyStopLoss   = "stop_loss"
+	MetaKeyTakeProfit = "take_profit"
+	MetaKeyRegime     = "regime"
+)
+
 func (e SignalEvent) Valid() error {
 	if e.StrategyID == "" {
 		return fmt.Errorf("StrategyID requerido")
@@ -124,4 +133,47 @@ type CandleStore interface {
 
 type TextNotifier interface {
 	NotifyText(ctx context.Context, text string) error
+}
+
+type PositionStatus string
+
+const (
+	PositionOpen   PositionStatus = "open"
+	PositionClosed PositionStatus = "closed"
+)
+
+type Position struct {
+	ID         int64
+	StrategyID string
+	Symbol     string
+	Timeframe  string
+	Side       Direction
+	EntryTS    time.Time
+	EntryPrice float64
+	StopLoss   float64
+	TakeProfit float64
+	Quantity   float64
+	RiskAmount float64
+	Status     PositionStatus
+	ExitTS     time.Time
+	ExitPrice  float64
+	PnL        float64
+}
+
+type Account struct {
+	Balance    float64
+	PeakEquity float64
+	UpdatedAt  time.Time
+}
+
+type PositionStore interface {
+	OpenPosition(ctx context.Context, p Position) (int64, error)
+	ClosePosition(ctx context.Context, id int64, exitPrice float64, exitTS time.Time) (Position, error)
+	OpenPositions(ctx context.Context) ([]Position, error)
+	GetAccount(ctx context.Context) (Account, error)
+	UpdateAccount(ctx context.Context, a Account) error
+}
+
+type PositionController interface {
+	OnSignal(ctx context.Context, ev SignalEvent) error
 }

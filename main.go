@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"tradingview-bot/internal/ingest"
 	"tradingview-bot/internal/notifier"
 	"tradingview-bot/internal/processor"
+	"tradingview-bot/internal/risk"
 	"tradingview-bot/internal/sentiment"
 	"tradingview-bot/internal/store"
 	"tradingview-bot/models"
@@ -74,7 +76,23 @@ func main() {
 	evaluatorSvc := evaluator.New(sqliteStore)
 	notifierSvc := notifier.New(telegram, userManager, notifier.Config{})
 	notifierSvc.Start(ctx)
-	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, 10000)
+
+	// Gestión de riesgo y posiciones
+	var positionCtrl domain.PositionController
+	if cfg.RiskEnabled {
+		riskCfg := risk.Config{
+			RiskPct:          cfg.RiskPct,
+			MinRR:            cfg.MinRR,
+			MaxOpenPositions: cfg.MaxOpenPositions,
+			KillSwitchPct:    cfg.KillSwitchPct,
+			StartingBalance:  cfg.StartingBalance,
+			DefaultStopPct:   cfg.DefaultStopPct,
+		}
+		positionCtrl = risk.New(sqliteStore, riskCfg)
+		log.Printf("Gestión de riesgo activa: %d posiciones máx, R/R %v:1, kill-switch %.0f%%",
+			cfg.MaxOpenPositions, cfg.MinRR, cfg.KillSwitchPct*100)
+	}
+	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, positionCtrl, 10000)
 	processorSvc.Start(ctx)
 
 	// Ingesta de mercado (Binance WS) → detector de eventos → notifier
@@ -192,8 +210,38 @@ func main() {
 		}()
 	}
 
+	// Dominancia BTC (rotación de riesgo altcoins) periódico
+	if cfg.DominanceEnabled {
+		sentimentClient := sentiment.New(sentiment.Config{CoinGeckoKey: cfg.CoinGeckoKey})
+		go func() {
+			ticker := time.NewTicker(cfg.SentimentInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					dom, err := sentimentClient.Dominance(ctx)
+					if err != nil {
+						log.Printf("dominancia: %v", err)
+						continue
+					}
+					regime := "neutral"
+					if dom.BTC >= cfg.DominanceBTCFloor {
+						regime = "risk-off (BTC fuerte, reducir altcoins)"
+					} else {
+						regime = "risk-on (rotación hacia altcoins)"
+					}
+					if err := notifierSvc.NotifyText(ctx, fmt.Sprintf("🌐 <b>Regime BTC</b>: dominancia %.1f%% → %s", dom.BTC, regime)); err != nil {
+						log.Printf("enviando régimen: %v", err)
+					}
+				}
+			}
+		}()
+	}
+
 	// Handlers
-	commandsHandler := handlers.NewCommandsHandler(userManager, telegram)
+	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, sqliteStore)
 	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret)
 
 	// Configurar bot de Telegram para polling
@@ -213,6 +261,10 @@ func main() {
 				commandsHandler.HandleClose(chatID)
 			case "myid":
 				commandsHandler.HandleMyID(chatID)
+			case "positions":
+				commandsHandler.HandlePositions(chatID)
+			case "risk":
+				commandsHandler.HandleRisk(chatID)
 			case "help":
 				commandsHandler.HandleHelp(chatID)
 			default:

@@ -117,6 +117,33 @@ CREATE TABLE IF NOT EXISTS performance (
 	computed_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_performance_strategy ON performance(strategy_id, metric);
+
+CREATE TABLE IF NOT EXISTS positions (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	strategy_id  TEXT NOT NULL,
+	symbol       TEXT NOT NULL,
+	timeframe    TEXT NOT NULL DEFAULT '',
+	side         TEXT NOT NULL,
+	entry_ts     INTEGER NOT NULL,
+	entry_price  REAL NOT NULL,
+	stop_loss    REAL NOT NULL DEFAULT 0,
+	take_profit  REAL NOT NULL DEFAULT 0,
+	quantity     REAL NOT NULL DEFAULT 0,
+	risk_amount  REAL NOT NULL DEFAULT 0,
+	status       TEXT NOT NULL DEFAULT 'open',
+	exit_ts      INTEGER NOT NULL DEFAULT 0,
+	exit_price   REAL NOT NULL DEFAULT 0,
+	pnl          REAL NOT NULL DEFAULT 0,
+	UNIQUE(strategy_id, symbol, timeframe, status)
+);
+CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(status, strategy_id);
+
+CREATE TABLE IF NOT EXISTS account (
+	id         INTEGER PRIMARY KEY CHECK (id = 1),
+	balance    REAL NOT NULL,
+	peak_equity REAL NOT NULL,
+	updated_at INTEGER NOT NULL
+);
 `
 
 func migrate(db *sql.DB) error {
@@ -256,4 +283,140 @@ func (s *Store) GetStrategy(ctx context.Context, id string) (domain.Strategy, er
 	st.Status = domain.StrategyStatus(status)
 	st.CreatedAt = time.UnixMilli(createdAt)
 	return st, nil
+}
+
+func (s *Store) OpenPosition(ctx context.Context, p domain.Position) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT OR IGNORE INTO positions
+			(strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+		p.StrategyID, p.Symbol, p.Timeframe, string(p.Side), p.EntryTS.UnixMilli(),
+		p.EntryPrice, p.StopLoss, p.TakeProfit, p.Quantity, p.RiskAmount)
+	if err != nil {
+		return 0, fmt.Errorf("abriendo posición: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, fmt.Errorf("obteniendo id de posición: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if n == 0 {
+		return 0, domain.ErrDuplicate
+	}
+	return id, nil
+}
+
+func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, exitTS time.Time) (domain.Position, error) {
+	var p domain.Position
+	var side string
+	var entryTS int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, quantity, status
+		FROM positions
+		WHERE id = ?`, id).Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS, &p.EntryPrice, &p.Quantity, &p.Status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, domain.ErrNotFound
+	}
+	if err != nil {
+		return p, fmt.Errorf("leyendo posición: %w", err)
+	}
+	p.Side = domain.Direction(side)
+	p.EntryTS = time.UnixMilli(entryTS)
+	if p.Status != domain.PositionOpen {
+		return p, fmt.Errorf("posición %d no está abierta", id)
+	}
+	switch p.Side {
+	case domain.DirectionBuy:
+		p.PnL = (exitPrice - p.EntryPrice) * p.Quantity
+	case domain.DirectionSell:
+		p.PnL = (p.EntryPrice - exitPrice) * p.Quantity
+	}
+	p.ExitPrice = exitPrice
+	p.ExitTS = exitTS
+	p.Status = domain.PositionClosed
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE positions
+		SET status = 'closed', exit_ts = ?, exit_price = ?, pnl = ?
+		WHERE id = ?`,
+		exitTS.UnixMilli(), exitPrice, p.PnL, id)
+	if err != nil {
+		return p, fmt.Errorf("cerrando posición: %w", err)
+	}
+	account, err := s.GetAccount(ctx)
+	if err != nil {
+		return p, err
+	}
+	account.Balance += p.PnL
+	if account.Balance > account.PeakEquity {
+		account.PeakEquity = account.Balance
+	}
+	account.UpdatedAt = time.Now()
+	if err := s.UpdateAccount(ctx, account); err != nil {
+		return p, err
+	}
+	return p, nil
+}
+
+func (s *Store) OpenPositions(ctx context.Context) ([]domain.Position, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status
+		FROM positions
+		WHERE status = 'open'
+		ORDER BY entry_ts`)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo posiciones abiertas: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Position
+	for rows.Next() {
+		var p domain.Position
+		var side string
+		var entryTS int64
+		if err := rows.Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS,
+			&p.EntryPrice, &p.StopLoss, &p.TakeProfit, &p.Quantity, &p.RiskAmount, &p.Status); err != nil {
+			return nil, fmt.Errorf("escaneando posición: %w", err)
+		}
+		p.Side = domain.Direction(side)
+		p.EntryTS = time.UnixMilli(entryTS)
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) GetAccount(ctx context.Context) (domain.Account, error) {
+	var a domain.Account
+	var updatedAt int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT balance, peak_equity, updated_at
+		FROM account
+		WHERE id = 1`).Scan(&a.Balance, &a.PeakEquity, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Account{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return a, fmt.Errorf("leyendo cuenta: %w", err)
+	}
+	a.UpdatedAt = time.UnixMilli(updatedAt)
+	return a, nil
+}
+
+func (s *Store) UpdateAccount(ctx context.Context, a domain.Account) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO account (id, balance, peak_equity, updated_at)
+		VALUES (1, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			balance = excluded.balance,
+			peak_equity = excluded.peak_equity,
+			updated_at = excluded.updated_at`,
+		a.Balance, a.PeakEquity, a.UpdatedAt.UnixMilli())
+	if err != nil {
+		return fmt.Errorf("actualizando cuenta: %w", err)
+	}
+	return nil
 }

@@ -24,6 +24,15 @@ type Config struct {
 	SentimentEnabled  bool
 	SentimentInterval time.Duration
 	CoinGeckoKey      string
+	RiskEnabled       bool
+	RiskPct           float64
+	MinRR             float64
+	MaxOpenPositions  int
+	KillSwitchPct     float64
+	StartingBalance   float64
+	DefaultStopPct    float64
+	DominanceEnabled  bool
+	DominanceBTCFloor float64
 }
 
 func Load() (*Config, error) {
@@ -43,6 +52,15 @@ func Load() (*Config, error) {
 		SentimentEnabled:  getEnvBool("SENTIMENT_ENABLED", false),
 		SentimentInterval: time.Duration(getEnvInt("SENTIMENT_INTERVAL_HOURS", 6)) * time.Hour,
 		CoinGeckoKey:      os.Getenv("COINGECKO_API_KEY"),
+		RiskEnabled:       getEnvBool("RISK_ENABLED", true),
+		RiskPct:           getEnvFloat("RISK_PCT", 0.01),
+		MinRR:             getEnvFloat("RISK_MIN_RR", 2.0),
+		MaxOpenPositions:  getEnvInt("RISK_MAX_OPEN_POSITIONS", 3),
+		KillSwitchPct:     getEnvFloat("RISK_KILL_SWITCH_PCT", 0.15),
+		StartingBalance:   getEnvFloat("RISK_STARTING_BALANCE", 10000),
+		DefaultStopPct:    getEnvFloat("RISK_DEFAULT_STOP_PCT", 0.03),
+		DominanceEnabled:  getEnvBool("DOMINANCE_ENABLED", false),
+		DominanceBTCFloor: getEnvFloat("DOMINANCE_BTC_FLOOR", 40),
 	}
 	if cfg.WebhookSecret == "" {
 		return nil, errors.New("WEBHOOK_SECRET no está configurado")
