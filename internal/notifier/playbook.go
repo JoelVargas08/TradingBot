@@ -46,6 +46,12 @@ func formatPlaybook(ev domain.SignalEvent) string {
 	if len(riskParts) > 0 {
 		fmt.Fprintf(&b, "\n%s\n", strings.Join(riskParts, " · "))
 	}
+	if conf, ok := metaFloat(ev.Meta, domain.MetaKeyConfidence); ok && conf > 0 {
+		fmt.Fprintf(&b, "Confianza modelo: <b>%.0f%%</b>\n", conf*100)
+	}
+	if prob, ok := ev.Meta[domain.MetaKeyProbability]; ok && fmt.Sprint(prob) != "" {
+		fmt.Fprintf(&b, "Prob. al alza: %s\n", prob)
+	}
 
 	level := riskLevel(ev)
 	fmt.Fprintf(&b, "\nNivel de riesgo: <b>%s</b>\n", level)

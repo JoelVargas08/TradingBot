@@ -9,6 +9,14 @@
 # Datos de runtime (usuarios + SQLite)
 /data/
 
+# Modelos entrenados del sidecar de ML (Fase 5)
+/ml/models/
+
+# Python
+__pycache__/
+*.pyc
+ml/.venv/
+
 # Entorno y secretos
 .env
 .env.*

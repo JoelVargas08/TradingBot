@@ -2,7 +2,7 @@
 
 > Plan consolidado elaborado a partir del análisis de 6 especialistas (TradingView, backend, IA/CNN, datos, scraping, estrategia crypto).
 > Estado actual del proyecto: bot Go que recibe webhooks de TradingView (Chandelier Exit) y reenvía alertas a Telegram.
-> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada — ✅ Fase 2 (ingesta de datos) completada — ✅ Fase 3 (estrategia Chandelier Multi-Confirm) completada — ✅ Fase 4 (aprendizaje desde PDF) completada → siguiente: Fase 5 (motor de señales con IA).
+> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada — ✅ Fase 2 (ingesta de datos) completada — ✅ Fase 3 (estrategia Chandelier Multi-Confirm) completada — ✅ Fase 4 (aprendizaje desde PDF) completada — ✅ Fase 5 (motor de señales con IA, baseline XGBoost) completada → siguiente: Fase 6 (backtesting + KPIs + despliegue).
 
 ---
 
@@ -49,11 +49,11 @@
 16. Job queue para tareas largas; extracción PDF con extractor propio en Go puro (stdlib, `pdfcpu` descartado por red inestable; FlateDecode + operadores Tj/TJ); LLM sidecar (OpenAI/Anthropic/DeepSeek) que genera Pine Script v6 + spec JSON desde el texto.
 17. `StrategyManager` con estados `draft → backtesting → active|rejected`; **validación automática en backtest OOS antes de activar** (bloquea estrategias que no pasen los umbrales). Comandos Telegram `/learn`, `/strategies`, `/strategy`, `/backtest` y recepción de PDF adjuntos.
 
-## Fase 5 — Motor de señales con IA (3–6 semanas)
+## Fase 5 — Motor de señales con IA (3–6 semanas) ✅
 
-18. Sidecar **Python (FastAPI + gRPC/REST)**: Fase 0 = XGBoost baseline sobre features (momentum, RSI, MACD, ATR, volumen); etiquetado triple-barrier (barreras ±1.5σ), ventana 64×1h, walk-forward con purga.
-19. Escalar a **CNN-1D con convoluciones dilatadas** (campo receptivo 67 ≥ 64) solo si supera a XGBoost y al Chandelier en Sharpe/maxDD entre folds. Export ONNX para inferencia.
-20. Integración: Go mantiene un buffer de 64 velas, llama a `/predict` al cierre de cada vela 1h, filtra por umbral de confianza + cooldown, y envía vía el Telegram actual. Chandelier queda como fallback.
+18. Sidecar **Python (FastAPI + REST)**: baseline **XGBoost** sobre features (momentum, RSI, MACD, ATR, volumen); etiquetado **triple-barrier** (barreras ±1.5σ), ventana 64×1h, walk-forward con purga/embargo. Implementado en `ml/` (`features.py`, `labels.py`, `train.py`, `api.py`). Entrenamiento desde el SQLite del bot, CSV o datos sintéticos; el mejor modelo por Sharpe OOS se guarda en `ml/models/`.
+19. Escalar a **CNN-1D con convoluciones dilatadas** (campo receptivo 67 ≥ 64) **solo si** supera a XGBoost y al Chandelier en Sharpe/maxDD entre folds con datos reales. Export ONNX para inferencia. → pendiente, condicionado a datos reales.
+20. Integración: Go mantiene un **buffer de 64 velas** (`internal/ml`), llama a `/predict` al cierre de cada vela 1h, filtra por umbral de confianza + cooldown, y emite al mismo pipeline de Telegram (`ML_ENABLED=true`). Chandelier queda como fallback.
 
 ## Fase 6 — Backtesting + KPIs + despliegue (2 semanas)
 

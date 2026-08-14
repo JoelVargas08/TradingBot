@@ -22,6 +22,7 @@ import (
 	"tradingview-bot/internal/ingest"
 	"tradingview-bot/internal/jobqueue"
 	"tradingview-bot/internal/llm"
+	"tradingview-bot/internal/ml"
 	"tradingview-bot/internal/notifier"
 	"tradingview-bot/internal/pdf"
 	"tradingview-bot/internal/processor"
@@ -101,6 +102,32 @@ func main() {
 	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, positionCtrl, 10000)
 	processorSvc.Start(ctx)
 
+	// Motor de señales con IA (Fase 5) → publica en el mismo bus
+	var mlEngine *ml.Engine
+	if cfg.MLEnabled {
+		mlClient := ml.NewClient(ml.Config{
+			URL:        cfg.MLURL,
+			StrategyID: cfg.MLStrategyID,
+			Window:     cfg.MLWindow,
+			Confidence: cfg.MLConfidence,
+			Cooldown:   cfg.MLCooldown,
+			Timeout:    cfg.MLTimeout,
+		})
+		if err := mlClient.Health(ctx); err != nil {
+			log.Printf("advertencia ML: %v (el bot arranca igual)", err)
+		}
+		mlEngine = ml.New(ml.Config{
+			URL:        cfg.MLURL,
+			StrategyID: cfg.MLStrategyID,
+			Window:     cfg.MLWindow,
+			Confidence: cfg.MLConfidence,
+			Cooldown:   cfg.MLCooldown,
+			Timeout:    cfg.MLTimeout,
+		}, mlClient)
+		log.Printf("Motor de señales con IA activo: %s (ventana %d, confianza %.0f%%, cooldown %s)",
+			cfg.MLStrategyID, cfg.MLWindow, cfg.MLConfidence*100, cfg.MLCooldown)
+	}
+
 	// Ingesta de mercado (Binance WS) → detector de eventos → notifier
 	if cfg.IngestEnabled {
 		ingestCfg := ingest.Config{
@@ -122,6 +149,16 @@ func main() {
 				}
 				if len(history) > 0 {
 					detector.Seed(symbol, timeframe, history)
+				}
+				if mlEngine != nil {
+					mlHistory, err := sqliteStore.RecentCandles(ctx, symbol, timeframe, mlEngine.Window())
+					if err != nil {
+						log.Printf("cargando historia ML %s %s: %v", symbol, timeframe, err)
+						continue
+					}
+					if len(mlHistory) > 0 {
+						mlEngine.Seed(symbol, timeframe, mlHistory)
+					}
 				}
 			}
 		}
@@ -154,6 +191,17 @@ func main() {
 					for _, ev := range detector.OnCandle(k) {
 						if err := notifierSvc.NotifyText(ctx, detect.Format(ev)); err != nil {
 							log.Printf("notificando evento de mercado: %v", err)
+						}
+					}
+					if mlEngine != nil {
+						evs, err := mlEngine.OnCandle(ctx, k)
+						if err != nil {
+							log.Printf("ml %s %s: %v", k.Symbol, k.Timeframe, err)
+						}
+						for _, ev := range evs {
+							if err := eventBus.Publish(ctx, ev); err != nil {
+								log.Printf("publicando señal ML %s: %v", ev.Key(), err)
+							}
 						}
 					}
 				}

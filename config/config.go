@@ -47,6 +47,15 @@ type Config struct {
 	MinProfitFactor float64
 	MinSharpe       float64
 	MaxDrawdown     float64
+
+	// Motor de señales con IA (Fase 5)
+	MLEnabled    bool
+	MLURL        string
+	MLStrategyID string
+	MLWindow     int
+	MLConfidence float64
+	MLCooldown   time.Duration
+	MLTimeout    time.Duration
 }
 
 func Load() (*Config, error) {
@@ -89,6 +98,15 @@ func Load() (*Config, error) {
 		MinProfitFactor: getEnvFloat("STRATEGY_MIN_PROFIT_FACTOR", 1.2),
 		MinSharpe:       getEnvFloat("STRATEGY_MIN_SHARPE", 0.5),
 		MaxDrawdown:     getEnvFloat("STRATEGY_MAX_DRAWDOWN", 0.30),
+
+		// Motor de señales con IA (Fase 5)
+		MLEnabled:    getEnvBool("ML_ENABLED", false),
+		MLURL:        getEnv("ML_URL", "http://127.0.0.1:8099"),
+		MLStrategyID: getEnv("ML_STRATEGY_ID", "ml-xgboost"),
+		MLWindow:     getEnvInt("ML_WINDOW", 64),
+		MLConfidence: getEnvFloat("ML_CONFIDENCE", 0.6),
+		MLCooldown:   time.Duration(getEnvInt("ML_COOLDOWN_HOURS", 4)) * time.Hour,
+		MLTimeout:    time.Duration(getEnvInt("ML_TIMEOUT_SECONDS", 5)) * time.Second,
 	}
 	if cfg.WebhookSecret == "" {
 		return nil, errors.New("WEBHOOK_SECRET no está configurado")

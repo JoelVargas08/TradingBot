@@ -33,12 +33,14 @@ type SignalEvent struct {
 }
 
 const (
-	MetaKeyRSI        = "rsi"
-	MetaKeyVolumeR    = "volume_ratio"
-	MetaKeyTrend4H    = "trend4h"
-	MetaKeyStopLoss   = "stop_loss"
-	MetaKeyTakeProfit = "take_profit"
-	MetaKeyRegime     = "regime"
+	MetaKeyRSI         = "rsi"
+	MetaKeyVolumeR     = "volume_ratio"
+	MetaKeyTrend4H     = "trend4h"
+	MetaKeyStopLoss    = "stop_loss"
+	MetaKeyTakeProfit  = "take_profit"
+	MetaKeyRegime      = "regime"
+	MetaKeyConfidence  = "confidence"
+	MetaKeyProbability = "probability"
 )
 
 func (e SignalEvent) Valid() error {
