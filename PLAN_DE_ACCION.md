@@ -2,7 +2,7 @@
 
 > Plan consolidado elaborado a partir del análisis de 6 especialistas (TradingView, backend, IA/CNN, datos, scraping, estrategia crypto).
 > Estado actual del proyecto: bot Go que recibe webhooks de TradingView (Chandelier Exit) y reenvía alertas a Telegram.
-> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada — ✅ Fase 2 (ingesta de datos) completada — ✅ Fase 3 (estrategia Chandelier Multi-Confirm) completada → siguiente: Fase 4 (aprendizaje desde PDF).
+> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada — ✅ Fase 2 (ingesta de datos) completada — ✅ Fase 3 (estrategia Chandelier Multi-Confirm) completada — ✅ Fase 4 (aprendizaje desde PDF) completada → siguiente: Fase 5 (motor de señales con IA).
 
 ---
 
@@ -44,10 +44,10 @@
 14. Reglas de riesgo: 1% por operación, R/R 2:1, máx 3 posiciones, kill-switch a -15% drawdown, rotación por dominancia BTC. Persistir posiciones en `models` + SQLite.
 15. El bot añade comandos `/positions`, `/risk`, `/regime`.
 
-## Fase 4 — Aprendizaje desde PDF (2 semanas)
+## Fase 4 — Aprendizaje desde PDF (2 semanas) ✅
 
-16. Job queue para tareas largas; extracción PDF con `pdfcpu` (puro Go, sin poppler); LLM sidecar (OpenAI/Anthropic/DeepSeek) que genera Pine Script v6 desde el texto.
-17. `StrategyManager` con estados `draft → backtesting → active`; **validación automática en backtest antes de activar** (bloquea estrategias que no pasen los umbrales OOS).
+16. Job queue para tareas largas; extracción PDF con extractor propio en Go puro (stdlib, `pdfcpu` descartado por red inestable; FlateDecode + operadores Tj/TJ); LLM sidecar (OpenAI/Anthropic/DeepSeek) que genera Pine Script v6 + spec JSON desde el texto.
+17. `StrategyManager` con estados `draft → backtesting → active|rejected`; **validación automática en backtest OOS antes de activar** (bloquea estrategias que no pasen los umbrales). Comandos Telegram `/learn`, `/strategies`, `/strategy`, `/backtest` y recepción de PDF adjuntos.
 
 ## Fase 5 — Motor de señales con IA (3–6 semanas)
 

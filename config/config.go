@@ -33,6 +33,20 @@ type Config struct {
 	DefaultStopPct    float64
 	DominanceEnabled  bool
 	DominanceBTCFloor float64
+
+	// Aprendizaje desde PDF (Fase 4)
+	LLMEnabled      bool
+	LLMProvider     string
+	LLMAPIKey       string
+	LLMModel        string
+	LLMBaseURL      string
+	UploadDir       string
+	BacktestBars    int
+	MinTrades       int
+	MinWinRate      float64
+	MinProfitFactor float64
+	MinSharpe       float64
+	MaxDrawdown     float64
 }
 
 func Load() (*Config, error) {
@@ -61,6 +75,20 @@ func Load() (*Config, error) {
 		DefaultStopPct:    getEnvFloat("RISK_DEFAULT_STOP_PCT", 0.03),
 		DominanceEnabled:  getEnvBool("DOMINANCE_ENABLED", false),
 		DominanceBTCFloor: getEnvFloat("DOMINANCE_BTC_FLOOR", 40),
+
+		// Aprendizaje desde PDF (Fase 4)
+		LLMEnabled:      getEnvBool("LLM_ENABLED", false),
+		LLMProvider:     getEnv("LLM_PROVIDER", "openai"),
+		LLMAPIKey:       os.Getenv("LLM_API_KEY"),
+		LLMModel:        getEnv("LLM_MODEL", "gpt-4o-mini"),
+		LLMBaseURL:      os.Getenv("LLM_BASE_URL"),
+		UploadDir:       getEnv("UPLOAD_DIR", "data/uploads"),
+		BacktestBars:    getEnvInt("STRATEGY_BACKTEST_BARS", 3000),
+		MinTrades:       getEnvInt("STRATEGY_MIN_TRADES", 8),
+		MinWinRate:      getEnvFloat("STRATEGY_MIN_WIN_RATE", 0.45),
+		MinProfitFactor: getEnvFloat("STRATEGY_MIN_PROFIT_FACTOR", 1.2),
+		MinSharpe:       getEnvFloat("STRATEGY_MIN_SHARPE", 0.5),
+		MaxDrawdown:     getEnvFloat("STRATEGY_MAX_DRAWDOWN", 0.30),
 	}
 	if cfg.WebhookSecret == "" {
 		return nil, errors.New("WEBHOOK_SECRET no está configurado")

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"tradingview-bot/internal/domain"
@@ -60,9 +61,29 @@ CREATE TABLE IF NOT EXISTS strategies (
 	id          TEXT PRIMARY KEY,
 	name        TEXT NOT NULL,
 	description TEXT NOT NULL DEFAULT '',
-	status      TEXT NOT NULL DEFAULT 'active',
-	created_at  INTEGER NOT NULL
+	status      TEXT NOT NULL DEFAULT 'draft',
+	source      TEXT NOT NULL DEFAULT '',
+	pinescript  TEXT NOT NULL DEFAULT '',
+	spec        TEXT NOT NULL DEFAULT '',
+	error_msg   TEXT NOT NULL DEFAULT '',
+	created_at  INTEGER NOT NULL,
+	updated_at  INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS strategy_backtests (
+	id          INTEGER PRIMARY KEY AUTOINCREMENT,
+	strategy_id TEXT NOT NULL,
+	trades      INTEGER NOT NULL,
+	win_rate    REAL NOT NULL,
+	profit_factor REAL NOT NULL,
+	sharpe      REAL NOT NULL,
+	max_drawdown REAL NOT NULL,
+	total_return REAL NOT NULL,
+	test_bars   INTEGER NOT NULL,
+	passed      INTEGER NOT NULL,
+	metrics_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_backtests_strategy ON strategy_backtests(strategy_id, metrics_at);
 
 CREATE TABLE IF NOT EXISTS signals (
 	id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,6 +170,18 @@ CREATE TABLE IF NOT EXISTS account (
 func migrate(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("aplicando esquema: %w", err)
+	}
+	// Migraciones idempotentes para tablas creadas antes de Fase 4.
+	for _, stmt := range []string{
+		"ALTER TABLE strategies ADD COLUMN source TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE strategies ADD COLUMN pinescript TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE strategies ADD COLUMN spec TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE strategies ADD COLUMN error_msg TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE strategies ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+	} {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
+			return fmt.Errorf("migrando strategies: %w", err)
+		}
 	}
 	return nil
 }
@@ -252,14 +285,30 @@ func (s *Store) RecentCandles(ctx context.Context, symbol, timeframe string, lim
 }
 
 func (s *Store) UpsertStrategy(ctx context.Context, st domain.Strategy) error {
+	if st.CreatedAt.IsZero() {
+		st.CreatedAt = time.Now()
+	}
+	now := time.Now()
+	if st.UpdatedAt.IsZero() {
+		st.UpdatedAt = now
+	}
+	if !st.Status.Valid() {
+		st.Status = domain.StrategyDraft
+	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO strategies (id, name, description, status, created_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO strategies (id, name, description, status, source, pinescript, spec, error_msg, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			description = excluded.description,
-			status = excluded.status`,
-		st.ID, st.Name, st.Description, string(st.Status), st.CreatedAt.UnixMilli())
+			status = excluded.status,
+			source = excluded.source,
+			pinescript = excluded.pinescript,
+			spec = excluded.spec,
+			error_msg = excluded.error_msg,
+			updated_at = excluded.updated_at`,
+		st.ID, st.Name, st.Description, string(st.Status), st.Source,
+		st.PineScript, st.Spec, st.Error, st.CreatedAt.UnixMilli(), st.UpdatedAt.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("guardando estrategia: %w", err)
 	}
@@ -269,11 +318,12 @@ func (s *Store) UpsertStrategy(ctx context.Context, st domain.Strategy) error {
 func (s *Store) GetStrategy(ctx context.Context, id string) (domain.Strategy, error) {
 	var st domain.Strategy
 	var status string
-	var createdAt int64
+	var createdAt, updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, description, status, created_at
+		SELECT id, name, description, status, source, pinescript, spec, error_msg, created_at, updated_at
 		FROM strategies
-		WHERE id = ?`, id).Scan(&st.ID, &st.Name, &st.Description, &status, &createdAt)
+		WHERE id = ?`, id).Scan(&st.ID, &st.Name, &st.Description, &status, &st.Source,
+		&st.PineScript, &st.Spec, &st.Error, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return st, domain.ErrNotFound
 	}
@@ -282,7 +332,79 @@ func (s *Store) GetStrategy(ctx context.Context, id string) (domain.Strategy, er
 	}
 	st.Status = domain.StrategyStatus(status)
 	st.CreatedAt = time.UnixMilli(createdAt)
+	st.UpdatedAt = time.UnixMilli(updatedAt)
 	return st, nil
+}
+
+func (s *Store) ListStrategies(ctx context.Context) ([]domain.Strategy, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, name, description, status, source, pinescript, spec, error_msg, created_at, updated_at
+		FROM strategies
+		ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listando estrategias: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Strategy
+	for rows.Next() {
+		var st domain.Strategy
+		var status string
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&st.ID, &st.Name, &st.Description, &status, &st.Source,
+			&st.PineScript, &st.Spec, &st.Error, &createdAt, &updatedAt); err != nil {
+			return nil, fmt.Errorf("escaneando estrategia: %w", err)
+		}
+		st.Status = domain.StrategyStatus(status)
+		st.CreatedAt = time.UnixMilli(createdAt)
+		st.UpdatedAt = time.UnixMilli(updatedAt)
+		out = append(out, st)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *Store) SaveBacktest(ctx context.Context, r domain.BacktestResult) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO strategy_backtests
+			(strategy_id, trades, win_rate, profit_factor, sharpe, max_drawdown, total_return, test_bars, passed, metrics_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.StrategyID, r.Trades, r.WinRate, r.ProfitFactor, r.Sharpe, r.MaxDrawdown,
+		r.TotalReturn, r.TestBars, boolToInt(r.Passed), r.MetricsAt.UnixMilli())
+	if err != nil {
+		return fmt.Errorf("guardando backtest: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) LastBacktest(ctx context.Context, strategyID string) (domain.BacktestResult, error) {
+	var r domain.BacktestResult
+	var passed int
+	var metricsAt int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT strategy_id, trades, win_rate, profit_factor, sharpe, max_drawdown, total_return, test_bars, passed, metrics_at
+		FROM strategy_backtests
+		WHERE strategy_id = ?
+		ORDER BY metrics_at DESC, id DESC
+		LIMIT 1`, strategyID).Scan(&r.StrategyID, &r.Trades, &r.WinRate, &r.ProfitFactor,
+		&r.Sharpe, &r.MaxDrawdown, &r.TotalReturn, &r.TestBars, &passed, &metricsAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, domain.ErrNotFound
+	}
+	if err != nil {
+		return r, fmt.Errorf("leyendo backtest: %w", err)
+	}
+	r.Passed = passed != 0
+	r.MetricsAt = time.UnixMilli(metricsAt)
+	return r, nil
+}
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func (s *Store) OpenPosition(ctx context.Context, p domain.Position) (int64, error) {

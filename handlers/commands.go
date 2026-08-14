@@ -64,6 +64,10 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/myid - Obtener tu chat ID\n" +
 		"/positions - Posiciones abiertas\n" +
 		"/risk - Estado de riesgo y cuenta\n" +
+		"/learn - Aprender estrategia desde un PDF adjunto\n" +
+		"/strategies - Listar estrategias aprendidas\n" +
+		"/strategy <id> - Detalle de una estrategia\n" +
+		"/backtest <id> - Re-validar una estrategia (OOS)\n" +
 		"/help - Mostrar esta ayuda"
 	ch.telegram.SendMessage(chatID, text)
 }

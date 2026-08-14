@@ -74,14 +74,55 @@ const (
 	StrategyDraft    StrategyStatus = "draft"
 	StrategyBacktest StrategyStatus = "backtesting"
 	StrategyActive   StrategyStatus = "active"
+	StrategyRejected StrategyStatus = "rejected"
 )
+
+func (s StrategyStatus) Valid() bool {
+	switch s {
+	case StrategyDraft, StrategyBacktest, StrategyActive, StrategyRejected:
+		return true
+	}
+	return false
+}
 
 type Strategy struct {
 	ID          string
 	Name        string
 	Description string
 	Status      StrategyStatus
+	Source      string
+	PineScript  string
+	Spec        string
+	Error       string
 	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+type BacktestResult struct {
+	StrategyID   string
+	Trades       int
+	WinRate      float64
+	ProfitFactor float64
+	Sharpe       float64
+	MaxDrawdown  float64
+	TotalReturn  float64
+	TestBars     int
+	Passed       bool
+	MetricsAt    time.Time
+}
+
+type BacktestStore interface {
+	SaveBacktest(ctx context.Context, r BacktestResult) error
+	LastBacktest(ctx context.Context, strategyID string) (BacktestResult, error)
+}
+
+type StrategyManager interface {
+	SubmitFromText(ctx context.Context, name, description, text string) (Strategy, error)
+	Backtest(ctx context.Context, id string) (BacktestResult, error)
+	Activate(ctx context.Context, id string) error
+	Reject(ctx context.Context, id string, reason string) error
+	List(ctx context.Context) ([]Strategy, error)
+	Get(ctx context.Context, id string) (Strategy, error)
 }
 
 type Notifier interface {

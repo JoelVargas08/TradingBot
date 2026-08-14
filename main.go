@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -18,11 +20,15 @@ import (
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/evaluator"
 	"tradingview-bot/internal/ingest"
+	"tradingview-bot/internal/jobqueue"
+	"tradingview-bot/internal/llm"
 	"tradingview-bot/internal/notifier"
+	"tradingview-bot/internal/pdf"
 	"tradingview-bot/internal/processor"
 	"tradingview-bot/internal/risk"
 	"tradingview-bot/internal/sentiment"
 	"tradingview-bot/internal/store"
+	"tradingview-bot/internal/strategymanager"
 	"tradingview-bot/models"
 	"tradingview-bot/services"
 	"tradingview-bot/storage"
@@ -240,6 +246,45 @@ func main() {
 		}()
 	}
 
+	// Aprendizaje desde PDF (Fase 4): LLM + job queue + StrategyManager
+	var strategyCommands *handlers.StrategyCommands
+	if cfg.LLMEnabled {
+		extractor := pdf.New()
+		llmClient := llm.New(llm.Config{
+			Provider: cfg.LLMProvider,
+			APIKey:   cfg.LLMAPIKey,
+			Model:    cfg.LLMModel,
+			BaseURL:  cfg.LLMBaseURL,
+		})
+		thresholds := strategymanager.Thresholds{
+			MinTrades:       cfg.MinTrades,
+			MinWinRate:      cfg.MinWinRate,
+			MinProfitFactor: cfg.MinProfitFactor,
+			MinSharpe:       cfg.MinSharpe,
+			MaxDrawdown:     cfg.MaxDrawdown,
+		}
+		sm := strategymanager.New(sqliteStore, sqliteStore, llmClient, thresholds)
+		sc := handlers.NewStrategyCommands(telegram, sm, nil, extractor, cfg.UploadDir,
+			func(ctx context.Context, fileID, destDir string) (string, error) {
+				file, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+				if err != nil {
+					return "", err
+				}
+				url := file.Link(bot.Token)
+				path := filepath.Join(destDir, fmt.Sprintf("%s.pdf", fileID))
+				if err := downloadFile(ctx, url, path); err != nil {
+					return "", err
+				}
+				return path, nil
+			})
+		queue := jobqueue.New(jobqueue.Config{Workers: 1, QueueSize: 32, MaxAttempts: 3}, sc.JobHandler())
+		sc.AttachQueue(queue)
+		queue.OnDone(sc.OnDone())
+		queue.Start(ctx)
+		strategyCommands = sc
+		log.Printf("Aprendizaje desde PDF activo (proveedor %s, modelo %s)", cfg.LLMProvider, cfg.LLMModel)
+	}
+
 	// Handlers
 	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, sqliteStore)
 	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret)
@@ -250,10 +295,23 @@ func main() {
 	updates := bot.GetUpdatesChan(u)
 	go func() {
 		for update := range updates {
-			if update.Message == nil || !update.Message.IsCommand() {
+			if update.Message == nil {
 				continue
 			}
 			chatID := update.Message.Chat.ID
+
+			// Documento adjunto → aprender la estrategia del PDF
+			if update.Message.Document != nil {
+				if strategyCommands != nil {
+					strategyCommands.HandleDocument(chatID, update.Message.Document, update.Message.Caption)
+				} else {
+					telegram.SendMessage(chatID, "❌ Aprendizaje desde PDF no está habilitado (LLM_ENABLED=false)")
+				}
+				continue
+			}
+			if !update.Message.IsCommand() {
+				continue
+			}
 			switch update.Message.Command() {
 			case "start":
 				commandsHandler.HandleStart(chatID, update.Message.CommandArguments())
@@ -265,6 +323,26 @@ func main() {
 				commandsHandler.HandlePositions(chatID)
 			case "risk":
 				commandsHandler.HandleRisk(chatID)
+			case "learn":
+				telegram.SendMessage(chatID, "📥 Envíame el PDF de la estrategia como documento adjunto (opcionalmente con nombre en el caption).")
+			case "strategies":
+				if strategyCommands != nil {
+					strategyCommands.HandleStrategies(chatID)
+				} else {
+					telegram.SendMessage(chatID, "❌ Aprendizaje desde PDF no está habilitado (LLM_ENABLED=false)")
+				}
+			case "strategy":
+				if strategyCommands != nil {
+					strategyCommands.HandleStrategy(chatID, update.Message.CommandArguments())
+				} else {
+					telegram.SendMessage(chatID, "❌ Gestión de estrategias no está habilitado (LLM_ENABLED=false)")
+				}
+			case "backtest":
+				if strategyCommands != nil {
+					strategyCommands.HandleBacktest(chatID, update.Message.CommandArguments())
+				} else {
+					telegram.SendMessage(chatID, "❌ Aprendizaje desde PDF no está habilitado (LLM_ENABLED=false)")
+				}
 			case "help":
 				commandsHandler.HandleHelp(chatID)
 			default:
@@ -322,4 +400,29 @@ func main() {
 	}
 	saveUsers()
 	bot.StopReceivingUpdates()
+}
+
+// downloadFile descarga una URL a un archivo local.
+func downloadFile(ctx context.Context, url, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("descarga %s: http %d", url, resp.StatusCode)
+	}
+	out, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, io.LimitReader(resp.Body, 16<<20)); err != nil {
+		return err
+	}
+	return nil
 }
