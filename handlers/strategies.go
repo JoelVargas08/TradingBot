@@ -65,6 +65,7 @@ type learnResult struct {
 	ChatID   int64
 	Strategy domain.Strategy
 	Result   domain.BacktestResult
+	JobType  string
 }
 
 // AttachQueue enlaza la cola tras la construcción (el JobHandler necesita
@@ -102,7 +103,11 @@ func (sc *StrategyCommands) OnDone() func(*jobqueue.Result) {
 			return
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "✅ <b>Estrategia aprendida: %s</b>\n\n", res.Strategy.Name)
+		if res.JobType == "backtest" {
+			fmt.Fprintf(&b, "📊 <b>Backtest de %s</b>\n\n", res.Strategy.Name)
+		} else {
+			fmt.Fprintf(&b, "✅ <b>Estrategia aprendida: %s</b>\n\n", res.Strategy.Name)
+		}
 		fmt.Fprintf(&b, "ID: <code>%s</code>\n", res.Strategy.ID)
 		if res.Strategy.Description != "" {
 			fmt.Fprintf(&b, "Descripción: %s\n\n", res.Strategy.Description)
@@ -123,6 +128,25 @@ func (sc *StrategyCommands) OnDone() func(*jobqueue.Result) {
 		}
 		if err := sc.telegram.SendMessage(res.ChatID, b.String()); err != nil {
 			log.Printf("notificando resultado de aprendizaje: %v", err)
+		}
+	}
+}
+
+// OnFailed notifica por Telegram cuando un job de aprendizaje falla
+// definitivamente (sin reintentos pendientes).
+func (sc *StrategyCommands) OnFailed() func(*jobqueue.Result) {
+	return func(r *jobqueue.Result) {
+		p, ok := r.Payload.(learnPayload)
+		if !ok {
+			return
+		}
+		name := strings.TrimSpace(p.Name)
+		if name == "" {
+			name = "la estrategia"
+		}
+		msg := fmt.Sprintf("❌ No pude asimilar %s.\nMotivo: %s", name, r.Error)
+		if err := sc.telegram.SendMessage(p.ChatID, msg); err != nil {
+			log.Printf("notificando fallo de aprendizaje: %v", err)
 		}
 	}
 }
@@ -235,7 +259,9 @@ func (sc *StrategyCommands) HandleDocument(chatID int64, doc *tgbotapi.Document,
 		sc.telegram.SendMessage(chatID, "❌ Recepción de documentos no está habilitada")
 		return
 	}
-	if !strings.EqualFold(doc.FileName, "") && !strings.HasSuffix(strings.ToLower(doc.FileName), ".pdf") {
+	fileName := strings.ToLower(doc.FileName)
+	mime := strings.ToLower(doc.MimeType)
+	if !strings.HasSuffix(fileName, ".pdf") && !strings.Contains(mime, "pdf") {
 		sc.telegram.SendMessage(chatID, "❌ Solo acepto documentos PDF.")
 		return
 	}
@@ -258,6 +284,7 @@ func (sc *StrategyCommands) HandleDocument(chatID int64, doc *tgbotapi.Document,
 
 func (sc *StrategyCommands) processLearn(ctx context.Context, p learnPayload) (any, error) {
 	text, err := sc.extractor.ExtractText(p.FilePath)
+	os.Remove(p.FilePath)
 	if err != nil {
 		return nil, fmt.Errorf("extrayendo PDF: %w", err)
 	}
@@ -278,7 +305,7 @@ func (sc *StrategyCommands) processLearn(ctx context.Context, p learnPayload) (a
 	if err != nil {
 		return nil, err
 	}
-	return learnResult{ChatID: p.ChatID, Strategy: updated, Result: res}, nil
+	return learnResult{ChatID: p.ChatID, Strategy: updated, Result: res, JobType: "learn"}, nil
 }
 
 func (sc *StrategyCommands) processBacktest(ctx context.Context, p backtestPayload) (any, error) {
@@ -290,7 +317,7 @@ func (sc *StrategyCommands) processBacktest(ctx context.Context, p backtestPaylo
 	if err != nil {
 		return nil, err
 	}
-	return learnResult{ChatID: p.ChatID, Strategy: updated, Result: res}, nil
+	return learnResult{ChatID: p.ChatID, Strategy: updated, Result: res, JobType: "backtest"}, nil
 }
 
 func sourceLabel(source string) string {

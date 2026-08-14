@@ -60,6 +60,7 @@ type Config struct {
 }
 
 func Load() (*Config, error) {
+	loadDotEnv(".env")
 	cfg := &Config{
 		TelegramBotToken:  os.Getenv("TELEGRAM_BOT_TOKEN"),
 		WebhookSecret:     os.Getenv("WEBHOOK_SECRET"),
@@ -110,9 +111,6 @@ func Load() (*Config, error) {
 		MLCooldown:   time.Duration(getEnvInt("ML_COOLDOWN_HOURS", 4)) * time.Hour,
 		MLTimeout:    time.Duration(getEnvInt("ML_TIMEOUT_SECONDS", 5)) * time.Second,
 	}
-	if cfg.WebhookSecret == "" {
-		return nil, errors.New("WEBHOOK_SECRET no está configurado")
-	}
 	if cfg.Mode == "" {
 		cfg.Mode = "paper"
 	}
@@ -120,6 +118,42 @@ func Load() (*Config, error) {
 		return nil, errors.New("MODE inválido: use paper o live")
 	}
 	return cfg, nil
+}
+
+// loadDotEnv lee un archivo .env y define las variables que no estén ya
+// presentes en el entorno. Las variables del entorno real tienen prioridad.
+func loadDotEnv(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		line = strings.TrimPrefix(line, "export ")
+		line = strings.TrimSpace(line)
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		if key == "" {
+			continue
+		}
+		if _, exists := os.LookupEnv(key); exists {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		if len(value) >= 2 {
+			if (value[0] == '"' && value[len(value)-1] == '"') ||
+				(value[0] == '\'' && value[len(value)-1] == '\'') {
+				value = value[1 : len(value)-1]
+			}
+		}
+		os.Setenv(key, value)
+	}
 }
 
 func getEnv(key, fallback string) string {

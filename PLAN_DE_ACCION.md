@@ -2,7 +2,7 @@
 
 > Plan consolidado elaborado a partir del análisis de 6 especialistas (TradingView, backend, IA/CNN, datos, scraping, estrategia crypto).
 > Estado actual del proyecto: bot Go que recibe webhooks de TradingView (Chandelier Exit) y reenvía alertas a Telegram.
-> ✅ Fase 0 (endurecer bot) — ✅ Fase 1 (desacoplar señales + multi-estrategia) — ✅ Fase 2 (ingesta de datos) — ✅ Fase 3 (Chandelier Multi-Confirm) — ✅ Fase 4 (aprendizaje desde PDF) — ✅ Fase 5 (motor de señales con IA) — ✅ Fase 6 (backtesting + KPIs + despliegue) completada → siguiente: paper-trading 4–6 semanas y CNN-1D condicionada a datos reales.
+> ✅ Fase 0 (endurecer bot) — ✅ Fase 1 (desacoplar señales + multi-estrategia) — ✅ Fase 2 (ingesta de datos) — ✅ Fase 3 (Chandelier Multi-Confirm) — ✅ Fase 4 (aprendizaje desde PDF) — ✅ Fase 5 (motor de señales con IA) — ✅ Fase 6 (backtesting + KPIs + despliegue) — ✅ Fase 7 (bot PDF usable + reparación de errores del main) completada → siguiente: paper-trading 4–6 semanas y CNN-1D condicionada a datos reales.
 
 ---
 
@@ -60,6 +60,10 @@
 21. Motor de backtest en Go (event-driven, costos reales), benchmarks: buy&hold vs Chandelier vs IA. Dashboard comparativo. → **Implementado**: `internal/backtest` (fees+slippage, stops/take intrabarra, Sharpe/Sortino/CAGR/MaxDD/PF), `internal/strategies` (Chandelier en Go puro), `internal/benchmark` (comparativa 3 estrategias), `ml/api.py /predict_batch` (señal por barra sin lookahead) + cliente `PredictBatch`, CLI `go run ./cmd/backtest` (fuente: `--db`/`--csv`/`--synthetic`) con salida JSON + tabla + dashboard HTML autocontenido en `--html`.
 22. Docker multi-stage + `docker-compose` (`bot`, `ml-engine`, `caddy` para servir el dashboard y HTTPS). → **Implementado**: `Dockerfile` (Go multi-stage, imagen mínima, sin CGO), `ml/Dockerfile`, `docker-compose.yml`, `Caddyfile`, `.dockerignore`. **Nota**: Docker no está disponible en el entorno de desarrollo (validar en un host con Docker).
 23. Paper-trading 4–6 semanas antes de capital real. → **Implementado el modo**: `MODE=paper|live` (default `paper`). El bot ya registra posiciones simuladas en SQLite a partir de las señales (libro de posiciones, stop/take y sizing por riesgo). `MODE=live` sin adaptador de broker avisa y continúa en modo simulado.
+
+## Fase 7 — Bot de Telegram listo para PDF + reparación de errores ✅
+
+24. Flujo "adjuntar PDF → /learn" en estado usable: carga automática de `.env`, `WEBHOOK_SECRET` opcional (el bloqueo de arranque desaparece), notificación de fallos de aprendizaje (`Queue.OnFailed`), validación de documentos por nombre/MIME, limpieza del adjunto tras extraer, descargas con timeout y detección de truncado, mensajes truncados a 4096 chars y `log.Fatalf` eliminado de la gorutina de ingesta. → **Implementado**: `MEMORIA_FASE_7.md`, `.env.example`, cambios en `main.go`, `config/`, `internal/jobqueue/`, `handlers/strategies.go`, `services/telegram.go`.
 
 ---
 

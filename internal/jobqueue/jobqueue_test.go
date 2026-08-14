@@ -125,6 +125,42 @@ func TestMaxAttemptsExhausted(t *testing.T) {
 	}
 }
 
+func TestPermanentFailureNotifiesOnFailed(t *testing.T) {
+	payload := map[string]string{"chat": "42", "name": "estrat"}
+	q := New(Config{MaxAttempts: 2, BaseBackoff: time.Millisecond}, HandlerFunc(func(ctx context.Context, j Job) (any, error) {
+		return nil, RetryableError(errors.New("fallo final"), time.Millisecond)
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	q.Start(ctx)
+
+	var got atomic.Value
+	q.OnFailed(func(r *Result) {
+		got.Store(*r)
+	})
+
+	id, err := q.Enqueue(ctx, "fail", payload)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitDone(t, q, id, 2*time.Second)
+
+	r, ok := got.Load().(Result)
+	if !ok {
+		t.Fatal("OnFailed no fue invocado")
+	}
+	if r.JobID != id {
+		t.Errorf("JobID = %s, want %s", r.JobID, id)
+	}
+	if r.Error != "fallo final" {
+		t.Errorf("Error = %q, want fallo final", r.Error)
+	}
+	gotPayload, ok := r.Payload.(map[string]string)
+	if !ok || gotPayload["name"] != "estrat" {
+		t.Errorf("Payload = %v, want el original del job", r.Payload)
+	}
+}
+
 func TestConcurrentEnqueues(t *testing.T) {
 	const n = 50
 	var mu sync.Mutex

@@ -35,10 +35,12 @@ type Job struct {
 }
 
 // Result contiene el resultado de procesar un Job. Payload lo interpreta el
-// llamador.
+// llamador. En trabajos fallidos, Payload es el original del Job y Error el
+// motivo del fallo.
 type Result struct {
 	JobID   string
 	Payload any
+	Error   string
 }
 
 // Handler procesa un trabajo. Un error de tipo retryableError se reencola
@@ -112,6 +114,7 @@ type Queue struct {
 	mu     sync.RWMutex
 	jobs   map[string]*Job
 	onDone func(*Result)
+	onFail func(*Result)
 
 	inFlight atomic.Int64
 	started  atomic.Bool
@@ -133,6 +136,14 @@ func (q *Queue) OnDone(fn func(*Result)) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.onDone = fn
+}
+
+// OnFailed registra un callback para trabajos que fallan de forma definitiva
+// (sin más reintentos). Payload contiene el original del Job y Error el motivo.
+func (q *Queue) OnFailed(fn func(*Result)) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.onFail = fn
 }
 
 // Enqueue añade un trabajo a la cola. Devuelve el ID generado.
@@ -290,8 +301,13 @@ func (q *Queue) setFailed(j *Job, errMsg string) {
 	j.Status = StatusFailed
 	j.Error = errMsg
 	j.FinishedAt = time.Now()
+	onFail := q.onFail
+	payload := j.Payload
 	q.mu.Unlock()
 	log.Printf("jobqueue: %s falló: %s", j.ID, errMsg)
+	if onFail != nil {
+		onFail(&Result{JobID: j.ID, Payload: payload, Error: errMsg})
+	}
 }
 
 var idCounter atomic.Int64

@@ -37,7 +37,11 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-const maxWebhookBody = 64 << 10 // 64KB
+const (
+	maxWebhookBody  = 64 << 10 // 64KB
+	maxUploadBytes  = 15 << 20 // 15MB
+	downloadTimeout = 60 * time.Second
+)
 
 func main() {
 	cfg, err := config.Load()
@@ -103,13 +107,10 @@ func main() {
 	processorSvc.Start(ctx)
 
 	// Modo de ejecución (Fase 6)
-	switch cfg.Mode {
-	case "live":
+	if cfg.Mode == "live" {
 		log.Printf("ADVERTENCIA: MODE=live sin adaptador de broker configurado; las señales se registrarán como posiciones simuladas (paper)")
-		fallthrough
-	default:
-		log.Printf("Modo %s: las señales generan posiciones en el libro de %s (sin broker externo)", cfg.Mode, cfg.DBFile)
 	}
+	log.Printf("Modo %s: las señales generan posiciones en el libro de %s (sin broker externo)", cfg.Mode, cfg.DBFile)
 
 	// Motor de señales con IA (Fase 5) → publica en el mismo bus
 	var mlEngine *ml.Engine
@@ -239,7 +240,7 @@ func main() {
 
 		go func() {
 			if err := source.Start(ctx); err != nil {
-				log.Fatalf("Error iniciando ingesta: %v", err)
+				log.Printf("Error iniciando ingesta (el bot continúa): %v", err)
 			}
 		}()
 	}
@@ -337,6 +338,7 @@ func main() {
 		queue := jobqueue.New(jobqueue.Config{Workers: 1, QueueSize: 32, MaxAttempts: 3}, sc.JobHandler())
 		sc.AttachQueue(queue)
 		queue.OnDone(sc.OnDone())
+		queue.OnFailed(sc.OnFailed())
 		queue.Start(ctx)
 		strategyCommands = sc
 		log.Printf("Aprendizaje desde PDF activo (proveedor %s, modelo %s)", cfg.LLMProvider, cfg.LLMModel)
@@ -426,6 +428,9 @@ func main() {
 	}
 	log.Printf("Bot iniciado: @%s", bot.Self.UserName)
 	log.Printf("Servidor HTTP en puerto %s", cfg.Port)
+	if cfg.WebhookSecret == "" {
+		log.Println("AVISO: WEBHOOK_SECRET no configurado; POST /webhook rechazará alertas de TradingView")
+	}
 	log.Println("Endpoints:")
 	log.Println("  POST /webhook - Recibir alertas de TradingView")
 	log.Println("  GET /health - Health check")
@@ -459,13 +464,16 @@ func main() {
 	bot.StopReceivingUpdates()
 }
 
-// downloadFile descarga una URL a un archivo local.
+// downloadFile descarga una URL a un archivo local con límite de tamaño y
+// timeout. Devuelve error si la descarga supera maxUploadBytes o no llega a
+// completarse.
 func downloadFile(ctx context.Context, url, path string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: downloadTimeout}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -478,8 +486,12 @@ func downloadFile(ctx context.Context, url, path string) error {
 		return err
 	}
 	defer out.Close()
-	if _, err := io.Copy(out, io.LimitReader(resp.Body, 16<<20)); err != nil {
+	written, err := io.Copy(out, io.LimitReader(resp.Body, maxUploadBytes+1))
+	if err != nil {
 		return err
+	}
+	if written > maxUploadBytes {
+		return errors.New("descarga excede el tamaño máximo permitido")
 	}
 	return nil
 }
