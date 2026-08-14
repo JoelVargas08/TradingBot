@@ -2,7 +2,7 @@
 
 > Plan consolidado elaborado a partir del análisis de 6 especialistas (TradingView, backend, IA/CNN, datos, scraping, estrategia crypto).
 > Estado actual del proyecto: bot Go que recibe webhooks de TradingView (Chandelier Exit) y reenvía alertas a Telegram.
-> ✅ Fase 0 (endurecer bot) completada — ✅ Fase 1 (desacoplar señales + multi-estrategia) completada — ✅ Fase 2 (ingesta de datos) completada — ✅ Fase 3 (estrategia Chandelier Multi-Confirm) completada — ✅ Fase 4 (aprendizaje desde PDF) completada — ✅ Fase 5 (motor de señales con IA, baseline XGBoost) completada → siguiente: Fase 6 (backtesting + KPIs + despliegue).
+> ✅ Fase 0 (endurecer bot) — ✅ Fase 1 (desacoplar señales + multi-estrategia) — ✅ Fase 2 (ingesta de datos) — ✅ Fase 3 (Chandelier Multi-Confirm) — ✅ Fase 4 (aprendizaje desde PDF) — ✅ Fase 5 (motor de señales con IA) — ✅ Fase 6 (backtesting + KPIs + despliegue) completada → siguiente: paper-trading 4–6 semanas y CNN-1D condicionada a datos reales.
 
 ---
 
@@ -55,11 +55,11 @@
 19. Escalar a **CNN-1D con convoluciones dilatadas** (campo receptivo 67 ≥ 64) **solo si** supera a XGBoost y al Chandelier en Sharpe/maxDD entre folds con datos reales. Export ONNX para inferencia. → pendiente, condicionado a datos reales.
 20. Integración: Go mantiene un **buffer de 64 velas** (`internal/ml`), llama a `/predict` al cierre de cada vela 1h, filtra por umbral de confianza + cooldown, y emite al mismo pipeline de Telegram (`ML_ENABLED=true`). Chandelier queda como fallback.
 
-## Fase 6 — Backtesting + KPIs + despliegue (2 semanas)
+## Fase 6 — Backtesting + KPIs + despliegue (2 semanas) ✅
 
-21. Motor de backtest en Go (event-driven, costos reales), benchmarks: buy&hold vs Chandelier vs IA. Dashboard comparativo.
-22. Docker multi-stage + `docker-compose` (`bot`, `worker`, `ml-engine`, `postgres`/`sqlite`, `caddy` para HTTPS — obligatorio para webhooks de TradingView).
-23. Paper-trading 4–6 semanas antes de capital real.
+21. Motor de backtest en Go (event-driven, costos reales), benchmarks: buy&hold vs Chandelier vs IA. Dashboard comparativo. → **Implementado**: `internal/backtest` (fees+slippage, stops/take intrabarra, Sharpe/Sortino/CAGR/MaxDD/PF), `internal/strategies` (Chandelier en Go puro), `internal/benchmark` (comparativa 3 estrategias), `ml/api.py /predict_batch` (señal por barra sin lookahead) + cliente `PredictBatch`, CLI `go run ./cmd/backtest` (fuente: `--db`/`--csv`/`--synthetic`) con salida JSON + tabla + dashboard HTML autocontenido en `--html`.
+22. Docker multi-stage + `docker-compose` (`bot`, `ml-engine`, `caddy` para servir el dashboard y HTTPS). → **Implementado**: `Dockerfile` (Go multi-stage, imagen mínima, sin CGO), `ml/Dockerfile`, `docker-compose.yml`, `Caddyfile`, `.dockerignore`. **Nota**: Docker no está disponible en el entorno de desarrollo (validar en un host con Docker).
+23. Paper-trading 4–6 semanas antes de capital real. → **Implementado el modo**: `MODE=paper|live` (default `paper`). El bot ya registra posiciones simuladas en SQLite a partir de las señales (libro de posiciones, stop/take y sizing por riesgo). `MODE=live` sin adaptador de broker avisa y continúa en modo simulado.
 
 ---
 

@@ -102,6 +102,15 @@ func main() {
 	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, positionCtrl, 10000)
 	processorSvc.Start(ctx)
 
+	// Modo de ejecución (Fase 6)
+	switch cfg.Mode {
+	case "live":
+		log.Printf("ADVERTENCIA: MODE=live sin adaptador de broker configurado; las señales se registrarán como posiciones simuladas (paper)")
+		fallthrough
+	default:
+		log.Printf("Modo %s: las señales generan posiciones en el libro de %s (sin broker externo)", cfg.Mode, cfg.DBFile)
+	}
+
 	// Motor de señales con IA (Fase 5) → publica en el mismo bus
 	var mlEngine *ml.Engine
 	if cfg.MLEnabled {

@@ -67,6 +67,24 @@ type Predictor interface {
 	Predict(ctx context.Context, symbol, timeframe string, ks []domain.Kline) (Prediction, error)
 }
 
+// BatchSignal es la señal de una barra devuelta por /predict_batch.
+type BatchSignal struct {
+	Idx        int     `json:"idx"`
+	TS         int64   `json:"ts"`
+	Signal     string  `json:"signal"` // buy | sell | none
+	ProbUp     float64 `json:"prob_up"`
+	ProbDown   float64 `json:"prob_down"`
+	Confidence float64 `json:"confidence"`
+}
+
+// BatchResult es la respuesta de /predict_batch.
+type BatchResult struct {
+	Symbol    string        `json:"symbol"`
+	Timeframe string        `json:"timeframe"`
+	Bars      int           `json:"bars"`
+	Signals   []BatchSignal `json:"signals"`
+}
+
 // Client habla con el sidecar de ML (ml/api.py).
 type Client struct {
 	url    string
@@ -133,6 +151,52 @@ func (c *Client) Predict(ctx context.Context, symbol, timeframe string, ks []dom
 		return Prediction{}, err
 	}
 	return p, nil
+}
+
+// PredictBatch pide la señal de cada barra al sidecar (para backtesting).
+func (c *Client) PredictBatch(ctx context.Context, symbol, timeframe string, ks []domain.Kline) (*BatchResult, error) {
+	candles := make([]candleJSON, 0, len(ks))
+	for _, k := range ks {
+		candles = append(candles, candleJSON{
+			TS:     k.Start.UnixMilli(),
+			Open:   k.Open,
+			High:   k.High,
+			Low:    k.Low,
+			Close:  k.Close,
+			Volume: k.Volume,
+		})
+	}
+	body, err := json.Marshal(map[string]any{
+		"symbol":    symbol,
+		"timeframe": timeframe,
+		"candles":   candles,
+	})
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.url+"/predict_batch", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("ml: predict_batch: %w", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("ml: predict_batch http %d: %s", resp.StatusCode, truncate(string(raw), 300))
+	}
+	var br BatchResult
+	if err := json.Unmarshal(raw, &br); err != nil {
+		return nil, err
+	}
+	return &br, nil
 }
 
 // Health comprueba que el sidecar responde y tiene modelo cargado.

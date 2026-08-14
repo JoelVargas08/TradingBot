@@ -14,6 +14,7 @@ type Config struct {
 	Port              string
 	StorageFile       string
 	DBFile            string
+	Mode              string // paper | live
 	Symbols           []string
 	Timeframes        []string
 	IngestEnabled     bool
@@ -65,6 +66,7 @@ func Load() (*Config, error) {
 		Port:              getEnv("PORT", "8080"),
 		StorageFile:       getEnv("STORAGE_FILE", "data/users.json"),
 		DBFile:            getEnv("DB_FILE", "data/bot.db"),
+		Mode:              getEnv("MODE", "paper"),
 		Symbols:           splitCSV(getEnv("SYMBOLS", "BTCUSDT,ETHUSDT")),
 		Timeframes:        splitCSV(getEnv("TIMEFRAMES", "1m,1h")),
 		IngestEnabled:     getEnvBool("INGEST_ENABLED", true),
@@ -110,6 +112,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.WebhookSecret == "" {
 		return nil, errors.New("WEBHOOK_SECRET no está configurado")
+	}
+	if cfg.Mode == "" {
+		cfg.Mode = "paper"
+	}
+	if cfg.Mode != "paper" && cfg.Mode != "live" {
+		return nil, errors.New("MODE inválido: use paper o live")
 	}
 	return cfg, nil
 }

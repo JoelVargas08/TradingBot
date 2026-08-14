@@ -26,6 +26,9 @@ ml/.venv/
 *.out
 coverage.*
 
+# Reportes del backtest (Fase 6)
+/reports/
+
 # IDE / sistema
 .vscode/
 .idea/

@@ -1,0 +1,60 @@
+# Despliegue completo de la Fase 6: bot (Go) + sidecar ML (Python) + Caddy
+# (sirve el dashboard y hace de proxy del webhook).
+#
+# Uso:
+#   docker compose up -d --build
+#
+# Variables requeridas (o copiar .env):
+#   WEBHOOK_SECRET=...        obligatoria
+#   TELEGRAM_BOT_TOKEN=...    obligatoria para notificaciones
+services:
+  ml:
+    build: ./ml
+    container_name: tradingbot-ml
+    restart: unless-stopped
+    environment:
+      - ML_STOP_ATR=${ML_STOP_ATR:-1.5}
+      - ML_TARGET_ATR=${ML_TARGET_ATR:-3.0}
+    volumes:
+      - ./ml/models:/ml/models:ro
+    expose:
+      - "8099"
+
+  bot:
+    build: .
+    container_name: tradingbot
+    restart: unless-stopped
+    depends_on:
+      - ml
+    environment:
+      - MODE=${MODE:-paper}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:?definir WEBHOOK_SECRET}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+      - PORT=8080
+      - DB_FILE=/app/data/bot.db
+      - SYMBOLS=${SYMBOLS:-BTCUSDT,ETHUSDT}
+      - TIMEFRAMES=${TIMEFRAMES:-1m,1h}
+      - INGEST_ENABLED=${INGEST_ENABLED:-true}
+      - WATCH_TRADES=${WATCH_TRADES:-true}
+      - ML_ENABLED=${ML_ENABLED:-true}
+      - ML_URL=http://ml:8099
+      - LLM_ENABLED=${LLM_ENABLED:-false}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+    expose:
+      - "8080"
+
+  dashboard:
+    image: caddy:2-alpine
+    container_name: tradingbot-dashboard
+    restart: unless-stopped
+    depends_on:
+      - bot
+    ports:
+      - "${DASHBOARD_PORT:-8081}:80"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./reports:/srv/reports:ro
+    environment:
+      - BOT_UPSTREAM=bot:8080

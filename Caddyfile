@@ -1,0 +1,16 @@
+# Caddy: sirve los reportes/dashboard generados por cmd/backtest y
+# reenvía el webhook del bot. BOT_UPSTREAM se inyecta desde compose.
+{$BOT_UPSTREAM}
+
+handle /reports/* {
+    root * /srv/reports
+    file_server browse
+}
+
+handle /webhook/* {
+    reverse_proxy {$BOT_UPSTREAM}
+}
+
+handle {
+    respond "TradingBot Fase 6 - dashboard en /reports/" 200
+}

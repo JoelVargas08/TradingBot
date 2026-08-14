@@ -158,3 +158,64 @@ def predict(req: PredictRequest) -> PredictResponse:
         stop_pct=round(stop_pct, 4),
         take_profit_pct=round(take_profit_pct, 4),
     )
+
+
+class BatchBar(BaseModel):
+    idx: int
+    ts: int
+    signal: str  # buy | sell | none
+    prob_up: float
+    prob_down: float
+    confidence: float
+
+
+class BatchResponse(BaseModel):
+    symbol: str
+    timeframe: str
+    bars: int
+    signals: list[BatchBar]
+
+
+@app.post("/predict_batch", response_model=BatchResponse)
+def predict_batch(req: PredictRequest) -> BatchResponse:
+    """Señal por barra para backtesting (sin lookahead).
+
+    Cada fila i solo usa velas [0..i]: compute_features es causal y la
+    evaluación recorre las barras en orden. Las primeras 64 velas y las que
+    tengan features NaN devuelven signal=none.
+    """
+    model = _state["model"]
+    if model is None:
+        raise HTTPException(status_code=503, detail="modelo no cargado: ejecuta ml/train.py primero")
+    if len(req.candles) < 64:
+        raise HTTPException(status_code=422, detail=f"se necesitan ≥64 velas, se enviaron {len(req.candles)}")
+
+    df = load_candles([c.model_dump() for c in req.candles])
+    feat = compute_features(df)
+    X = feat[FEATURE_NAMES].to_numpy(dtype=np.float64)
+    valid = ~np.isnan(X).any(axis=1)
+
+    signals: list[BatchBar] = []
+    for i in range(len(df)):
+        if not valid[i]:
+            signals.append(BatchBar(idx=i, ts=int(df["ts"].iloc[i]), signal="none", prob_up=0.0, prob_down=0.0, confidence=0.0))
+            continue
+        proba = model.predict_proba(X[i : i + 1])[0]  # 0=down, 1=up
+        prob_down, prob_up = float(proba[0]), float(proba[1])
+        strength = prob_up - prob_down
+        if strength >= 0.0:
+            signal = "buy" if strength > 0.0 else "none"
+            confidence = strength if signal == "buy" else 0.0
+        else:
+            signal, confidence = "sell", -strength
+        signals.append(
+            BatchBar(
+                idx=i,
+                ts=int(df["ts"].iloc[i]),
+                signal=signal,
+                prob_up=round(prob_up, 4),
+                prob_down=round(prob_down, 4),
+                confidence=round(confidence, 4),
+            )
+        )
+    return BatchResponse(symbol=req.symbol, timeframe=req.timeframe, bars=len(df), signals=signals)
