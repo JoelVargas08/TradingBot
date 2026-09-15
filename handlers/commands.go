@@ -3,30 +3,44 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	"tradingview-bot/internal/domain"
-	"tradingview-bot/internal/session"
 	"tradingview-bot/models"
 	"tradingview-bot/services"
 )
+
+// SessionController expone el control de sesión de trading al handler.
+type SessionController interface {
+	Start()
+	Stop()
+	IsActive() bool
+	StartedAt() time.Time
+}
+
+// PerformanceProvider ofrece métricas de paper trading al handler.
+type PerformanceProvider interface {
+	Performance(ctx context.Context) (domain.Performance, error)
+}
 
 type CommandsHandler struct {
 	userManager *models.UserManager
 	telegram    *services.TelegramService
 	positions   domain.PositionStore
-	session     *session.Manager
-	mode        string
+	session     SessionController
+	performance PerformanceProvider
 }
 
-func NewCommandsHandler(um *models.UserManager, tg *services.TelegramService, positions domain.PositionStore, sess *session.Manager, mode string) *CommandsHandler {
+func NewCommandsHandler(um *models.UserManager, tg *services.TelegramService, positions domain.PositionStore, session SessionController, performance PerformanceProvider) *CommandsHandler {
 	return &CommandsHandler{
 		userManager: um,
 		telegram:    tg,
 		positions:   positions,
-		session:     sess,
-		mode:        mode,
+		session:     session,
+		performance: performance,
 	}
 }
 func (ch *CommandsHandler) HandleStart(chatID int64, args string) {
@@ -71,57 +85,65 @@ func (ch *CommandsHandler) HandlePing(chatID int64) {
 		"🏓 <b>Pong!</b>\nBot funcionando correctamente.",
 	)
 }
+func (ch *CommandsHandler) HandleSession(chatID int64) {
+	if ch.session == nil {
+		ch.telegram.SendMessage(
+			chatID,
+			"❌ Control de sesión no disponible",
+		)
+		return
+	}
+	if ch.session.IsActive() {
+		started := ch.session.StartedAt()
+		ch.telegram.SendMessage(
+			chatID,
+			fmt.Sprintf(
+				"🟢 <b>Sesión de trading ACTIVA</b>\n\n"+
+					"Iniciada: %s\n"+
+					"Nuevas operaciones: habilitadas",
+				started.Format("2006-01-02 15:04:05"),
+			),
+		)
+		return
+	}
+	ch.telegram.SendMessage(
+		chatID,
+		"🔴 <b>Sesión de trading DETENIDA</b>\n\n"+
+			"Nuevas operaciones: deshabilitadas\n"+
+			"Las señales continúan registrándose.",
+	)
+}
 func (ch *CommandsHandler) HandleSessionStart(chatID int64) {
 	if ch.session == nil {
-		ch.telegram.SendMessage(chatID, "❌ Gestión de sesión no disponible")
+		ch.telegram.SendMessage(
+			chatID,
+			"❌ Control de sesión no disponible",
+		)
 		return
 	}
 	ch.session.Start()
-	mode := strings.ToUpper(ch.mode)
-	if mode == "" {
-		mode = "PAPER"
-	}
-	ch.telegram.SendMessage(chatID,
+	ch.telegram.SendMessage(
+		chatID,
 		"🟢 <b>Sesión de trading INICIADA</b>\n\n"+
-			"Modo: "+mode+"\n"+
-			"Trading habilitado: sí")
+			"Nuevas operaciones: habilitadas\n"+
+			"Modo de ejecución: PAPER",
+	)
 }
 func (ch *CommandsHandler) HandleSessionStop(chatID int64) {
 	if ch.session == nil {
-		ch.telegram.SendMessage(chatID, "❌ Gestión de sesión no disponible")
+		ch.telegram.SendMessage(
+			chatID,
+			"❌ Control de sesión no disponible",
+		)
 		return
 	}
 	ch.session.Stop()
-	ch.telegram.SendMessage(chatID,
+	ch.telegram.SendMessage(
+		chatID,
 		"🔴 <b>Sesión de trading DETENIDA</b>\n\n"+
 			"No se abrirán nuevas posiciones.\n"+
-			"Telegram y recepción de señales continúan activos.")
-}
-func (ch *CommandsHandler) HandleSession(chatID int64) {
-	if ch.session == nil {
-		ch.telegram.SendMessage(chatID, "❌ Gestión de sesión no disponible")
-		return
-	}
-	state := "🔴 DETENIDA"
-	if ch.session.IsActive() {
-		state = "🟢 ACTIVA"
-	}
-	mode := strings.ToUpper(ch.mode)
-	if mode == "" {
-		mode = "PAPER"
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "📊 <b>Estado de trading</b>\n\n")
-	fmt.Fprintf(&b, "Sesión: %s\n", state)
-	fmt.Fprintf(&b, "Modo: %s\n", mode)
-	if ch.positions != nil {
-		open, err := ch.positions.OpenPositions(context.Background())
-		if err == nil {
-			fmt.Fprintf(&b, "Posiciones abiertas: %d\n", len(open))
-		}
-	}
-	fmt.Fprintf(&b, "Señales recibidas: %d", ch.session.Signals())
-	ch.telegram.SendMessage(chatID, strings.TrimRight(b.String(), "\n"))
+			"Las posiciones existentes no se cierran automáticamente.",
+	)
 }
 func (ch *CommandsHandler) HandleHelp(chatID int64) {
 	text := "📚 <b>Comandos disponibles:</b>\n\n" +
@@ -132,8 +154,9 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/positions - Posiciones abiertas\n" +
 		"/risk - Estado de riesgo y cuenta\n" +
 		"/session - Estado de la sesión de trading\n" +
-		"/session_start - Iniciar sesión de trading\n" +
-		"/session_stop - Detener sesión de trading\n" +
+		"/session_start - Iniciar trading\n" +
+		"/session_stop - Detener nuevas operaciones\n" +
+		"/performance - Métricas de paper trading\n" +
 		"/learn - Aprender estrategia desde un PDF adjunto\n" +
 		"/strategies - Listar estrategias aprendidas\n" +
 		"/strategy <id> - Detalle de una estrategia\n" +
@@ -199,6 +222,63 @@ func (ch *CommandsHandler) HandleRisk(chatID int64) {
 	ch.telegram.SendMessage(chatID, text)
 }
 
+func (ch *CommandsHandler) HandlePerformance(chatID int64) {
+	if ch.positions == nil || ch.performance == nil {
+		ch.telegram.SendMessage(chatID, "❌ Métricas de paper trading no disponibles")
+		return
+	}
+	ctx := context.Background()
+	acc, err := ch.positions.GetAccount(ctx)
+	if err != nil {
+		ch.telegram.SendMessage(chatID, "❌ Cuenta no inicializada todavía")
+		return
+	}
+	perf, err := ch.performance.Performance(ctx)
+	if err != nil {
+		ch.telegram.SendMessage(chatID, "❌ Error calculando métricas")
+		return
+	}
+	if perf.Trades == 0 {
+		ch.telegram.SendMessage(chatID, "📭 Aún no hay trades cerrados")
+		return
+	}
+	pf := formatPF(perf.ProfitFactor)
+	text := fmt.Sprintf("📊 <b>Paper Trading</b>\n\n"+
+		"Balance: %s\n"+
+		"Equity: %s\n\n"+
+		"Trades: %d\n"+
+		"Win rate: %.2f%%\n"+
+		"Profit factor: %s\n\n"+
+		"PnL: %s\n"+
+		"Retorno: %+.2f%%\n\n"+
+		"Max DD: %.2f%%\n\n"+
+		"Ganancia media: %s\n"+
+		"Pérdida media: %s\n\n"+
+		"Wins consecutivos: %d\n"+
+		"Losses consecutivos: %d",
+		formatSigned(acc.Balance), formatSigned(acc.Equity),
+		perf.Trades, perf.WinRate, pf,
+		formatSigned(perf.TotalPnL), perf.ReturnPct,
+		-acc.MaxDrawdown*100,
+		formatSigned(perf.AverageWin), formatSigned(perf.AverageLoss),
+		perf.ConsecutiveWins, perf.ConsecutiveLosses)
+	ch.telegram.SendMessage(chatID, text)
+}
+
 func formatAmount(v float64) string {
+	return fmt.Sprintf("%.2f", v)
+}
+
+func formatSigned(v float64) string {
+	if v < 0 {
+		return fmt.Sprintf("-$%.2f", -v)
+	}
+	return fmt.Sprintf("+$%.2f", v)
+}
+
+func formatPF(v float64) string {
+	if v == math.Inf(1) {
+		return "∞"
+	}
 	return fmt.Sprintf("%.2f", v)
 }

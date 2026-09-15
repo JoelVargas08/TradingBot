@@ -24,6 +24,7 @@ import (
 	"tradingview-bot/internal/llm"
 	"tradingview-bot/internal/ml"
 	"tradingview-bot/internal/notifier"
+	"tradingview-bot/internal/paper"
 	"tradingview-bot/internal/pdf"
 	"tradingview-bot/internal/processor"
 	"tradingview-bot/internal/risk"
@@ -107,9 +108,18 @@ func main() {
 		}
 	}
 
-	// Control de sesión de trading (Fase B): manual /session_start|stop
-	sessionManager := session.New()
-	log.Printf("Sesión de trading iniciada DETENIDA; usa /session_start para habilitar operaciones")
+	// Control de sesión de trading (Fase B)
+	var tradingSession *session.Manager
+	if cfg.TradingSessionEnabled {
+		tradingSession = session.New(cfg.TradingSessionStartActive)
+		if tradingSession.IsActive() {
+			log.Println("Sesión de trading: ACTIVA")
+		} else {
+			log.Println("Sesión de trading: DETENIDA")
+		}
+	} else {
+		log.Println("Sesión de trading: deshabilitada (TRADING_SESSION_ENABLED=false); las señales se ejecutan siempre")
+	}
 
 	// Pipeline de señales: bus → evaluador → notifier (rate-limit + retry)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -121,6 +131,7 @@ func main() {
 
 	// Gestión de riesgo y posiciones
 	var positionCtrl domain.PositionController
+	var paperEngine *paper.Engine
 	if cfg.RiskEnabled {
 		riskCfg := risk.Config{
 			RiskPct:          cfg.RiskPct,
@@ -131,10 +142,13 @@ func main() {
 			DefaultStopPct:   cfg.DefaultStopPct,
 		}
 		positionCtrl = risk.New(sqliteStore, riskCfg)
+		paperEngine = paper.New(sqliteStore, positionCtrl, paper.Config{})
 		log.Printf("Gestión de riesgo activa: %d posiciones máx, R/R %v:1, kill-switch %.0f%%",
 			cfg.MaxOpenPositions, cfg.MinRR, cfg.KillSwitchPct*100)
+		log.Printf("Paper trading activo: fees %.3f%%, slippage %.3f%% por operación (Simulado)",
+			paper.Config{}.FeeRate*100, paper.Config{}.SlippageRate*100)
 	}
-	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, positionCtrl, sessionManager, 10000)
+	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, positionCtrl, tradingSession, 10000)
 	processorSvc.Start(ctx)
 
 	// Modo de ejecución (Fase 6)
@@ -228,6 +242,9 @@ func main() {
 					}
 					if err := sqliteStore.SaveCandle(ctx, k); err != nil && !errors.Is(err, domain.ErrDuplicate) {
 						log.Printf("guardando vela %s %s: %v", k.Symbol, k.Timeframe, err)
+					}
+					if paperEngine != nil && k.Closed {
+						paperEngine.CheckStops(ctx, k)
 					}
 					for _, ev := range detector.OnCandle(k) {
 						if err := notifierSvc.NotifyText(ctx, detect.Format(ev)); err != nil {
@@ -376,7 +393,11 @@ func main() {
 	}
 
 	// Handlers
-	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, sqliteStore, sessionManager, cfg.Mode)
+	positionsStore := domain.PositionStore(sqliteStore)
+	if paperEngine != nil {
+		positionsStore = paperEngine
+	}
+	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, positionsStore, tradingSession, paperEngine)
 	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret)
 
 	// Configurar bot de Telegram para polling
@@ -418,6 +439,8 @@ func main() {
 				commandsHandler.HandlePositions(chatID)
 			case "risk":
 				commandsHandler.HandleRisk(chatID)
+			case "performance":
+				commandsHandler.HandlePerformance(chatID)
 			case "learn":
 				telegram.SendMessage(chatID, "📥 Envíame el PDF de la estrategia como documento adjunto (opcionalmente con nombre en el caption).")
 			case "strategies":

@@ -7,8 +7,12 @@ import (
 
 	"tradingview-bot/internal/dedupe"
 	"tradingview-bot/internal/domain"
-	"tradingview-bot/internal/session"
 )
+
+// SessionGate permite al processor consultar si la sesión de trading activa.
+type SessionGate interface {
+	IsActive() bool
+}
 
 type Source interface {
 	Subscribe() <-chan domain.SignalEvent
@@ -21,10 +25,10 @@ type Processor struct {
 	eval     domain.Evaluator
 	notify   domain.Notifier
 	position domain.PositionController
-	session  *session.Manager
+	session  SessionGate
 }
 
-func New(src Source, store domain.SignalStore, eval domain.Evaluator, notify domain.Notifier, position domain.PositionController, sess *session.Manager, dedupeLimit int) *Processor {
+func New(src Source, store domain.SignalStore, eval domain.Evaluator, notify domain.Notifier, position domain.PositionController, session SessionGate, dedupeLimit int) *Processor {
 	if dedupeLimit <= 0 {
 		dedupeLimit = 10000
 	}
@@ -35,7 +39,7 @@ func New(src Source, store domain.SignalStore, eval domain.Evaluator, notify dom
 		eval:     eval,
 		notify:   notify,
 		position: position,
-		session:  sess,
+		session:  session,
 	}
 }
 
@@ -63,9 +67,6 @@ func (p *Processor) handle(ctx context.Context, ev domain.SignalEvent) {
 		log.Printf("señal duplicada por barra ignorada: %s", ev.BarKey())
 		return
 	}
-	if p.session != nil {
-		p.session.RecordSignal()
-	}
 	emit, err := p.eval.Evaluate(ctx, ev)
 	if err != nil {
 		log.Printf("error evaluando señal %s: %v", ev.Key(), err)
@@ -85,6 +86,9 @@ func (p *Processor) handle(ctx context.Context, ev domain.SignalEvent) {
 	if err := p.notify.Notify(ctx, ev); err != nil {
 		log.Printf("error notificando señal %s: %v", ev.Key(), err)
 	}
+	if p.position == nil {
+		return
+	}
 	if p.session != nil && !p.session.IsActive() {
 		log.Printf(
 			"sesión detenida: señal %s registrada pero no ejecutada",
@@ -92,9 +96,11 @@ func (p *Processor) handle(ctx context.Context, ev domain.SignalEvent) {
 		)
 		return
 	}
-	if p.position != nil {
-		if err := p.position.OnSignal(ctx, ev); err != nil {
-			log.Printf("error gestionando posición %s: %v", ev.Key(), err)
-		}
+	if err := p.position.OnSignal(ctx, ev); err != nil {
+		log.Printf(
+			"error gestionando posición %s: %v",
+			ev.Key(),
+			err,
+		)
 	}
 }

@@ -57,6 +57,10 @@ type Config struct {
 	MLConfidence float64
 	MLCooldown   time.Duration
 	MLTimeout    time.Duration
+
+	// Control de sesión de trading (Fase B)
+	TradingSessionEnabled     bool
+	TradingSessionStartActive bool
 }
 
 func Load() (*Config, error) {
@@ -110,6 +114,10 @@ func Load() (*Config, error) {
 		MLConfidence: getEnvFloat("ML_CONFIDENCE", 0.6),
 		MLCooldown:   time.Duration(getEnvInt("ML_COOLDOWN_HOURS", 4)) * time.Hour,
 		MLTimeout:    time.Duration(getEnvInt("ML_TIMEOUT_SECONDS", 5)) * time.Second,
+
+		// Control de sesión de trading (Fase B)
+		TradingSessionEnabled:     getEnvBool("TRADING_SESSION_ENABLED", true),
+		TradingSessionStartActive: getEnvBool("TRADING_SESSION_START_ACTIVE", false),
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "paper"

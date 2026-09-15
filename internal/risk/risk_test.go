@@ -26,18 +26,21 @@ func (m *memStore) OpenPosition(_ context.Context, p domain.Position) (int64, er
 	return p.ID, nil
 }
 
-func (m *memStore) ClosePosition(_ context.Context, id int64, exitPrice float64, exitTS time.Time) (domain.Position, error) {
+func (m *memStore) ClosePosition(_ context.Context, id int64, exitPrice float64, exitTS time.Time, opts domain.CloseOptions) (domain.Position, error) {
 	for i, p := range m.positions {
 		if p.ID == id {
 			p.Status = domain.PositionClosed
 			p.ExitPrice = exitPrice
 			p.ExitTS = exitTS
+			p.ExitReason = opts.Reason
 			if p.Side == domain.DirectionBuy {
-				p.PnL = (exitPrice - p.EntryPrice) * p.Quantity
+				p.GrossPnL = (exitPrice - p.EntryPrice) * p.Quantity
 			} else {
-				p.PnL = (p.EntryPrice - exitPrice) * p.Quantity
+				p.GrossPnL = (p.EntryPrice - exitPrice) * p.Quantity
 			}
-			m.account.Balance += p.PnL
+			p.NetPnL = p.GrossPnL - (opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit)
+			p.PnL = p.NetPnL
+			m.account.Balance += p.NetPnL
 			if m.account.Balance > m.account.PeakEquity {
 				m.account.PeakEquity = m.account.Balance
 			}
@@ -46,6 +49,16 @@ func (m *memStore) ClosePosition(_ context.Context, id int64, exitPrice float64,
 		}
 	}
 	return domain.Position{}, domain.ErrNotFound
+}
+
+func (m *memStore) ClosedPositions(_ context.Context) ([]domain.Position, error) {
+	var out []domain.Position
+	for _, p := range m.positions {
+		if p.Status == domain.PositionClosed {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 func (m *memStore) OpenPositions(_ context.Context) ([]domain.Position, error) {

@@ -155,15 +155,32 @@ CREATE TABLE IF NOT EXISTS positions (
 	exit_ts      INTEGER NOT NULL DEFAULT 0,
 	exit_price   REAL NOT NULL DEFAULT 0,
 	pnl          REAL NOT NULL DEFAULT 0,
+	exit_reason  TEXT NOT NULL DEFAULT '',
+	entry_fee    REAL NOT NULL DEFAULT 0,
+	exit_fee     REAL NOT NULL DEFAULT 0,
+	slippage_entry REAL NOT NULL DEFAULT 0,
+	slippage_exit  REAL NOT NULL DEFAULT 0,
+	gross_pnl    REAL NOT NULL DEFAULT 0,
+	net_pnl      REAL NOT NULL DEFAULT 0,
+	r_multiple   REAL NOT NULL DEFAULT 0,
+	duration_ms  INTEGER NOT NULL DEFAULT 0,
+	ambiguous_bar INTEGER NOT NULL DEFAULT 0,
 	UNIQUE(strategy_id, symbol, timeframe, status)
 );
 CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(status, strategy_id);
+CREATE INDEX IF NOT EXISTS idx_positions_closed ON positions(status, exit_ts);
 
 CREATE TABLE IF NOT EXISTS account (
 	id         INTEGER PRIMARY KEY CHECK (id = 1),
 	balance    REAL NOT NULL,
 	peak_equity REAL NOT NULL,
-	updated_at INTEGER NOT NULL
+	updated_at INTEGER NOT NULL,
+	equity        REAL NOT NULL DEFAULT 0,
+	initial_balance REAL NOT NULL DEFAULT 0,
+	realized_pnl  REAL NOT NULL DEFAULT 0,
+	unrealized_pnl REAL NOT NULL DEFAULT 0,
+	fees          REAL NOT NULL DEFAULT 0,
+	max_drawdown  REAL NOT NULL DEFAULT 0
 );
 `
 
@@ -171,13 +188,29 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("aplicando esquema: %w", err)
 	}
-	// Migraciones idempotentes para tablas creadas antes de Fase 4.
+	// Migraciones idempotentes para tablas creadas antes de Fase 4 y Fase C.
 	for _, stmt := range []string{
 		"ALTER TABLE strategies ADD COLUMN source TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE strategies ADD COLUMN pinescript TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE strategies ADD COLUMN spec TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE strategies ADD COLUMN error_msg TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE strategies ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN exit_reason TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE positions ADD COLUMN entry_fee REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN exit_fee REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN slippage_entry REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN slippage_exit REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN gross_pnl REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN net_pnl REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN r_multiple REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN ambiguous_bar INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE account ADD COLUMN equity REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE account ADD COLUMN initial_balance REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE account ADD COLUMN realized_pnl REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE account ADD COLUMN unrealized_pnl REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE account ADD COLUMN fees REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE account ADD COLUMN max_drawdown REAL NOT NULL DEFAULT 0",
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrando strategies: %w", err)
@@ -431,14 +464,14 @@ func (s *Store) OpenPosition(ctx context.Context, p domain.Position) (int64, err
 	return id, nil
 }
 
-func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, exitTS time.Time) (domain.Position, error) {
+func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, exitTS time.Time, opts domain.CloseOptions) (domain.Position, error) {
 	var p domain.Position
 	var side string
 	var entryTS int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, quantity, status
+		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, quantity, status
 		FROM positions
-		WHERE id = ?`, id).Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS, &p.EntryPrice, &p.Quantity, &p.Status)
+		WHERE id = ?`, id).Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS, &p.EntryPrice, &p.StopLoss, &p.Quantity, &p.Status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, domain.ErrNotFound
 	}
@@ -450,30 +483,64 @@ func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, 
 	if p.Status != domain.PositionOpen {
 		return p, fmt.Errorf("posición %d no está abierta", id)
 	}
+	// Calcular PnL bruto y neto.
 	switch p.Side {
 	case domain.DirectionBuy:
-		p.PnL = (exitPrice - p.EntryPrice) * p.Quantity
+		p.GrossPnL = (exitPrice - p.EntryPrice) * p.Quantity
 	case domain.DirectionSell:
-		p.PnL = (p.EntryPrice - exitPrice) * p.Quantity
+		p.GrossPnL = (p.EntryPrice - exitPrice) * p.Quantity
+	}
+	totalCost := opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
+	p.NetPnL = p.GrossPnL - totalCost
+	p.EntryFee = opts.EntryFee
+	p.ExitFee = opts.ExitFee
+	p.SlippageEntry = opts.SlippageEntry
+	p.SlippageExit = opts.SlippageExit
+	p.ExitReason = opts.Reason
+	p.AmbiguousBar = opts.AmbiguousBar
+	p.Duration = exitTS.Sub(p.EntryTS)
+	if p.RiskAmount > 0 {
+		p.RMultiple = p.NetPnL / p.RiskAmount
 	}
 	p.ExitPrice = exitPrice
 	p.ExitTS = exitTS
+	p.PnL = p.NetPnL
 	p.Status = domain.PositionClosed
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE positions
-		SET status = 'closed', exit_ts = ?, exit_price = ?, pnl = ?
+		SET status = 'closed', exit_ts = ?, exit_price = ?, pnl = ?,
+			exit_reason = ?, entry_fee = ?, exit_fee = ?,
+			slippage_entry = ?, slippage_exit = ?,
+			gross_pnl = ?, net_pnl = ?, r_multiple = ?,
+			duration_ms = ?, ambiguous_bar = ?
 		WHERE id = ?`,
-		exitTS.UnixMilli(), exitPrice, p.PnL, id)
+		exitTS.UnixMilli(), exitPrice, p.NetPnL,
+		p.ExitReason, p.EntryFee, p.ExitFee,
+		p.SlippageEntry, p.SlippageExit,
+		p.GrossPnL, p.NetPnL, p.RMultiple,
+		p.Duration.Milliseconds(), boolToInt(p.AmbiguousBar),
+		id)
 	if err != nil {
 		return p, fmt.Errorf("cerrando posición: %w", err)
 	}
+	// Actualizar cuenta.
 	account, err := s.GetAccount(ctx)
 	if err != nil {
 		return p, err
 	}
-	account.Balance += p.PnL
+	account.Balance += p.NetPnL
+	account.RealizedPnL += p.NetPnL
+	account.Fees += opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
+	account.Equity = account.Balance
+	account.UnrealizedPnL = 0
 	if account.Balance > account.PeakEquity {
 		account.PeakEquity = account.Balance
+	}
+	if account.PeakEquity > 0 {
+		dd := (account.PeakEquity - account.Balance) / account.PeakEquity
+		if dd > account.MaxDrawdown {
+			account.MaxDrawdown = dd
+		}
 	}
 	account.UpdatedAt = time.Now()
 	if err := s.UpdateAccount(ctx, account); err != nil {
@@ -511,13 +578,50 @@ func (s *Store) OpenPositions(ctx context.Context) ([]domain.Position, error) {
 	return out, nil
 }
 
+func (s *Store) ClosedPositions(ctx context.Context) ([]domain.Position, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, exit_price,
+			quantity, risk_amount, pnl, exit_ts, exit_reason,
+			gross_pnl, net_pnl, r_multiple, duration_ms, ambiguous_bar
+		FROM positions
+		WHERE status = 'closed'
+		ORDER BY exit_ts`)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo posiciones cerradas: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Position
+	for rows.Next() {
+		var p domain.Position
+		var side string
+		var entryTS, exitTS, durMs, ambig int64
+		if err := rows.Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS,
+			&p.EntryPrice, &p.ExitPrice, &p.Quantity, &p.RiskAmount, &p.PnL, &exitTS,
+			&p.ExitReason, &p.GrossPnL, &p.NetPnL, &p.RMultiple, &durMs, &ambig); err != nil {
+			return nil, fmt.Errorf("escaneando posición cerrada: %w", err)
+		}
+		p.Side = domain.Direction(side)
+		p.EntryTS = time.UnixMilli(entryTS)
+		p.ExitTS = time.UnixMilli(exitTS)
+		p.Duration = time.Duration(durMs) * time.Millisecond
+		p.AmbiguousBar = ambig != 0
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (s *Store) GetAccount(ctx context.Context) (domain.Account, error) {
 	var a domain.Account
 	var updatedAt int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT balance, peak_equity, updated_at
+		SELECT balance, peak_equity, updated_at, equity, initial_balance,
+			realized_pnl, unrealized_pnl, fees, max_drawdown
 		FROM account
-		WHERE id = 1`).Scan(&a.Balance, &a.PeakEquity, &updatedAt)
+		WHERE id = 1`).Scan(&a.Balance, &a.PeakEquity, &updatedAt,
+		&a.Equity, &a.InitialBalance, &a.RealizedPnL, &a.UnrealizedPnL, &a.Fees, &a.MaxDrawdown)
 	if errors.Is(err, sql.ErrNoRows) {
 		return domain.Account{}, domain.ErrNotFound
 	}
@@ -530,13 +634,20 @@ func (s *Store) GetAccount(ctx context.Context) (domain.Account, error) {
 
 func (s *Store) UpdateAccount(ctx context.Context, a domain.Account) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO account (id, balance, peak_equity, updated_at)
-		VALUES (1, ?, ?, ?)
+		INSERT INTO account (id, balance, peak_equity, updated_at, equity, initial_balance, realized_pnl, unrealized_pnl, fees, max_drawdown)
+		VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			balance = excluded.balance,
 			peak_equity = excluded.peak_equity,
-			updated_at = excluded.updated_at`,
-		a.Balance, a.PeakEquity, a.UpdatedAt.UnixMilli())
+			updated_at = excluded.updated_at,
+			equity = excluded.equity,
+			initial_balance = excluded.initial_balance,
+			realized_pnl = excluded.realized_pnl,
+			unrealized_pnl = excluded.unrealized_pnl,
+			fees = excluded.fees,
+			max_drawdown = excluded.max_drawdown`,
+		a.Balance, a.PeakEquity, a.UpdatedAt.UnixMilli(),
+		a.Equity, a.InitialBalance, a.RealizedPnL, a.UnrealizedPnL, a.Fees, a.MaxDrawdown)
 	if err != nil {
 		return fmt.Errorf("actualizando cuenta: %w", err)
 	}

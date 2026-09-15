@@ -9,7 +9,6 @@ import (
 	"tradingview-bot/internal/bus"
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/evaluator"
-	"tradingview-bot/internal/session"
 	"tradingview-bot/internal/store"
 )
 
@@ -49,11 +48,18 @@ func (r *recordingPosition) count() int {
 	return len(r.calls)
 }
 
-func newTestPipeline(t *testing.T) (*Processor, *bus.Bus, *recordingNotifier, *store.Store) {
-	return newTestPipelineWith(t, nil)
+// testGate implementa SessionGate.
+type testGate struct {
+	active bool
 }
 
-func newTestPipelineWith(t *testing.T, position domain.PositionController) (*Processor, *bus.Bus, *recordingNotifier, *store.Store) {
+func (g *testGate) IsActive() bool { return g.active }
+
+func newTestPipeline(t *testing.T) (*Processor, *bus.Bus, *recordingNotifier, *store.Store) {
+	return newTestPipelineWith(t, nil, true)
+}
+
+func newTestPipelineWith(t *testing.T, position domain.PositionController, active bool) (*Processor, *bus.Bus, *recordingNotifier, *store.Store) {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -63,9 +69,8 @@ func newTestPipelineWith(t *testing.T, position domain.PositionController) (*Pro
 	b := bus.New(32)
 	eval := evaluator.New(st)
 	rec := &recordingNotifier{}
-	sess := session.New()
-	sess.Start()
-	p := New(b, st, eval, rec, position, sess, 1000)
+	gate := &testGate{active: active}
+	p := New(b, st, eval, rec, position, gate, 1000)
 	ctx, cancel := context.WithCancel(context.Background())
 	p.Start(ctx)
 	t.Cleanup(cancel)
@@ -198,7 +203,7 @@ func TestProcessorPersistsSignals(t *testing.T) {
 
 func TestProcessorCallsPositionControllerOnDirectionChange(t *testing.T) {
 	pos := &recordingPosition{}
-	_, b, rec, _ := newTestPipelineWith(t, pos)
+	_, b, rec, _ := newTestPipelineWith(t, pos, true)
 	ctx := context.Background()
 
 	if err := b.Publish(ctx, ev("BTCUSDT", domain.DirectionBuy, 1)); err != nil {
@@ -215,19 +220,8 @@ func TestProcessorCallsPositionControllerOnDirectionChange(t *testing.T) {
 
 func TestProcessorBlocksPositionWhenSessionStopped(t *testing.T) {
 	pos := &recordingPosition{}
-	st, err := store.Open(":memory:")
-	if err != nil {
-		t.Fatalf("store: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	b := bus.New(32)
-	eval := evaluator.New(st)
-	rec := &recordingNotifier{}
-	sess := session.New()
-	p := New(b, st, eval, rec, pos, sess, 1000)
-	ctx, cancel := context.WithCancel(context.Background())
-	p.Start(ctx)
-	t.Cleanup(cancel)
+	_, b, rec, _ := newTestPipelineWith(t, pos, false)
+	ctx := context.Background()
 
 	if err := b.Publish(ctx, ev("BTCUSDT", domain.DirectionBuy, 1)); err != nil {
 		t.Fatal(err)
@@ -237,14 +231,9 @@ func TestProcessorBlocksPositionWhenSessionStopped(t *testing.T) {
 	if pos.count() != 0 {
 		t.Errorf("sesión detenida abrió %d posiciones, want 0", pos.count())
 	}
-	if sess.Signals() != 1 {
-		t.Errorf("señales registradas %d, want 1", sess.Signals())
-	}
 
-	// Iniciar sesión: ahora la señal sí debe llegar al controlador de posición.
-	sess.Start()
-	if err := b.Publish(ctx, ev("BTCUSDT", domain.DirectionSell, 2)); err != nil {
-		t.Fatal(err)
+	// Verificar que la señal sí llegó al notificador (se guardó).
+	if rec.count() != 1 {
+		t.Errorf("notificaciones = %d, want 1", rec.count())
 	}
-	waitFor(t, 2*time.Second, func() bool { return pos.count() == 1 })
 }

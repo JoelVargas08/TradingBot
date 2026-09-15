@@ -135,7 +135,9 @@ func (m *Manager) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 		if p.Side == ev.Direction {
 			return nil
 		}
-		if _, err := m.store.ClosePosition(ctx, p.ID, ev.Price, time.Now()); err != nil {
+		if _, err := m.store.ClosePosition(ctx, p.ID, ev.Price, time.Now(), domain.CloseOptions{
+			Reason: "signal-contrary",
+		}); err != nil {
 			return fmt.Errorf("cerrando posición %d: %w", p.ID, err)
 		}
 	}

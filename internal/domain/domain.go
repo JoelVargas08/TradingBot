@@ -201,18 +201,65 @@ type Position struct {
 	ExitTS     time.Time
 	ExitPrice  float64
 	PnL        float64
+
+	ExitReason    string
+	EntryFee      float64
+	ExitFee       float64
+	SlippageEntry float64
+	SlippageExit  float64
+	GrossPnL      float64
+	NetPnL        float64
+	RMultiple     float64
+	Duration      time.Duration
+	AmbiguousBar  bool
 }
 
 type Account struct {
-	Balance    float64
-	PeakEquity float64
-	UpdatedAt  time.Time
+	Balance        float64
+	PeakEquity     float64
+	UpdatedAt      time.Time
+	Equity         float64
+	InitialBalance float64
+	RealizedPnL    float64
+	UnrealizedPnL  float64
+	Fees           float64
+	MaxDrawdown    float64
+}
+
+// Performance contiene las métricas de paper trading.
+type Performance struct {
+	Trades            int
+	Wins              int
+	Losses            int
+	WinRate           float64
+	ProfitFactor      float64
+	Expectancy        float64
+	AverageWin        float64
+	AverageLoss       float64
+	TotalPnL          float64
+	ReturnPct         float64
+	MaxDrawdown       float64
+	Sharpe            float64
+	Sortino           float64
+	ConsecutiveWins   int
+	ConsecutiveLosses int
+}
+
+// CloseOptions describe los costes y motivo de un cierre de posición.
+type CloseOptions struct {
+	Reason        string
+	EntryFee      float64
+	ExitFee       float64
+	SlippageEntry float64
+	SlippageExit  float64
+	AmbiguousBar  bool
 }
 
 type PositionStore interface {
 	OpenPosition(ctx context.Context, p Position) (int64, error)
-	ClosePosition(ctx context.Context, id int64, exitPrice float64, exitTS time.Time) (Position, error)
+	ClosePosition(ctx context.Context, id int64, exitPrice float64, exitTS time.Time, opts CloseOptions) (Position, error)
 	OpenPositions(ctx context.Context) ([]Position, error)
+	ClosedPositions(ctx context.Context) ([]Position, error)
 	GetAccount(ctx context.Context) (Account, error)
 	UpdateAccount(ctx context.Context, a Account) error
 }

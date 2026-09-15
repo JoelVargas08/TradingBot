@@ -1,36 +1,53 @@
 package session
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestManagerLifecycle(t *testing.T) {
-	m := New()
+	m := New(false)
 	if m.IsActive() {
 		t.Fatal("la sesión debe arrancar detenida")
 	}
-	if m.Status() != StatusStopped {
-		t.Fatalf("status = %q, want %q", m.Status(), StatusStopped)
+	if !m.StartedAt().IsZero() {
+		t.Fatal("StartedAt debe ser cero cuando arranca detenida")
 	}
 
 	m.Start()
 	if !m.IsActive() {
 		t.Fatal("la sesión debe estar activa tras Start")
 	}
-	if m.Status() != StatusRunning {
-		t.Fatalf("status = %q, want %q", m.Status(), StatusRunning)
+	if m.StartedAt().IsZero() {
+		t.Fatal("StartedAt debe establecerse al hacer Start")
+	}
+
+	// Segundo Start no debe cambiar started.
+	saved := m.StartedAt()
+	m.Start()
+	if m.StartedAt() != saved {
+		t.Fatal("Start repetido no debe cambiar StartedAt")
 	}
 
 	m.Stop()
 	if m.IsActive() {
 		t.Fatal("la sesión debe estar detenida tras Stop")
 	}
+
+	// Start de nuevo después de Stop sí actualiza started.
+	time.Sleep(time.Millisecond)
+	m.Start()
+	if m.StartedAt() == saved {
+		t.Fatal("Start tras Stop debe actualizar StartedAt")
+	}
 }
 
-func TestManagerRecordsSignals(t *testing.T) {
-	m := New()
-	for i := 0; i < 3; i++ {
-		m.RecordSignal()
+func TestManagerStartActive(t *testing.T) {
+	m := New(true)
+	if !m.IsActive() {
+		t.Fatal("New(true) debe arrancar activa")
 	}
-	if got := m.Signals(); got != 3 {
-		t.Fatalf("Signals() = %d, want 3", got)
+	if m.StartedAt().IsZero() {
+		t.Fatal("New(true) debe tener StartedAt definido")
 	}
 }

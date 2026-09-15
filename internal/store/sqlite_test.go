@@ -228,7 +228,7 @@ func TestClosePositionUpdatesPnLAndAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenPosition: %v", err)
 	}
-	p, err := s.ClosePosition(ctx, id, 61000, time.UnixMilli(2))
+	p, err := s.ClosePosition(ctx, id, 61000, time.UnixMilli(2), domain.CloseOptions{})
 	if err != nil {
 		t.Fatalf("ClosePosition: %v", err)
 	}
