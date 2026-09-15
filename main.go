@@ -112,10 +112,37 @@ func main() {
 	var tradingSession *session.Manager
 	if cfg.TradingSessionEnabled {
 		tradingSession = session.New(cfg.TradingSessionStartActive)
+		if cfg.TradingSessionScheduleEnabled {
+			startDur, errS := session.ParseClock(cfg.TradingSessionStart)
+			endDur, errE := session.ParseClock(cfg.TradingSessionEnd)
+			switch {
+			case errS != nil:
+				log.Fatalf("TRADING_SESSION_START inválido (%q): %v", cfg.TradingSessionStart, errS)
+			case errE != nil:
+				log.Fatalf("TRADING_SESSION_END inválido (%q): %v", cfg.TradingSessionEnd, errE)
+			case startDur == endDur:
+				log.Fatalf("horario inválido: TRADING_SESSION_START == TRADING_SESSION_END (%s → %s)", cfg.TradingSessionStart, cfg.TradingSessionEnd)
+			}
+			loc, errLoc := time.LoadLocation(cfg.TradingSessionTimezone)
+			if errLoc != nil {
+				log.Fatalf("TRADING_SESSION_TIMEZONE inválido (%q): %v", cfg.TradingSessionTimezone, errLoc)
+			}
+			if err := tradingSession.SetSchedule(session.Schedule{
+				Enabled:  true,
+				Start:    startDur,
+				End:      endDur,
+				Location: loc,
+			}); err != nil {
+				log.Fatalf("horario de sesión: %v", err)
+			}
+		}
 		if tradingSession.IsActive() {
 			log.Println("Sesión de trading: ACTIVA")
 		} else {
 			log.Println("Sesión de trading: DETENIDA")
+		}
+		if cfg.TradingSessionScheduleEnabled {
+			log.Printf("Horario de sesión: %s → %s (%s)", cfg.TradingSessionStart, cfg.TradingSessionEnd, cfg.TradingSessionTimezone)
 		}
 	} else {
 		log.Println("Sesión de trading: deshabilitada (TRADING_SESSION_ENABLED=false); las señales se ejecutan siempre")
@@ -130,7 +157,7 @@ func main() {
 	notifierSvc.Start(ctx)
 
 	// Gestión de riesgo y posiciones
-	var positionCtrl domain.PositionController
+	var riskManager *risk.Manager
 	var paperEngine *paper.Engine
 	if cfg.RiskEnabled {
 		riskCfg := risk.Config{
@@ -141,14 +168,21 @@ func main() {
 			StartingBalance:  cfg.StartingBalance,
 			DefaultStopPct:   cfg.DefaultStopPct,
 		}
-		positionCtrl = risk.New(sqliteStore, riskCfg)
-		paperEngine = paper.New(sqliteStore, positionCtrl, paper.Config{})
+		riskManager = risk.New(sqliteStore, riskCfg)
+		paperEngine = paper.New(sqliteStore, riskManager, paper.Config{})
 		log.Printf("Gestión de riesgo activa: %d posiciones máx, R/R %v:1, kill-switch %.0f%%",
 			cfg.MaxOpenPositions, cfg.MinRR, cfg.KillSwitchPct*100)
 		log.Printf("Paper trading activo: fees %.3f%%, slippage %.3f%% por operación (Simulado)",
 			paper.Config{}.FeeRate*100, paper.Config{}.SlippageRate*100)
 	}
-	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, positionCtrl, tradingSession, 10000)
+
+	// El processor ejecuta señales a través del Paper Engine cuando existe;
+	// así los cierres por señal contraria también aplican fees/slippage.
+	processorPositionController := domain.PositionController(riskManager)
+	if paperEngine != nil {
+		processorPositionController = paperEngine
+	}
+	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, processorPositionController, tradingSession, 10000)
 	processorSvc.Start(ctx)
 
 	// Modo de ejecución (Fase 6)
@@ -244,6 +278,9 @@ func main() {
 						log.Printf("guardando vela %s %s: %v", k.Symbol, k.Timeframe, err)
 					}
 					if paperEngine != nil && k.Closed {
+						if err := paperEngine.MarkPrice(ctx, k); err != nil {
+							log.Printf("paper mark-price %s %s: %v", k.Symbol, k.Timeframe, err)
+						}
 						paperEngine.CheckStops(ctx, k)
 					}
 					for _, ev := range detector.OnCandle(k) {
@@ -471,6 +508,8 @@ func main() {
 				commandsHandler.HandleSessionStart(chatID)
 			case "session_stop":
 				commandsHandler.HandleSessionStop(chatID)
+			case "session_schedule":
+				commandsHandler.HandleSessionSchedule(chatID)
 			default:
 				telegram.SendMessage(chatID, "Comando no reconocido. Usa /help")
 			}

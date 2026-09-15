@@ -17,6 +17,7 @@ type Thresholds struct {
 	MinProfitFactor float64
 	MinSharpe       float64
 	MaxDrawdown     float64
+	Folds           int
 }
 
 func (t Thresholds) withDefaults() Thresholds {
@@ -35,47 +36,124 @@ func (t Thresholds) withDefaults() Thresholds {
 	if t.MaxDrawdown <= 0 {
 		t.MaxDrawdown = 0.30
 	}
+	if t.Folds <= 0 {
+		t.Folds = 4
+	}
 	return t
 }
 
-// Backtest ejecuta el spec sobre velas y devuelve métricas out-of-sample
-// (porción de test tras un warmup y una porción de walk-forward).
+// Backtest ejecuta walk-forward OOS con folds ventanas expansivas.
 func Backtest(spec StrategySpec, ks []domain.Kline, th Thresholds) (domain.BacktestResult, error) {
 	th = th.withDefaults()
 	if len(ks) < 100 {
 		return domain.BacktestResult{}, fmt.Errorf("datos insuficientes: %d velas", len(ks))
 	}
-	// Índices: [0, trainEnd) entrenamiento, [trainEnd, n) test.
-	trainEnd := int(float64(len(ks)) * 0.6)
-	if trainEnd < 60 {
-		trainEnd = 60
+	folds := th.Folds
+	if folds <= 1 {
+		folds = 1
+	}
+	segSize := len(ks) / (folds + 1)
+	if segSize < 30 {
+		segSize = 30
+		folds = len(ks)/segSize - 1
+		if folds < 1 {
+			folds = 1
+		}
 	}
 
-	// Calcular indicadores sobre TODA la serie (los que se usan en test son
-	// independientes de parámetros entrenables; validación de forma general).
+	// Calcular indicadores sobre TODA la serie para poder evaluar reglas.
 	ctx := newEvalContext(ks, spec.Indicators)
 
-	metrics, err := runEquity(ctx, spec, ks[trainEnd:], 0.001)
-	if err != nil {
-		return domain.BacktestResult{}, err
+	var foldsMetrics []domain.OOSFold
+	var allRets []float64
+	totalTrades, totalWins, totalLosses := 0, 0, 0
+	var aggGrossProfit, aggGrossLoss float64
+	aggMaxDD := 0.0
+	totalBars := 0
+
+	for i := 0; i < folds; i++ {
+		testStart := (i + 1) * segSize
+		testEnd := (i + 2) * segSize
+		if i == folds-1 {
+			testEnd = len(ks)
+		}
+		if testStart >= len(ks) {
+			break
+		}
+		testKS := ks[testStart:testEnd]
+		m, err := runEquity(ctx, spec, testKS, 0.001)
+		if err != nil {
+			return domain.BacktestResult{}, err
+		}
+		fold := domain.OOSFold{
+			Trades:       m.trades,
+			WinRate:      m.winRate,
+			ProfitFactor: m.profitFactor,
+			Sharpe:       m.sharpe,
+			Sortino:      m.sortino,
+			MaxDrawdown:  m.maxDrawdown,
+			TotalReturn:  m.totalReturn,
+			Bars:         len(testKS),
+		}
+		foldsMetrics = append(foldsMetrics, fold)
+		totalTrades += m.trades
+		totalWins += m.wins
+		totalLosses += m.losses
+		aggGrossProfit += m.grossProfit
+		aggGrossLoss += m.grossLoss
+		allRets = append(allRets, m.rets...)
+		if m.maxDrawdown > aggMaxDD {
+			aggMaxDD = m.maxDrawdown
+		}
+		totalBars += len(testKS)
 	}
 
-	// Sharpe aproximado con las rentabilidades por barra.
+	aggWR := 0.0
+	if totalTrades > 0 {
+		aggWR = float64(totalWins) / float64(totalTrades)
+	}
+	aggPF := 0.0
+	if aggGrossLoss > 0 {
+		aggPF = aggGrossProfit / aggGrossLoss
+	} else if aggGrossProfit > 0 {
+		aggPF = math.Inf(1)
+	}
+	aggSharpe := sharpe(allRets)
+	aggSortino := sortino(allRets)
+	aggReturn := 0.0
+	if len(allRets) > 0 {
+		for _, r := range allRets {
+			aggReturn += r
+		}
+		aggReturn = (math.Exp(aggReturn) - 1) * 100
+	}
+
+	passed := totalTrades >= th.MinTrades &&
+		aggWR >= th.MinWinRate &&
+		aggPF >= th.MinProfitFactor &&
+		aggSharpe >= th.MinSharpe &&
+		aggMaxDD <= th.MaxDrawdown
+
+	status := "RESEARCH_PASS"
+	if !passed {
+		status = "REJECTED"
+	}
+
 	return domain.BacktestResult{
 		StrategyID:   "",
-		Trades:       metrics.trades,
-		WinRate:      metrics.winRate,
-		ProfitFactor: metrics.profitFactor,
-		Sharpe:       metrics.sharpe,
-		MaxDrawdown:  metrics.maxDrawdown,
-		TotalReturn:  metrics.totalReturn,
-		TestBars:     len(ks) - trainEnd,
-		Passed: metrics.trades >= th.MinTrades &&
-			metrics.winRate >= th.MinWinRate &&
-			metrics.profitFactor >= th.MinProfitFactor &&
-			metrics.sharpe >= th.MinSharpe &&
-			metrics.maxDrawdown <= th.MaxDrawdown,
-		MetricsAt: time.Now(),
+		Trades:       totalTrades,
+		WinRate:      aggWR,
+		ProfitFactor: aggPF,
+		Sharpe:       aggSharpe,
+		Sortino:      aggSortino,
+		MaxDrawdown:  aggMaxDD,
+		TotalReturn:  aggReturn,
+		TestBars:     totalBars,
+		Passed:       passed,
+		MetricsAt:    time.Now(),
+		Folds:        folds,
+		OOSFolds:     foldsMetrics,
+		Status:       status,
 	}, nil
 }
 
@@ -88,8 +166,10 @@ type equityMetrics struct {
 	totalReturn  float64
 	maxDrawdown  float64
 	sharpe       float64
+	sortino      float64
 	winRate      float64
 	profitFactor float64
+	rets         []float64
 }
 
 func runEquity(ctx *evalContext, spec StrategySpec, ks []domain.Kline, fee float64) (equityMetrics, error) {
@@ -212,6 +292,8 @@ func runEquity(ctx *evalContext, spec StrategySpec, ks []domain.Kline, fee float
 		m.profitFactor = math.Inf(1)
 	}
 	m.sharpe = sharpe(rets)
+	m.sortino = sortino(rets)
+	m.rets = rets
 	return m, nil
 }
 
@@ -232,6 +314,34 @@ func sharpe(rets []float64) float64 {
 	perPeriod := mean / std
 	// asumimos operaciones en velas 1h → ~8760 al año; usamos sqrt(8760)
 	return perPeriod * math.Sqrt(8760)
+}
+
+// sortino calcula el ratio de Sortino anualizado usando solo volatilidad negativa.
+func sortino(rets []float64) float64 {
+	if len(rets) < 2 {
+		return 0
+	}
+	var sum, negSq float64
+	negN := 0
+	for _, r := range rets {
+		sum += r
+		if r < 0 {
+			negSq += r * r
+			negN++
+		}
+	}
+	mean := sum / float64(len(rets))
+	if negN == 0 {
+		if mean > 0 {
+			return math.Inf(1)
+		}
+		return 0
+	}
+	downStd := math.Sqrt(negSq / float64(negN))
+	if downStd == 0 {
+		return 0
+	}
+	return (mean / downStd) * math.Sqrt(8760)
 }
 
 func meanStd(values []float64) (mean, std float64) {

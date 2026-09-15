@@ -61,6 +61,12 @@ type Config struct {
 	// Control de sesión de trading (Fase B)
 	TradingSessionEnabled     bool
 	TradingSessionStartActive bool
+
+	// Horario automático (Fase E)
+	TradingSessionScheduleEnabled bool
+	TradingSessionStart           string
+	TradingSessionEnd             string
+	TradingSessionTimezone        string
 }
 
 func Load() (*Config, error) {
@@ -118,6 +124,12 @@ func Load() (*Config, error) {
 		// Control de sesión de trading (Fase B)
 		TradingSessionEnabled:     getEnvBool("TRADING_SESSION_ENABLED", true),
 		TradingSessionStartActive: getEnvBool("TRADING_SESSION_START_ACTIVE", false),
+
+		// Horario automático (Fase E)
+		TradingSessionScheduleEnabled: getEnvBool("TRADING_SESSION_SCHEDULE_ENABLED", false),
+		TradingSessionStart:           getEnv("TRADING_SESSION_START", "09:00"),
+		TradingSessionEnd:             getEnv("TRADING_SESSION_END", "17:00"),
+		TradingSessionTimezone:        getEnv("TRADING_SESSION_TIMEZONE", "America/New_York"),
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "paper"

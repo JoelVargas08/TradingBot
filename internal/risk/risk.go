@@ -41,18 +41,8 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-type Decision struct {
-	Allowed    bool
-	Reason     string
-	Side       domain.Direction
-	EntryPrice float64
-	StopLoss   float64
-	TakeProfit float64
-	Quantity   float64
-	RiskAmount float64
-	Drawdown   float64
-	OpenCount  int
-}
+// Decision es la salida de la evaluación de riesgo (definida en domain).
+type Decision = domain.Decision
 
 type Manager struct {
 	cfg   Config
@@ -64,6 +54,10 @@ func New(store domain.PositionStore, cfg Config) *Manager {
 }
 
 var ErrClosed = errors.New("posiciones deshabilitadas por kill-switch")
+
+func (m *Manager) EvaluateSignal(ctx context.Context, ev domain.SignalEvent) (Decision, error) {
+	return m.Evaluate(ctx, ev)
+}
 
 func (m *Manager) Evaluate(ctx context.Context, ev domain.SignalEvent) (Decision, error) {
 	acc, err := m.store.GetAccount(ctx)

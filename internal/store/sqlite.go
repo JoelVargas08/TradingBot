@@ -325,7 +325,7 @@ func (s *Store) UpsertStrategy(ctx context.Context, st domain.Strategy) error {
 	if st.UpdatedAt.IsZero() {
 		st.UpdatedAt = now
 	}
-	if !st.Status.Valid() {
+	if !st.Status.IsValid() {
 		st.Status = domain.StrategyDraft
 	}
 	_, err := s.db.ExecContext(ctx, `

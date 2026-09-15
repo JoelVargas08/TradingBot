@@ -2,6 +2,7 @@ package paper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -29,24 +30,66 @@ func (c Config) withDefaults() Config {
 }
 
 // Engine es el motor de paper trading: abre/cierra posiciones, vigila
-// SL/TP con velas cerradas y calcula métricas.
+// SL/TP con velas cerradas, actualiza equity intratrade y calcula métricas.
 type Engine struct {
 	store    domain.PositionStore
-	riskCtrl domain.PositionController
+	riskCtrl domain.RiskDecider
 	cfg      Config
 }
 
-// New crea un Engine que persiste en store y delega las entradas en riskCtrl.
-func New(store domain.PositionStore, riskCtrl domain.PositionController, cfg Config) *Engine {
+// New crea un Engine que persiste en store y delega la decisión en riskCtrl.
+func New(store domain.PositionStore, riskCtrl domain.RiskDecider, cfg Config) *Engine {
 	return &Engine{store: store, riskCtrl: riskCtrl, cfg: cfg.withDefaults()}
 }
 
-// OnSignal delega el flujo de riesgo para abrir/cerrar posiciones.
+// OnSignal aplica el flujo de ejecución paper sobre una señal:
+// cierra posiciones contrarias con costes, ignora mismas direcciones,
+// evalúa riesgo y abre posición si está permitido.
 func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	if e.riskCtrl == nil {
 		return fmt.Errorf("controlador de riesgo no configurado")
 	}
-	return e.riskCtrl.OnSignal(ctx, ev)
+	open, err := e.store.OpenPositions(ctx)
+	if err != nil {
+		return fmt.Errorf("listando posiciones abiertas: %w", err)
+	}
+	for _, p := range open {
+		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe {
+			continue
+		}
+		if p.Side == ev.Direction {
+			return nil
+		}
+		if err := e.closePosition(ctx, p.ID, ev.Price, time.Now(), domain.CloseOptions{Reason: "signal-contrary"}); err != nil {
+			return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err)
+		}
+	}
+
+	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev)
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed {
+		return fmt.Errorf("señal rechazada: %s", decision.Reason)
+	}
+
+	_, err = e.store.OpenPosition(ctx, domain.Position{
+		StrategyID: ev.StrategyID,
+		Symbol:     ev.Symbol,
+		Timeframe:  ev.Timeframe,
+		Side:       decision.Side,
+		EntryTS:    time.Now(),
+		EntryPrice: decision.EntryPrice,
+		StopLoss:   decision.StopLoss,
+		TakeProfit: decision.TakeProfit,
+		Quantity:   decision.Quantity,
+		RiskAmount: decision.RiskAmount,
+		Status:     domain.PositionOpen,
+	})
+	if err != nil {
+		return fmt.Errorf("abriendo posición: %w", err)
+	}
+	return nil
 }
 
 // Close cierra una posición abierta aplicando fees, slippage, PnL bruto/neto,
@@ -134,6 +177,47 @@ func (e *Engine) openPositionByID(ctx context.Context, id int64) (domain.Positio
 	return domain.Position{}, fmt.Errorf("posición abierta %d no encontrada", id)
 }
 
+// MarkPrice actualiza el equity de la cuenta con el PnL no realizado de las
+// posiciones del símbolo/timeframe de la vela usando su cierre.
+func (e *Engine) MarkPrice(ctx context.Context, k domain.Kline) error {
+	open, err := e.store.OpenPositions(ctx)
+	if err != nil {
+		return fmt.Errorf("mark-price: listando posiciones: %w", err)
+	}
+	acc, err := e.store.GetAccount(ctx)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("mark-price: leyendo cuenta: %w", err)
+	}
+
+	unrealized := 0.0
+	for _, p := range open {
+		if p.Symbol != k.Symbol || p.Timeframe != k.Timeframe {
+			continue
+		}
+		if p.Side == domain.DirectionBuy {
+			unrealized += (k.Close - p.EntryPrice) * p.Quantity
+		} else {
+			unrealized += (p.EntryPrice - k.Close) * p.Quantity
+		}
+	}
+	acc.UnrealizedPnL = unrealized
+	acc.Equity = acc.Balance + unrealized
+	if acc.Equity > acc.PeakEquity {
+		acc.PeakEquity = acc.Equity
+	}
+	if acc.PeakEquity > 0 {
+		dd := (acc.PeakEquity - acc.Equity) / acc.PeakEquity
+		if dd > acc.MaxDrawdown {
+			acc.MaxDrawdown = dd
+		}
+	}
+	acc.UpdatedAt = time.Now()
+	return e.store.UpdateAccount(ctx, acc)
+}
+
 // Performance calcula las métricas de paper trading sobre trades cerrados.
 func (e *Engine) Performance(ctx context.Context) (domain.Performance, error) {
 	trades, err := e.store.ClosedPositions(ctx)
@@ -152,15 +236,15 @@ func (e *Engine) Performance(ctx context.Context) (domain.Performance, error) {
 	var totalWins, totalLosses float64
 	var winStreak, lossStreak, bestWinStreak, bestLossStreak int
 	var netSeries []float64
-	var rSeries []float64
+	var winRS, lossRS []float64
 
 	for _, t := range trades {
 		netSeries = append(netSeries, t.NetPnL)
-		rSeries = append(rSeries, t.RMultiple)
 		if t.NetPnL > 0 {
 			perf.Wins++
 			totalWins += t.NetPnL
-			grossProfit += t.GrossPnL
+			grossProfit += t.NetPnL
+			winRS = append(winRS, t.RMultiple)
 			winStreak++
 			lossStreak = 0
 			if winStreak > bestWinStreak {
@@ -169,7 +253,8 @@ func (e *Engine) Performance(ctx context.Context) (domain.Performance, error) {
 		} else {
 			perf.Losses++
 			totalLosses += -t.NetPnL
-			grossLoss += -t.GrossPnL
+			grossLoss += -t.NetPnL
+			lossRS = append(lossRS, t.RMultiple)
 			lossStreak++
 			winStreak = 0
 			if lossStreak > bestLossStreak {
@@ -183,6 +268,7 @@ func (e *Engine) Performance(ctx context.Context) (domain.Performance, error) {
 	if perf.Trades > 0 {
 		perf.WinRate = float64(perf.Wins) / float64(perf.Trades) * 100
 	}
+	// Profit Factor y PnL sobre valores netos (tras comisiones y slippage).
 	if grossLoss > 0 {
 		perf.ProfitFactor = grossProfit / grossLoss
 	} else if grossProfit > 0 {
@@ -190,11 +276,23 @@ func (e *Engine) Performance(ctx context.Context) (domain.Performance, error) {
 	}
 	if perf.Wins > 0 {
 		perf.AverageWin = totalWins / float64(perf.Wins)
+		perf.AverageWinR = mean(winRS)
 	}
 	if perf.Losses > 0 {
 		perf.AverageLoss = totalLosses / float64(perf.Losses)
+		perf.AverageLossR = mean(lossRS)
 	}
 	perf.TotalPnL = sum(netSeries)
+	if perf.Trades > 0 {
+		perf.ExpectancyPnL = perf.TotalPnL / float64(perf.Trades)
+	}
+	winRate := 0.0
+	lossRate := 0.0
+	if perf.Trades > 0 {
+		winRate = float64(perf.Wins) / float64(perf.Trades)
+		lossRate = float64(perf.Losses) / float64(perf.Trades)
+	}
+	perf.ExpectancyR = winRate*perf.AverageWinR - lossRate*perf.AverageLossR
 	initial := acc.InitialBalance
 	if initial <= 0 {
 		initial = acc.PeakEquity
@@ -203,7 +301,6 @@ func (e *Engine) Performance(ctx context.Context) (domain.Performance, error) {
 		perf.ReturnPct = perf.TotalPnL / initial * 100
 	}
 	perf.MaxDrawdown = acc.MaxDrawdown * 100
-	perf.Expectancy = mean(rSeries)
 	perf.Sharpe = ratioWithDownside(netSeries, false) * math.Sqrt(float64(len(netSeries)))
 	perf.Sortino = ratioWithDownside(netSeries, true) * math.Sqrt(float64(len(netSeries)))
 	return perf, nil
@@ -284,5 +381,3 @@ func (e *Engine) GetAccount(ctx context.Context) (domain.Account, error) {
 func (e *Engine) UpdateAccount(ctx context.Context, a domain.Account) error {
 	return e.store.UpdateAccount(ctx, a)
 }
-
-var _ = time.Now

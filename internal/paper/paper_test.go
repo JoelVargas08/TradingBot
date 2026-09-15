@@ -104,7 +104,17 @@ func (m *memStore) UpdateAccount(_ context.Context, a domain.Account) error {
 
 type noopController struct{}
 
-func (noopController) OnSignal(context.Context, domain.SignalEvent) error { return nil }
+func (noopController) EvaluateSignal(_ context.Context, ev domain.SignalEvent) (domain.Decision, error) {
+	return domain.Decision{
+		Allowed:    true,
+		Side:       ev.Direction,
+		EntryPrice: ev.Price,
+		StopLoss:   ev.Price * 0.97,
+		TakeProfit: ev.Price * 1.09,
+		Quantity:   1,
+		RiskAmount: 3,
+	}, nil
+}
 
 func newTestEngine() (*Engine, *memStore) {
 	st := &memStore{account: domain.Account{
@@ -300,6 +310,108 @@ func TestPerformance(t *testing.T) {
 	}
 	if perf.ProfitFactor <= 0 {
 		t.Error("profit factor debe ser > 0")
+	}
+}
+
+func signal(dir domain.Direction, price float64) domain.SignalEvent {
+	return domain.SignalEvent{
+		StrategyID: "chandelier",
+		Symbol:     "BTCUSDT",
+		Timeframe:  "1h",
+		Direction:  dir,
+		Price:      price,
+	}
+}
+
+func TestContrarySignalAppliesCosts(t *testing.T) {
+	e, st := newTestEngine()
+	if err := e.OnSignal(context.Background(), signal(domain.DirectionBuy, 100)); err != nil {
+		t.Fatalf("OnSignal abrir LONG: %v", err)
+	}
+	before, _ := st.GetAccount(context.Background())
+
+	if err := e.OnSignal(context.Background(), signal(domain.DirectionSell, 103)); err != nil {
+		t.Fatalf("OnSignal invertir: %v", err)
+	}
+
+	closed, _ := st.ClosedPositions(context.Background())
+	if len(closed) != 1 {
+		t.Fatalf("cerradas = %d, want 1", len(closed))
+	}
+	c := closed[0]
+	if c.ExitReason != "signal-contrary" {
+		t.Errorf("reason = %s, want signal-contrary", c.ExitReason)
+	}
+	if c.GrossPnL != 3 {
+		t.Errorf("gross = %.4f, want 3", c.GrossPnL)
+	}
+	if c.NetPnL >= 3 {
+		t.Errorf("net = %.4f, debe ser < 3 con costes", c.NetPnL)
+	}
+	if c.EntryFee <= 0 || c.ExitFee <= 0 || c.SlippageEntry <= 0 || c.SlippageExit <= 0 {
+		t.Errorf("costes no aplicados: entryFee=%v exitFee=%v slipEntry=%v slipExit=%v",
+			c.EntryFee, c.ExitFee, c.SlippageEntry, c.SlippageExit)
+	}
+	after, _ := st.GetAccount(context.Background())
+	if after.Balance <= before.Balance {
+		t.Errorf("balance debería crecer tras cerrar LONG con beneficio: %.4f → %.4f", before.Balance, after.Balance)
+	}
+
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 1 {
+		t.Fatalf("abiertas = %d, want 1 (SHORT tras reversión)", len(open))
+	}
+	if open[0].Side != domain.DirectionSell {
+		t.Errorf("side = %s, want sell", open[0].Side)
+	}
+}
+
+func TestSameDirectionNoDuplicate(t *testing.T) {
+	e, st := newTestEngine()
+	if err := e.OnSignal(context.Background(), signal(domain.DirectionBuy, 100)); err != nil {
+		t.Fatalf("OnSignal abrir: %v", err)
+	}
+	if err := e.OnSignal(context.Background(), signal(domain.DirectionBuy, 100)); err != nil {
+		t.Fatalf("OnSignal mismo lado no debe fallar: %v", err)
+	}
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 1 {
+		t.Errorf("posiciones abiertas = %d, want 1 (sin duplicar)", len(open))
+	}
+}
+
+func TestMarkPriceIntraTradeDrawdown(t *testing.T) {
+	e, st := newTestEngine()
+	if err := e.OnSignal(context.Background(), signal(domain.DirectionBuy, 100)); err != nil {
+		t.Fatalf("OnSignal abrir: %v", err)
+	}
+
+	eq, _ := st.GetAccount(context.Background())
+	peakBefore := eq.PeakEquity
+
+	// Precio por debajo de entrada → pérdida no realizada.
+	if err := e.MarkPrice(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h",
+		Start: time.Now(), Close: 96, Closed: true,
+	}); err != nil {
+		t.Fatalf("MarkPrice: %v", err)
+	}
+
+	acc, err := st.GetAccount(context.Background())
+	if err != nil {
+		t.Fatalf("GetAccount: %v", err)
+	}
+	if acc.Equity >= acc.Balance {
+		t.Errorf("equity %.2f debe ser < balance %.2f con pérdida intratrade", acc.Equity, acc.Balance)
+	}
+	if acc.MaxDrawdown <= 0 {
+		t.Errorf("drawdown debe ser > 0, got %.4f", acc.MaxDrawdown)
+	}
+	if acc.PeakEquity != peakBefore {
+		t.Errorf("peak equity no debe disminuir: %.2f → %.2f", peakBefore, acc.PeakEquity)
+	}
+	if acc.UnrealizedPnL >= 0 {
+		t.Errorf("unrealized = %.2f, debe ser negativo", acc.UnrealizedPnL)
 	}
 }
 

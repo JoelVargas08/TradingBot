@@ -118,6 +118,71 @@ func TestSharpeCalculation(t *testing.T) {
 	}
 }
 
+func TestWalkForwardFourFolds(t *testing.T) {
+	spec := StrategySpec{
+		Symbol:    "BTCUSDT",
+		Timeframe: "1h",
+		Indicators: []Indicator{
+			{ID: "ema_fast", Type: "ema", Length: 5},
+			{ID: "ema_slow", Type: "ema", Length: 20},
+		},
+		Entries: []Rule{
+			{Side: "buy", Conditions: []Condition{
+				{Left: "ema_fast", Op: "cross_above", Right: "ema_slow"},
+			}},
+		},
+		Exits: []Rule{
+			{Side: "buy", Conditions: []Condition{
+				{Left: "ema_fast", Op: "cross_below", Right: "ema_slow"},
+			}},
+		},
+		StopPct:       5.0,
+		TakeProfitPct: 10.0,
+	}
+	ks := testKlines(2000)
+	res, err := Backtest(spec, ks, Thresholds{Folds: 4})
+	if err != nil {
+		t.Fatalf("Backtest: %v", err)
+	}
+	if res.Folds != 4 {
+		t.Errorf("folds = %d, want 4", res.Folds)
+	}
+	if len(res.OOSFolds) != 4 {
+		t.Errorf("OOSFolds = %d, want 4", len(res.OOSFolds))
+	}
+	if res.Folds != len(res.OOSFolds) {
+		t.Error("Folds y OOSFolds deben coincidir")
+	}
+	totalTrades := 0
+	for _, f := range res.OOSFolds {
+		totalTrades += f.Trades
+	}
+	if totalTrades != res.Trades {
+		t.Errorf("suma de trades por fold (%d) != trades agregados (%d)", totalTrades, res.Trades)
+	}
+}
+
+func TestWalkForwardStatus(t *testing.T) {
+	spec := StrategySpec{
+		Symbol:    "BTCUSDT",
+		Timeframe: "1h",
+		Entries: []Rule{
+			{Side: "buy", Conditions: []Condition{{Left: "close", Op: ">", Right: 1e9}}},
+		},
+		StopPct: 1.0,
+	}
+	res, err := Backtest(spec, testKlines(600), Thresholds{Folds: 4})
+	if err != nil {
+		t.Fatalf("Backtest: %v", err)
+	}
+	if res.Status != "REJECTED" {
+		t.Errorf("status = %q, want REJECTED sin trades", res.Status)
+	}
+	if res.Passed {
+		t.Error("sin trades no debería pasar umbrales")
+	}
+}
+
 func TestIndicatorEMA(t *testing.T) {
 	values := make([]float64, 30)
 	for i := range values {

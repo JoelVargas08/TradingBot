@@ -19,6 +19,9 @@ type SessionController interface {
 	Stop()
 	IsActive() bool
 	StartedAt() time.Time
+	StatusText() string
+	ScheduleText() string
+	TimezoneName() string
 }
 
 // PerformanceProvider ofrece métricas de paper trading al handler.
@@ -145,6 +148,30 @@ func (ch *CommandsHandler) HandleSessionStop(chatID int64) {
 			"Las posiciones existentes no se cierran automáticamente.",
 	)
 }
+func (ch *CommandsHandler) HandleSessionSchedule(chatID int64) {
+	if ch.session == nil {
+		ch.telegram.SendMessage(
+			chatID,
+			"❌ Control de sesión no disponible",
+		)
+		return
+	}
+	closeText := "NO"
+	ch.telegram.SendMessage(
+		chatID,
+		fmt.Sprintf(
+			"⏰ <b>Horario de trading</b>\n\n"+
+				"Estado: %s\n"+
+				"Horario: %s\n"+
+				"Zona: %s\n"+
+				"Cierre al terminar: %s",
+			ch.session.StatusText(),
+			ch.session.ScheduleText(),
+			ch.session.TimezoneName(),
+			closeText,
+		),
+	)
+}
 func (ch *CommandsHandler) HandleHelp(chatID int64) {
 	text := "📚 <b>Comandos disponibles:</b>\n\n" +
 		"/ping - Comprobar conexión con el bot\n" +
@@ -156,6 +183,7 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/session - Estado de la sesión de trading\n" +
 		"/session_start - Iniciar trading\n" +
 		"/session_stop - Detener nuevas operaciones\n" +
+		"/session_schedule - Mostrar el horario de trading\n" +
 		"/performance - Métricas de paper trading\n" +
 		"/learn - Aprender estrategia desde un PDF adjunto\n" +
 		"/strategies - Listar estrategias aprendidas\n" +

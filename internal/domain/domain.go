@@ -73,15 +73,16 @@ func (e SignalEvent) BarKey() string {
 type StrategyStatus string
 
 const (
-	StrategyDraft    StrategyStatus = "draft"
-	StrategyBacktest StrategyStatus = "backtesting"
-	StrategyActive   StrategyStatus = "active"
-	StrategyRejected StrategyStatus = "rejected"
+	StrategyDraft     StrategyStatus = "draft"
+	StrategyBacktest  StrategyStatus = "backtesting"
+	StrategyCandidate StrategyStatus = "candidate"
+	StrategyActive    StrategyStatus = "active"
+	StrategyRejected  StrategyStatus = "rejected"
 )
 
-func (s StrategyStatus) Valid() bool {
+func (s StrategyStatus) IsValid() bool {
 	switch s {
-	case StrategyDraft, StrategyBacktest, StrategyActive, StrategyRejected:
+	case StrategyDraft, StrategyBacktest, StrategyCandidate, StrategyActive, StrategyRejected:
 		return true
 	}
 	return false
@@ -106,11 +107,27 @@ type BacktestResult struct {
 	WinRate      float64
 	ProfitFactor float64
 	Sharpe       float64
+	Sortino      float64
 	MaxDrawdown  float64
 	TotalReturn  float64
 	TestBars     int
 	Passed       bool
 	MetricsAt    time.Time
+	Folds        int
+	OOSFolds     []OOSFold
+	Status       string
+}
+
+// OOSFold guarda las métricas de un único fold de walk-forward.
+type OOSFold struct {
+	Trades       int
+	WinRate      float64
+	ProfitFactor float64
+	Sharpe       float64
+	Sortino      float64
+	MaxDrawdown  float64
+	TotalReturn  float64
+	Bars         int
 }
 
 type BacktestStore interface {
@@ -231,11 +248,14 @@ type Performance struct {
 	Trades            int
 	Wins              int
 	Losses            int
-	WinRate           float64
+	WinRate           float64 // %
 	ProfitFactor      float64
-	Expectancy        float64
+	ExpectancyR       float64
+	ExpectancyPnL     float64
 	AverageWin        float64
+	AverageWinR       float64
 	AverageLoss       float64
+	AverageLossR      float64
 	TotalPnL          float64
 	ReturnPct         float64
 	MaxDrawdown       float64
@@ -253,6 +273,25 @@ type CloseOptions struct {
 	SlippageEntry float64
 	SlippageExit  float64
 	AmbiguousBar  bool
+}
+
+// Decision es la salida de la evaluación de riesgo de una señal.
+type Decision struct {
+	Allowed    bool
+	Reason     string
+	Side       Direction
+	EntryPrice float64
+	StopLoss   float64
+	TakeProfit float64
+	Quantity   float64
+	RiskAmount float64
+	Drawdown   float64
+	OpenCount  int
+}
+
+// RiskDecider decide si una señal puede ejecutarse y con qué parámetros.
+type RiskDecider interface {
+	EvaluateSignal(ctx context.Context, ev SignalEvent) (Decision, error)
 }
 
 type PositionStore interface {

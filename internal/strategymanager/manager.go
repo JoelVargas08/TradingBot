@@ -118,7 +118,7 @@ func (m *Manager) Backtest(ctx context.Context, id string) (domain.BacktestResul
 	}
 
 	if res.Passed {
-		st.Status = domain.StrategyActive
+		st.Status = domain.StrategyCandidate
 		st.Error = ""
 	} else {
 		st.Status = domain.StrategyRejected

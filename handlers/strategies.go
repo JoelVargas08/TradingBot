@@ -113,14 +113,17 @@ func (sc *StrategyCommands) OnDone() func(*jobqueue.Result) {
 			fmt.Fprintf(&b, "Descripción: %s\n\n", res.Strategy.Description)
 		}
 		if res.Result.StrategyID != "" {
-			fmt.Fprintf(&b, "📊 <b>Backtest</b>\n")
+			fmt.Fprintf(&b, "📊 <b>Backtest OOS (%d folds agregados)</b>\n", res.Result.Folds)
 			fmt.Fprintf(&b, "  Trades: %d · Win rate: %.1f%%\n", res.Result.Trades, res.Result.WinRate*100)
-			fmt.Fprintf(&b, "  Profit factor: %.2f · Sharpe: %.2f\n", res.Result.ProfitFactor, res.Result.Sharpe)
+			fmt.Fprintf(&b, "  Profit factor: %.2f · Sharpe: %.2f · Sortino: %.2f\n", res.Result.ProfitFactor, res.Result.Sharpe, res.Result.Sortino)
 			fmt.Fprintf(&b, "  Max drawdown: %.1f%% · Retorno: %.1f%%\n\n", res.Result.MaxDrawdown*100, res.Result.TotalReturn*100)
+			fmt.Fprintf(&b, "  Estado: %s\n\n", res.Result.Status)
 		}
 		switch res.Strategy.Status {
 		case domain.StrategyActive:
 			b.WriteString("🟢 <b>Activada</b>: superó la validación out-of-sample.")
+		case domain.StrategyCandidate:
+			b.WriteString("🟡 <b>Candidata</b>: superó los umbrales OOS; requiere revisión manual para activarse.")
 		case domain.StrategyRejected:
 			b.WriteString("🔴 <b>Rechazada</b>: " + res.Strategy.Error)
 		case domain.StrategyDraft:
