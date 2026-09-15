@@ -3,6 +3,7 @@ package services
 import (
 	"errors"
 	"fmt"
+	"log"
 	"time"
 	"unicode/utf8"
 
@@ -44,16 +45,33 @@ func (e *retryableError) RetryDelay() time.Duration { return e.delay }
 func (ts *TelegramService) SendMessage(chatID int64, text string) error {
 	msg := tgbotapi.NewMessage(chatID, truncate(text))
 	msg.ParseMode = "HTML"
+
 	_, err := ts.bot.Send(msg)
 	if err == nil {
 		return nil
 	}
+
 	var apiErr *tgbotapi.Error
 	if errors.As(err, &apiErr) && apiErr.ResponseParameters.RetryAfter > 0 {
-		return &retryableError{
+		retryErr := &retryableError{
 			msg:   fmt.Sprintf("telegram rate-limited: %v", err),
 			delay: time.Duration(apiErr.ResponseParameters.RetryAfter) * time.Second,
 		}
+
+		log.Printf(
+			"Telegram rate limit: chat_id=%d retry_after=%s",
+			chatID,
+			retryErr.delay,
+		)
+
+		return retryErr
 	}
+
+	log.Printf(
+		"ERROR enviando mensaje Telegram: chat_id=%d error=%v",
+		chatID,
+		err,
+	)
+
 	return err
 }

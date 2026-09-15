@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"tradingview-bot/internal/domain"
@@ -31,10 +32,12 @@ func (ch *CommandsHandler) HandleStart(chatID int64, args string) {
 				"Para obtener tu chat_id, envía /myid al bot @userinfobot")
 		return
 	}
-	var targetChatID int64
-	fmt.Sscanf(parts[0], "%d", &targetChatID)
-	if targetChatID == 0 {
-		ch.telegram.SendMessage(chatID, "❌ Chat ID inválido")
+	targetChatID, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || targetChatID == 0 {
+		ch.telegram.SendMessage(
+			chatID,
+			"❌ Chat ID inválido\n\nEjemplo:\n/start 123456789",
+		)
 		return
 	}
 	ch.userManager.Activate(targetChatID)
@@ -57,8 +60,15 @@ func (ch *CommandsHandler) HandleClose(chatID int64) {
 func (ch *CommandsHandler) HandleMyID(chatID int64) {
 	ch.telegram.SendMessage(chatID, fmt.Sprintf("Tu chat ID es: <code>%d</code>", chatID))
 }
+func (ch *CommandsHandler) HandlePing(chatID int64) {
+	ch.telegram.SendMessage(
+		chatID,
+		"🏓 <b>Pong!</b>\n\nTelegram está funcionando correctamente.",
+	)
+}
 func (ch *CommandsHandler) HandleHelp(chatID int64) {
 	text := "📚 <b>Comandos disponibles:</b>\n\n" +
+		"/ping - Comprobar conexión con el bot\n" +
 		"/start <chat_id> - Activar alertas\n" +
 		"/close - Desactivar alertas\n" +
 		"/myid - Obtener tu chat ID\n" +

@@ -64,6 +64,18 @@ func main() {
 	if err != nil {
 		log.Fatalf("Error creando bot: %v", err)
 	}
+	log.Printf("Telegram conectado como @%s", bot.Self.UserName)
+
+	// Fase A: usamos polling, por lo que eliminamos cualquier webhook
+	// anterior que pueda impedir que getUpdates funcione.
+	if _, err := bot.Request(tgbotapi.DeleteWebhookConfig{
+		DropPendingUpdates: false,
+	}); err != nil {
+		log.Fatalf("Error eliminando webhook de Telegram: %v", err)
+	}
+
+	log.Println("Webhook de Telegram eliminado; polling preparado")
+
 	telegram := services.NewTelegramService(bot)
 
 	// Gestión de usuarios con persistencia (archivo)
@@ -349,11 +361,16 @@ func main() {
 	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret)
 
 	// Configurar bot de Telegram para polling
+	log.Println("Telegram polling iniciado; esperando mensajes...")
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 	updates := bot.GetUpdatesChan(u)
 	go func() {
 		for update := range updates {
+			log.Printf(
+				"Telegram update recibido: update_id=%d",
+				update.UpdateID,
+			)
 			if update.Message == nil {
 				continue
 			}
@@ -404,6 +421,8 @@ func main() {
 				}
 			case "help":
 				commandsHandler.HandleHelp(chatID)
+			case "ping":
+				commandsHandler.HandlePing(chatID)
 			default:
 				telegram.SendMessage(chatID, "Comando no reconocido. Usa /help")
 			}
