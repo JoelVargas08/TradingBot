@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/session"
 	"tradingview-bot/models"
 	"tradingview-bot/services"
 )
@@ -15,13 +16,17 @@ type CommandsHandler struct {
 	userManager *models.UserManager
 	telegram    *services.TelegramService
 	positions   domain.PositionStore
+	session     *session.Manager
+	mode        string
 }
 
-func NewCommandsHandler(um *models.UserManager, tg *services.TelegramService, positions domain.PositionStore) *CommandsHandler {
+func NewCommandsHandler(um *models.UserManager, tg *services.TelegramService, positions domain.PositionStore, sess *session.Manager, mode string) *CommandsHandler {
 	return &CommandsHandler{
 		userManager: um,
 		telegram:    tg,
 		positions:   positions,
+		session:     sess,
+		mode:        mode,
 	}
 }
 func (ch *CommandsHandler) HandleStart(chatID int64, args string) {
@@ -63,8 +68,60 @@ func (ch *CommandsHandler) HandleMyID(chatID int64) {
 func (ch *CommandsHandler) HandlePing(chatID int64) {
 	ch.telegram.SendMessage(
 		chatID,
-		"🏓 <b>Pong!</b>\n\nTelegram está funcionando correctamente.",
+		"🏓 <b>Pong!</b>\nBot funcionando correctamente.",
 	)
+}
+func (ch *CommandsHandler) HandleSessionStart(chatID int64) {
+	if ch.session == nil {
+		ch.telegram.SendMessage(chatID, "❌ Gestión de sesión no disponible")
+		return
+	}
+	ch.session.Start()
+	mode := strings.ToUpper(ch.mode)
+	if mode == "" {
+		mode = "PAPER"
+	}
+	ch.telegram.SendMessage(chatID,
+		"🟢 <b>Sesión de trading INICIADA</b>\n\n"+
+			"Modo: "+mode+"\n"+
+			"Trading habilitado: sí")
+}
+func (ch *CommandsHandler) HandleSessionStop(chatID int64) {
+	if ch.session == nil {
+		ch.telegram.SendMessage(chatID, "❌ Gestión de sesión no disponible")
+		return
+	}
+	ch.session.Stop()
+	ch.telegram.SendMessage(chatID,
+		"🔴 <b>Sesión de trading DETENIDA</b>\n\n"+
+			"No se abrirán nuevas posiciones.\n"+
+			"Telegram y recepción de señales continúan activos.")
+}
+func (ch *CommandsHandler) HandleSession(chatID int64) {
+	if ch.session == nil {
+		ch.telegram.SendMessage(chatID, "❌ Gestión de sesión no disponible")
+		return
+	}
+	state := "🔴 DETENIDA"
+	if ch.session.IsActive() {
+		state = "🟢 ACTIVA"
+	}
+	mode := strings.ToUpper(ch.mode)
+	if mode == "" {
+		mode = "PAPER"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "📊 <b>Estado de trading</b>\n\n")
+	fmt.Fprintf(&b, "Sesión: %s\n", state)
+	fmt.Fprintf(&b, "Modo: %s\n", mode)
+	if ch.positions != nil {
+		open, err := ch.positions.OpenPositions(context.Background())
+		if err == nil {
+			fmt.Fprintf(&b, "Posiciones abiertas: %d\n", len(open))
+		}
+	}
+	fmt.Fprintf(&b, "Señales recibidas: %d", ch.session.Signals())
+	ch.telegram.SendMessage(chatID, strings.TrimRight(b.String(), "\n"))
 }
 func (ch *CommandsHandler) HandleHelp(chatID int64) {
 	text := "📚 <b>Comandos disponibles:</b>\n\n" +
@@ -74,6 +131,9 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/myid - Obtener tu chat ID\n" +
 		"/positions - Posiciones abiertas\n" +
 		"/risk - Estado de riesgo y cuenta\n" +
+		"/session - Estado de la sesión de trading\n" +
+		"/session_start - Iniciar sesión de trading\n" +
+		"/session_stop - Detener sesión de trading\n" +
 		"/learn - Aprender estrategia desde un PDF adjunto\n" +
 		"/strategies - Listar estrategias aprendidas\n" +
 		"/strategy <id> - Detalle de una estrategia\n" +

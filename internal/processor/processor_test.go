@@ -9,6 +9,7 @@ import (
 	"tradingview-bot/internal/bus"
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/evaluator"
+	"tradingview-bot/internal/session"
 	"tradingview-bot/internal/store"
 )
 
@@ -62,7 +63,9 @@ func newTestPipelineWith(t *testing.T, position domain.PositionController) (*Pro
 	b := bus.New(32)
 	eval := evaluator.New(st)
 	rec := &recordingNotifier{}
-	p := New(b, st, eval, rec, position, 1000)
+	sess := session.New()
+	sess.Start()
+	p := New(b, st, eval, rec, position, sess, 1000)
 	ctx, cancel := context.WithCancel(context.Background())
 	p.Start(ctx)
 	t.Cleanup(cancel)
@@ -208,4 +211,40 @@ func TestProcessorCallsPositionControllerOnDirectionChange(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitFor(t, 2*time.Second, func() bool { return pos.count() == 2 })
+}
+
+func TestProcessorBlocksPositionWhenSessionStopped(t *testing.T) {
+	pos := &recordingPosition{}
+	st, err := store.Open(":memory:")
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	b := bus.New(32)
+	eval := evaluator.New(st)
+	rec := &recordingNotifier{}
+	sess := session.New()
+	p := New(b, st, eval, rec, pos, sess, 1000)
+	ctx, cancel := context.WithCancel(context.Background())
+	p.Start(ctx)
+	t.Cleanup(cancel)
+
+	if err := b.Publish(ctx, ev("BTCUSDT", domain.DirectionBuy, 1)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return rec.count() == 1 })
+	time.Sleep(150 * time.Millisecond)
+	if pos.count() != 0 {
+		t.Errorf("sesión detenida abrió %d posiciones, want 0", pos.count())
+	}
+	if sess.Signals() != 1 {
+		t.Errorf("señales registradas %d, want 1", sess.Signals())
+	}
+
+	// Iniciar sesión: ahora la señal sí debe llegar al controlador de posición.
+	sess.Start()
+	if err := b.Publish(ctx, ev("BTCUSDT", domain.DirectionSell, 2)); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, 2*time.Second, func() bool { return pos.count() == 1 })
 }

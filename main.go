@@ -28,6 +28,7 @@ import (
 	"tradingview-bot/internal/processor"
 	"tradingview-bot/internal/risk"
 	"tradingview-bot/internal/sentiment"
+	"tradingview-bot/internal/session"
 	"tradingview-bot/internal/store"
 	"tradingview-bot/internal/strategymanager"
 	"tradingview-bot/models"
@@ -65,6 +66,20 @@ func main() {
 		log.Fatalf("Error creando bot: %v", err)
 	}
 	log.Printf("Telegram conectado como @%s", bot.Self.UserName)
+	log.Printf("Bot conectado: @%s (ID %d)", bot.Self.UserName, bot.Self.ID)
+
+	info, err := bot.GetWebhookInfo()
+	if err != nil {
+		log.Printf("Advertencia consultando webhook de Telegram: %v", err)
+	} else if info.URL != "" {
+		log.Printf(
+			"ADVERTENCIA: Telegram tiene un webhook configurado: %s",
+			info.URL,
+		)
+		log.Printf(
+			"El bot utiliza long polling; elimina el webhook antes de usar GetUpdatesChan",
+		)
+	}
 
 	// Fase A: usamos polling, por lo que eliminamos cualquier webhook
 	// anterior que pueda impedir que getUpdates funcione.
@@ -92,6 +107,10 @@ func main() {
 		}
 	}
 
+	// Control de sesión de trading (Fase B): manual /session_start|stop
+	sessionManager := session.New()
+	log.Printf("Sesión de trading iniciada DETENIDA; usa /session_start para habilitar operaciones")
+
 	// Pipeline de señales: bus → evaluador → notifier (rate-limit + retry)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -115,7 +134,7 @@ func main() {
 		log.Printf("Gestión de riesgo activa: %d posiciones máx, R/R %v:1, kill-switch %.0f%%",
 			cfg.MaxOpenPositions, cfg.MinRR, cfg.KillSwitchPct*100)
 	}
-	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, positionCtrl, 10000)
+	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, positionCtrl, sessionManager, 10000)
 	processorSvc.Start(ctx)
 
 	// Modo de ejecución (Fase 6)
@@ -357,7 +376,7 @@ func main() {
 	}
 
 	// Handlers
-	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, sqliteStore)
+	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, sqliteStore, sessionManager, cfg.Mode)
 	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret)
 
 	// Configurar bot de Telegram para polling
@@ -423,6 +442,12 @@ func main() {
 				commandsHandler.HandleHelp(chatID)
 			case "ping":
 				commandsHandler.HandlePing(chatID)
+			case "session":
+				commandsHandler.HandleSession(chatID)
+			case "session_start":
+				commandsHandler.HandleSessionStart(chatID)
+			case "session_stop":
+				commandsHandler.HandleSessionStop(chatID)
 			default:
 				telegram.SendMessage(chatID, "Comando no reconocido. Usa /help")
 			}
