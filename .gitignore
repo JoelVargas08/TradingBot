@@ -29,6 +29,11 @@ coverage.*
 # Reportes del backtest (Fase 6)
 /reports/
 
+# Artefactos temporales de análisis/diagnóstico
+head_*.txt
+*_diff.txt
+head_*.md
+
 # IDE / sistema
 .vscode/
 .idea/
