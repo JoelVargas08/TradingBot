@@ -256,6 +256,33 @@ func (sc *StrategyCommands) HandleBacktest(chatID int64, id string) {
 	sc.telegram.SendMessage(chatID, "🔄 Backtest encolado para <code>"+id+"</code>. Te aviso al terminar.")
 }
 
+// HandleActivate activa una estrategia manualmente. Solo se permite la
+// transición CANDIDATE → ACTIVE tras la revisión manual; una estrategia
+// todavía en backtesting, borrador o rechazada no puede activarse así.
+func (sc *StrategyCommands) HandleActivate(chatID int64, id string) {
+	if sc.manager == nil {
+		sc.telegram.SendMessage(chatID, "❌ Gestión de estrategias no disponible")
+		return
+	}
+	id = strings.TrimSpace(id)
+	st, err := sc.manager.Get(context.Background(), id)
+	if err != nil {
+		sc.telegram.SendMessage(chatID, "❌ Estrategia no encontrada: "+id)
+		return
+	}
+	if st.Status != domain.StrategyCandidate {
+		sc.telegram.SendMessage(chatID, fmt.Sprintf(
+			"❌ No se puede activar una estrategia en estado %s. Solo <b>CANDIDATE</b> puede activarse (/activate).",
+			st.Status))
+		return
+	}
+	if err := sc.manager.Activate(context.Background(), id); err != nil {
+		sc.telegram.SendMessage(chatID, "❌ No se pudo activar: "+err.Error())
+		return
+	}
+	sc.telegram.SendMessage(chatID, "🟢 <b>Estrategia activada</b>\n\n"+st.Name+" <code>"+id+"</code>")
+}
+
 // HandleDocument recibe un documento adjunto y, si es PDF, lo aprende.
 func (sc *StrategyCommands) HandleDocument(chatID int64, doc *tgbotapi.Document, caption string) {
 	if sc.download == nil || sc.uploadDir == "" {

@@ -77,10 +77,14 @@ CREATE TABLE IF NOT EXISTS strategy_backtests (
 	win_rate    REAL NOT NULL,
 	profit_factor REAL NOT NULL,
 	sharpe      REAL NOT NULL,
+	sortino     REAL NOT NULL DEFAULT 0,
 	max_drawdown REAL NOT NULL,
 	total_return REAL NOT NULL,
 	test_bars   INTEGER NOT NULL,
 	passed      INTEGER NOT NULL,
+	folds       INTEGER NOT NULL DEFAULT 0,
+	oos_folds   TEXT NOT NULL DEFAULT '[]',
+	status      TEXT NOT NULL DEFAULT '',
 	metrics_at  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_backtests_strategy ON strategy_backtests(strategy_id, metrics_at);
@@ -182,6 +186,14 @@ CREATE TABLE IF NOT EXISTS account (
 	fees          REAL NOT NULL DEFAULT 0,
 	max_drawdown  REAL NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS marks (
+	symbol    TEXT NOT NULL,
+	timeframe TEXT NOT NULL,
+	price     REAL NOT NULL,
+	ts        INTEGER NOT NULL,
+	PRIMARY KEY(symbol, timeframe)
+);
 `
 
 func migrate(db *sql.DB) error {
@@ -211,6 +223,10 @@ func migrate(db *sql.DB) error {
 		"ALTER TABLE account ADD COLUMN unrealized_pnl REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE account ADD COLUMN fees REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE account ADD COLUMN max_drawdown REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategy_backtests ADD COLUMN sortino REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategy_backtests ADD COLUMN folds INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE strategy_backtests ADD COLUMN oos_folds TEXT NOT NULL DEFAULT '[]'",
+		"ALTER TABLE strategy_backtests ADD COLUMN status TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrando strategies: %w", err)
@@ -399,12 +415,16 @@ func (s *Store) ListStrategies(ctx context.Context) ([]domain.Strategy, error) {
 }
 
 func (s *Store) SaveBacktest(ctx context.Context, r domain.BacktestResult) error {
-	_, err := s.db.ExecContext(ctx, `
+	oos, err := json.Marshal(r.OOSFolds)
+	if err != nil {
+		return fmt.Errorf("serializando oos_folds: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO strategy_backtests
-			(strategy_id, trades, win_rate, profit_factor, sharpe, max_drawdown, total_return, test_bars, passed, metrics_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.StrategyID, r.Trades, r.WinRate, r.ProfitFactor, r.Sharpe, r.MaxDrawdown,
-		r.TotalReturn, r.TestBars, boolToInt(r.Passed), r.MetricsAt.UnixMilli())
+			(strategy_id, trades, win_rate, profit_factor, sharpe, sortino, max_drawdown, total_return, test_bars, passed, folds, oos_folds, status, metrics_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.StrategyID, r.Trades, r.WinRate, r.ProfitFactor, r.Sharpe, r.Sortino, r.MaxDrawdown,
+		r.TotalReturn, r.TestBars, boolToInt(r.Passed), r.Folds, string(oos), r.Status, r.MetricsAt.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("guardando backtest: %w", err)
 	}
@@ -415,13 +435,15 @@ func (s *Store) LastBacktest(ctx context.Context, strategyID string) (domain.Bac
 	var r domain.BacktestResult
 	var passed int
 	var metricsAt int64
+	var oosRaw string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT strategy_id, trades, win_rate, profit_factor, sharpe, max_drawdown, total_return, test_bars, passed, metrics_at
+		SELECT strategy_id, trades, win_rate, profit_factor, sharpe, sortino, max_drawdown, total_return, test_bars, passed, folds, oos_folds, status, metrics_at
 		FROM strategy_backtests
 		WHERE strategy_id = ?
 		ORDER BY metrics_at DESC, id DESC
 		LIMIT 1`, strategyID).Scan(&r.StrategyID, &r.Trades, &r.WinRate, &r.ProfitFactor,
-		&r.Sharpe, &r.MaxDrawdown, &r.TotalReturn, &r.TestBars, &passed, &metricsAt)
+		&r.Sharpe, &r.Sortino, &r.MaxDrawdown, &r.TotalReturn, &r.TestBars, &passed, &r.Folds,
+		&oosRaw, &r.Status, &metricsAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, domain.ErrNotFound
 	}
@@ -430,6 +452,9 @@ func (s *Store) LastBacktest(ctx context.Context, strategyID string) (domain.Bac
 	}
 	r.Passed = passed != 0
 	r.MetricsAt = time.UnixMilli(metricsAt)
+	if oosRaw != "" {
+		_ = json.Unmarshal([]byte(oosRaw), &r.OOSFolds)
+	}
 	return r, nil
 }
 
@@ -438,6 +463,46 @@ func boolToInt(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// SaveMark persiste el último precio de un símbolo+timeframe.
+func (s *Store) SaveMark(ctx context.Context, m domain.Mark) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO marks (symbol, timeframe, price, ts)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(symbol, timeframe) DO UPDATE SET
+			price = excluded.price,
+			ts = excluded.ts`,
+		m.Symbol, m.Timeframe, m.Price, m.TS.UnixMilli())
+	if err != nil {
+		return fmt.Errorf("guardando mark price: %w", err)
+	}
+	return nil
+}
+
+// Marks devuelve todos los últimos precios conocidos.
+func (s *Store) Marks(ctx context.Context) ([]domain.Mark, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT symbol, timeframe, price, ts
+		FROM marks`)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo marks: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Mark
+	for rows.Next() {
+		var m domain.Mark
+		var ts int64
+		if err := rows.Scan(&m.Symbol, &m.Timeframe, &m.Price, &ts); err != nil {
+			return nil, fmt.Errorf("escaneando mark: %w", err)
+		}
+		m.TS = time.UnixMilli(ts)
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *Store) OpenPosition(ctx context.Context, p domain.Position) (int64, error) {
@@ -531,13 +596,14 @@ func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, 
 	account.Balance += p.NetPnL
 	account.RealizedPnL += p.NetPnL
 	account.Fees += opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
-	account.Equity = account.Balance
-	account.UnrealizedPnL = 0
-	if account.Balance > account.PeakEquity {
-		account.PeakEquity = account.Balance
+	// No reseteamos UnrealizedPnL: otras posiciones pueden seguir abiertas;
+	// MarkPrice las revaloriza con los últimos precios conocidos.
+	account.Equity = account.Balance + account.UnrealizedPnL
+	if account.Equity > account.PeakEquity {
+		account.PeakEquity = account.Equity
 	}
 	if account.PeakEquity > 0 {
-		dd := (account.PeakEquity - account.Balance) / account.PeakEquity
+		dd := (account.PeakEquity - account.Equity) / account.PeakEquity
 		if dd > account.MaxDrawdown {
 			account.MaxDrawdown = dd
 		}

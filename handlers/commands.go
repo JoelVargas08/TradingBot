@@ -98,13 +98,17 @@ func (ch *CommandsHandler) HandleSession(chatID int64) {
 	}
 	if ch.session.IsActive() {
 		started := ch.session.StartedAt()
+		startText := "-"
+		if !started.IsZero() {
+			startText = started.Format("2006-01-02 15:04:05")
+		}
 		ch.telegram.SendMessage(
 			chatID,
 			fmt.Sprintf(
 				"🟢 <b>Sesión de trading ACTIVA</b>\n\n"+
 					"Iniciada: %s\n"+
 					"Nuevas operaciones: habilitadas",
-				started.Format("2006-01-02 15:04:05"),
+				startText,
 			),
 		)
 		return
@@ -238,15 +242,25 @@ func (ch *CommandsHandler) HandleRisk(chatID int64) {
 		ch.telegram.SendMessage(chatID, "❌ Error consultando posiciones")
 		return
 	}
+	// El drawdown se calcula sobre Equity (incluye PnL no realizado).
+	equity := acc.Equity
+	if equity <= 0 {
+		equity = acc.Balance
+	}
 	drawdown := 0.0
 	if acc.PeakEquity > 0 {
-		drawdown = (acc.Balance - acc.PeakEquity) / acc.PeakEquity * 100
+		drawdown = (equity - acc.PeakEquity) / acc.PeakEquity * 100
 	}
 	text := fmt.Sprintf("💰 <b>Estado de cuenta</b>\n\n"+
 		"Balance: $%.2f\n"+
+		"Equity: $%.2f\n"+
+		"PnL no realizado: %s\n"+
 		"Peak equity: $%.2f\n"+
 		"Drawdown: %.1f%%\n"+
-		"Posiciones abiertas: %d", acc.Balance, acc.PeakEquity, drawdown, len(open))
+		"Max drawdown: %.1f%%\n"+
+		"Posiciones abiertas: %d",
+		acc.Balance, acc.Equity, formatSigned(acc.UnrealizedPnL),
+		acc.PeakEquity, drawdown, -acc.MaxDrawdown*100, len(open))
 	ch.telegram.SendMessage(chatID, text)
 }
 

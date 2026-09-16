@@ -108,6 +108,10 @@ func main() {
 		}
 	}
 
+	// Pipeline de señales: bus → evaluador → notifier (rate-limit + retry)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Control de sesión de trading (Fase B)
 	var tradingSession *session.Manager
 	if cfg.TradingSessionEnabled {
@@ -143,14 +147,13 @@ func main() {
 		}
 		if cfg.TradingSessionScheduleEnabled {
 			log.Printf("Horario de sesión: %s → %s (%s)", cfg.TradingSessionStart, cfg.TradingSessionEnd, cfg.TradingSessionTimezone)
+			go tradingSession.Run(ctx)
 		}
 	} else {
 		log.Println("Sesión de trading: deshabilitada (TRADING_SESSION_ENABLED=false); las señales se ejecutan siempre")
 	}
 
 	// Pipeline de señales: bus → evaluador → notifier (rate-limit + retry)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	eventBus := bus.New(512)
 	evaluatorSvc := evaluator.New(sqliteStore)
 	notifierSvc := notifier.New(telegram, userManager, notifier.Config{})
@@ -169,7 +172,22 @@ func main() {
 			DefaultStopPct:   cfg.DefaultStopPct,
 		}
 		riskManager = risk.New(sqliteStore, riskCfg)
-		paperEngine = paper.New(sqliteStore, riskManager, paper.Config{})
+		paperEngine = paper.New(sqliteStore, riskManager, paper.Config{}).
+			SetMarkStore(sqliteStore)
+		// Inicializar la cuenta con Equity/PeakEquity en el primer arranque; no
+		// esperar al primer cierre de posición.
+		if _, err := sqliteStore.GetAccount(ctx); errors.Is(err, domain.ErrNotFound) {
+			starting := cfg.StartingBalance
+			if err := sqliteStore.UpdateAccount(ctx, domain.Account{
+				Balance:        starting,
+				Equity:         starting,
+				InitialBalance: starting,
+				PeakEquity:     starting,
+				UpdatedAt:      time.Now(),
+			}); err != nil {
+				log.Fatalf("inicializando cuenta: %v", err)
+			}
+		}
 		log.Printf("Gestión de riesgo activa: %d posiciones máx, R/R %v:1, kill-switch %.0f%%",
 			cfg.MaxOpenPositions, cfg.MinRR, cfg.KillSwitchPct*100)
 		log.Printf("Paper trading activo: fees %.3f%%, slippage %.3f%% por operación (Simulado)",
@@ -187,7 +205,7 @@ func main() {
 
 	// Modo de ejecución (Fase 6)
 	if cfg.Mode == "live" {
-		log.Printf("ADVERTENCIA: MODE=live sin adaptador de broker configurado; las señales se registrarán como posiciones simuladas (paper)")
+		log.Fatalf("MODE=live requiere un adaptador de broker configurado; actualmente solo está disponible paper trading")
 	}
 	log.Printf("Modo %s: las señales generan posiciones en el libro de %s (sin broker externo)", cfg.Mode, cfg.DBFile)
 
@@ -497,6 +515,12 @@ func main() {
 					strategyCommands.HandleBacktest(chatID, update.Message.CommandArguments())
 				} else {
 					telegram.SendMessage(chatID, "❌ Aprendizaje desde PDF no está habilitado (LLM_ENABLED=false)")
+				}
+			case "activate":
+				if strategyCommands != nil {
+					strategyCommands.HandleActivate(chatID, update.Message.CommandArguments())
+				} else {
+					telegram.SendMessage(chatID, "❌ Gestión de estrategias no está habilitado (LLM_ENABLED=false)")
 				}
 			case "help":
 				commandsHandler.HandleHelp(chatID)

@@ -9,6 +9,27 @@ import (
 	"tradingview-bot/internal/domain"
 )
 
+// BacktestCosts modela los costes de operación del backtest (entrada + salida).
+type BacktestCosts struct {
+	FeeRate      float64 // comisión por lado (proporción del nocional)
+	SlippageRate float64 // deslizamiento por lado (proporción del nocional)
+}
+
+func (c BacktestCosts) withDefaults() BacktestCosts {
+	if c.FeeRate <= 0 {
+		c.FeeRate = 0.001
+	}
+	if c.SlippageRate <= 0 {
+		c.SlippageRate = 0.0002
+	}
+	return c
+}
+
+// CostPerTrade devuelve el coste total por trade round-trip (entrada + salida).
+func (c BacktestCosts) CostPerTrade() float64 {
+	return 2 * (c.FeeRate + c.SlippageRate)
+}
+
 // Thresholds define los umbrales que debe superar una estrategia en la
 // porción out-of-sample para pasar la validación.
 type Thresholds struct {
@@ -43,8 +64,27 @@ func (t Thresholds) withDefaults() Thresholds {
 }
 
 // Backtest ejecuta walk-forward OOS con folds ventanas expansivas.
-func Backtest(spec StrategySpec, ks []domain.Kline, th Thresholds) (domain.BacktestResult, error) {
+//
+// Cada fold sigue la separación TRAIN/OOS:
+//
+//	Sección 0          = TRAIN 1 (calentamiento; no se evalúa)
+//	Sección 1          = TEST 1 (OOS fold 1)
+//	Secciones 0..1     = TRAIN 2 (TRAIN acumulada)
+//	Sección 2          = TEST 2 (OOS fold 2)
+//	Secciones 0..2     = TRAIN 3
+//	Sección 3          = TEST 3 (OOS fold 3)
+//	...
+//
+// Los indicadores se calculan sobre TODA la serie para que las reglas
+// tengan acceso a los valores correctos en cada posición, pero el
+// backtest solo EVALúa en la porción OOS de cada fold. No se permite
+// que parámetros futuros entren en el OOS.
+func Backtest(spec StrategySpec, ks []domain.Kline, th Thresholds, costs ...BacktestCosts) (domain.BacktestResult, error) {
 	th = th.withDefaults()
+	c := BacktestCosts{}.withDefaults()
+	if len(costs) > 0 {
+		c = costs[0].withDefaults()
+	}
 	if len(ks) < 100 {
 		return domain.BacktestResult{}, fmt.Errorf("datos insuficientes: %d velas", len(ks))
 	}
@@ -67,7 +107,7 @@ func Backtest(spec StrategySpec, ks []domain.Kline, th Thresholds) (domain.Backt
 	var foldsMetrics []domain.OOSFold
 	var allRets []float64
 	totalTrades, totalWins, totalLosses := 0, 0, 0
-	var aggGrossProfit, aggGrossLoss float64
+	var aggNetProfit, aggNetLoss float64
 	aggMaxDD := 0.0
 	totalBars := 0
 
@@ -81,7 +121,9 @@ func Backtest(spec StrategySpec, ks []domain.Kline, th Thresholds) (domain.Backt
 			break
 		}
 		testKS := ks[testStart:testEnd]
-		m, err := runEquity(ctx, spec, testKS, 0.001)
+		// testStart es el offset global para que runEquity use los
+		// indicadores calculados sobre la serie completa.
+		m, err := runEquity(ctx, spec, testKS, testStart, c)
 		if err != nil {
 			return domain.BacktestResult{}, err
 		}
@@ -99,8 +141,8 @@ func Backtest(spec StrategySpec, ks []domain.Kline, th Thresholds) (domain.Backt
 		totalTrades += m.trades
 		totalWins += m.wins
 		totalLosses += m.losses
-		aggGrossProfit += m.grossProfit
-		aggGrossLoss += m.grossLoss
+		aggNetProfit += m.netProfit
+		aggNetLoss += m.netLoss
 		allRets = append(allRets, m.rets...)
 		if m.maxDrawdown > aggMaxDD {
 			aggMaxDD = m.maxDrawdown
@@ -112,20 +154,23 @@ func Backtest(spec StrategySpec, ks []domain.Kline, th Thresholds) (domain.Backt
 	if totalTrades > 0 {
 		aggWR = float64(totalWins) / float64(totalTrades)
 	}
+	// Profit Factor neto: net profit / net loss.
 	aggPF := 0.0
-	if aggGrossLoss > 0 {
-		aggPF = aggGrossProfit / aggGrossLoss
-	} else if aggGrossProfit > 0 {
+	if aggNetLoss > 0 {
+		aggPF = aggNetProfit / aggNetLoss
+	} else if aggNetProfit > 0 {
 		aggPF = math.Inf(1)
 	}
 	aggSharpe := sharpe(allRets)
 	aggSortino := sortino(allRets)
+	// TotalReturn por composición (no log-return exponentiation).
 	aggReturn := 0.0
 	if len(allRets) > 0 {
+		equity := 1.0
 		for _, r := range allRets {
-			aggReturn += r
+			equity *= 1 + r
 		}
-		aggReturn = (math.Exp(aggReturn) - 1) * 100
+		aggReturn = (equity - 1) * 100
 	}
 
 	passed := totalTrades >= th.MinTrades &&
@@ -161,8 +206,8 @@ type equityMetrics struct {
 	trades       int
 	wins         int
 	losses       int
-	grossProfit  float64
-	grossLoss    float64
+	netProfit    float64 // suma de retornos netos positivos
+	netLoss      float64 // suma de retornos netos negativos (valor absoluto)
 	totalReturn  float64
 	maxDrawdown  float64
 	sharpe       float64
@@ -172,16 +217,21 @@ type equityMetrics struct {
 	rets         []float64
 }
 
-func runEquity(ctx *evalContext, spec StrategySpec, ks []domain.Kline, fee float64) (equityMetrics, error) {
+// runEquity ejecuta el backtest sobre ks con un offset global para
+// resolver indicadores calculados sobre la serie completa.
+func runEquity(ctx *evalContext, spec StrategySpec, ks []domain.Kline, globalStart int, costs BacktestCosts) (equityMetrics, error) {
 	equity := 1.0
 	peak := 1.0
 	maxDD := 0.0
 	var rets []float64
 	var trades []tradeResult
 
-	position := -1 // índice de vela de entrada; -1 = flat
+	position := -1 // índice local de vela de entrada; -1 = flat
 	side := ""
 	entryPrice := 0.0
+
+	// Coste round-trip por trade (entrada + salida).
+	tradeCost := costs.CostPerTrade()
 
 	applyExit := func(exitPrice float64, reason string) {
 		gross := 0.0
@@ -190,7 +240,7 @@ func runEquity(ctx *evalContext, spec StrategySpec, ks []domain.Kline, fee float
 		} else {
 			gross = (entryPrice - exitPrice) / entryPrice
 		}
-		net := gross - fee
+		net := gross - tradeCost
 		equity *= 1 + net
 		if equity > peak {
 			peak = equity
@@ -206,16 +256,19 @@ func runEquity(ctx *evalContext, spec StrategySpec, ks []domain.Kline, fee float
 	}
 
 	for i := range ks {
+		// globalIndex es el índice absoluto en la serie completa
+		// para consultar los indicadores correctamente.
+		globalIndex := globalStart + i
 		k := ks[i]
 		if position == -1 {
 			// buscar entrada (long y short no simultáneos; se prioriza buy)
-			if ruleMatches(ctx, spec.Entries, "buy", i) {
+			if ruleMatches(ctx, spec.Entries, "buy", globalIndex) {
 				position = i
 				side = "buy"
 				entryPrice = k.Close
 				continue
 			}
-			if ruleMatches(ctx, spec.Entries, "sell", i) {
+			if ruleMatches(ctx, spec.Entries, "sell", globalIndex) {
 				position = i
 				side = "sell"
 				entryPrice = k.Close
@@ -260,7 +313,7 @@ func runEquity(ctx *evalContext, spec StrategySpec, ks []domain.Kline, fee float
 			continue
 		}
 		// salida por regla (exits)
-		if ruleMatches(ctx, spec.Exits, side, i) {
+		if ruleMatches(ctx, spec.Exits, side, globalIndex) {
 			applyExit(k.Close, "exit")
 		}
 	}
@@ -277,18 +330,18 @@ func runEquity(ctx *evalContext, spec StrategySpec, ks []domain.Kline, fee float
 	for _, t := range trades {
 		if t.net > 0 {
 			m.wins++
-			m.grossProfit += t.gross
+			m.netProfit += t.net
 		} else {
 			m.losses++
-			m.grossLoss += -t.gross
+			m.netLoss += -t.net
 		}
 	}
 	if m.trades > 0 {
 		m.winRate = float64(m.wins) / float64(m.trades)
 	}
-	if m.grossLoss > 0 {
-		m.profitFactor = m.grossProfit / m.grossLoss
-	} else if m.grossProfit > 0 {
+	if m.netLoss > 0 {
+		m.profitFactor = m.netProfit / m.netLoss
+	} else if m.netProfit > 0 {
 		m.profitFactor = math.Inf(1)
 	}
 	m.sharpe = sharpe(rets)

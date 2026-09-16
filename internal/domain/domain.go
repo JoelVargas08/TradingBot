@@ -294,6 +294,53 @@ type RiskDecider interface {
 	EvaluateSignal(ctx context.Context, ev SignalEvent) (Decision, error)
 }
 
+// Mark representa el último precio conocido (mark price) de un símbolo/TF.
+type Mark struct {
+	Symbol    string
+	Timeframe string
+	Price     float64
+	TS        time.Time
+}
+
+// MarkStore persiste y recupera los últimos precios por símbolo+timeframe,
+// para poder valorar el PnL no realizado de todas las posiciones (incluso
+// tras reinicios del bot).
+type MarkStore interface {
+	SaveMark(ctx context.Context, m Mark) error
+	Marks(ctx context.Context) ([]Mark, error)
+}
+
+// Broker abstrae la conexión con un exchange real (Weex) para fase live.
+type Broker interface {
+	GetAccount(ctx context.Context) (Account, error)
+	GetPositions(ctx context.Context) ([]Position, error)
+	PlaceOrder(ctx context.Context, order Order) (OrderResult, error)
+	CancelOrder(ctx context.Context, id string) error
+}
+
+// Order es una orden enviada a un broker externo.
+type Order struct {
+	Symbol     string
+	Side       Direction
+	Quantity   float64
+	Price      float64 // límite; 0 = mercado
+	StopLoss   float64
+	TakeProfit float64
+	ClientID   string
+	Time       time.Time
+}
+
+// OrderResult es el resultado de colocar una orden en un broker.
+type OrderResult struct {
+	OrderID  string
+	Symbol   string
+	Side     Direction
+	Quantity float64
+	Price    float64
+	Status   string
+	Time     time.Time
+}
+
 type PositionStore interface {
 	OpenPosition(ctx context.Context, p Position) (int64, error)
 	ClosePosition(ctx context.Context, id int64, exitPrice float64, exitTS time.Time, opts CloseOptions) (Position, error)

@@ -158,3 +158,135 @@ func TestScheduleDisabledIgnoresWindow(t *testing.T) {
 		t.Error("sin horario la ventana siempre cuenta como activa")
 	}
 }
+
+func TestRestartWithinWindowActivates(t *testing.T) {
+	// Reinicio a las 12:00 dentro de la ventana 09:00–17:00: el bot debe
+	// quedar ACTIVO automáticamente, sin depender de START_ACTIVE.
+	m := New(false)
+	start, _ := ParseClock("09:00")
+	end, _ := ParseClock("17:00")
+	if err := m.SetSchedule(Schedule{Enabled: true, Start: start, End: end, Location: refLoc(t, "UTC")}); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	// Simulamos el arranque dentro de la ventana.
+	m.Tick(atTime(2026, 9, 15, 12, 0))
+	if !m.ActiveAt(atTime(2026, 9, 15, 12, 0)) {
+		t.Fatal("reinicio dentro de la ventana debe dejar la sesión ACTIVA")
+	}
+	if m.StartedAt().IsZero() {
+		t.Fatal("StartedAt debe actualizarse en la transición a ACTIVA")
+	}
+}
+
+func TestRestartOutsideWindowInactive(t *testing.T) {
+	m := New(true)
+	start, _ := ParseClock("09:00")
+	end, _ := ParseClock("17:00")
+	if err := m.SetSchedule(Schedule{Enabled: true, Start: start, End: end, Location: refLoc(t, "UTC")}); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	m.Tick(atTime(2026, 9, 15, 20, 0))
+	if m.ActiveAt(atTime(2026, 9, 15, 20, 0)) {
+		t.Fatal("reinicio fuera de la ventana debe dejar la sesión INACTIVA")
+	}
+}
+
+func TestScheduleTransitionUpdatesStartedAt(t *testing.T) {
+	m := New(false)
+	start, _ := ParseClock("09:00")
+	end, _ := ParseClock("17:00")
+	if err := m.SetSchedule(Schedule{Enabled: true, Start: start, End: end, Location: refLoc(t, "UTC")}); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	// Fuera de ventana: 08:00.
+	m.Tick(atTime(2026, 9, 15, 8, 0))
+	if m.ActiveAt(atTime(2026, 9, 15, 8, 0)) {
+		t.Fatal("08:00 fuera de ventana debe estar inactiva")
+	}
+	// Entra a la ventana: transición INACTIVE → ACTIVE actualiza StartedAt.
+	entered := atTime(2026, 9, 15, 9, 0)
+	m.Tick(entered)
+	if !m.ActiveAt(entered) {
+		t.Fatal("09:00 debe activar la sesión")
+	}
+	if m.StartedAt() != entered {
+		t.Fatalf("StartedAt = %v, want %v (transición INACTIVE → ACTIVE)", m.StartedAt(), entered)
+	}
+	// Sigue en ventana: no cambia StartedAt ni activa de nuevo.
+	m.Tick(atTime(2026, 9, 15, 10, 0))
+	if !m.ActiveAt(atTime(2026, 9, 15, 10, 0)) {
+		t.Fatal("10:00 debe seguir activa")
+	}
+	if m.StartedAt() != entered {
+		t.Fatal("StartedAt no debe cambiar sin transición")
+	}
+}
+
+func TestManualOverrideStartsDespiteSchedule(t *testing.T) {
+	m := New(false)
+	start, _ := ParseClock("09:00")
+	end, _ := ParseClock("17:00")
+	if err := m.SetSchedule(Schedule{Enabled: true, Start: start, End: end, Location: refLoc(t, "UTC")}); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	m.Tick(atTime(2026, 9, 15, 20, 0)) // fuera de ventana
+	if m.ActiveAt(atTime(2026, 9, 15, 20, 0)) {
+		t.Fatal("fuera de ventana debe estar inactiva")
+	}
+	m.Start() // override explícito de inicio
+	if !m.ActiveAt(atTime(2026, 9, 15, 20, 0)) {
+		t.Fatal("/session_start debe activar aunque esté fuera de la ventana")
+	}
+	// El override persiste aunque el ticker evalúe la ventana.
+	m.Tick(atTime(2026, 9, 15, 23, 0))
+	if !m.ActiveAt(atTime(2026, 9, 15, 23, 0)) {
+		t.Fatal("override de inicio debe persistir ante transiciones")
+	}
+	if m.Override() != OverrideStart {
+		t.Fatalf("override = %v, want OverrideStart", m.Override())
+	}
+}
+
+func TestManualOverrideStopsDespiteSchedule(t *testing.T) {
+	m := New(false)
+	start, _ := ParseClock("09:00")
+	end, _ := ParseClock("17:00")
+	if err := m.SetSchedule(Schedule{Enabled: true, Start: start, End: end, Location: refLoc(t, "UTC")}); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	m.Tick(atTime(2026, 9, 15, 12, 0)) // dentro de ventana
+	if !m.ActiveAt(atTime(2026, 9, 15, 12, 0)) {
+		t.Fatal("dentro de ventana debe estar activa")
+	}
+	m.Stop() // override explícito de detención
+	if m.ActiveAt(atTime(2026, 9, 15, 12, 0)) {
+		t.Fatal("/session_stop debe detener aunque esté dentro de la ventana")
+	}
+	m.Tick(atTime(2026, 9, 15, 13, 0))
+	if m.ActiveAt(atTime(2026, 9, 15, 13, 0)) {
+		t.Fatal("override de detención debe persistir")
+	}
+	if m.Override() != OverrideStop {
+		t.Fatalf("override = %v, want OverrideStop", m.Override())
+	}
+}
+
+func TestDisablingScheduleClearsOverride(t *testing.T) {
+	m := New(false)
+	start, _ := ParseClock("09:00")
+	end, _ := ParseClock("17:00")
+	if err := m.SetSchedule(Schedule{Enabled: true, Start: start, End: end, Location: refLoc(t, "UTC")}); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	m.Stop()
+	if m.Override() != OverrideStop {
+		t.Fatalf("override = %v, want OverrideStop", m.Override())
+	}
+	// Al deshabilitar el horario, el override se limpia.
+	if err := m.SetSchedule(Schedule{}); err != nil {
+		t.Fatalf("SetSchedule: %v", err)
+	}
+	if m.Override() != OverrideNone {
+		t.Fatalf("override = %v, want OverrideNone tras deshabilitar horario", m.Override())
+	}
+}

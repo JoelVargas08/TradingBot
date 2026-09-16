@@ -35,11 +35,19 @@ type Engine struct {
 	store    domain.PositionStore
 	riskCtrl domain.RiskDecider
 	cfg      Config
+	marks    domain.MarkStore
 }
 
 // New crea un Engine que persiste en store y delega la decisión en riskCtrl.
 func New(store domain.PositionStore, riskCtrl domain.RiskDecider, cfg Config) *Engine {
 	return &Engine{store: store, riskCtrl: riskCtrl, cfg: cfg.withDefaults()}
+}
+
+// SetMarkStore enlaza la persistencia de últimos precios (marks) para poder
+// valorar el PnL no realizado de todas las posiciones abiertas.
+func (e *Engine) SetMarkStore(ms domain.MarkStore) *Engine {
+	e.marks = ms
+	return e
 }
 
 // OnSignal aplica el flujo de ejecución paper sobre una señal:
@@ -177,8 +185,10 @@ func (e *Engine) openPositionByID(ctx context.Context, id int64) (domain.Positio
 	return domain.Position{}, fmt.Errorf("posición abierta %d no encontrada", id)
 }
 
-// MarkPrice actualiza el equity de la cuenta con el PnL no realizado de las
-// posiciones del símbolo/timeframe de la vela usando su cierre.
+// MarkPrice actualiza el equity de la cuenta con el PnL no realizado de TODAS
+// las posiciones abiertas. Mantiene los últimos precios por símbolo+timeframe
+// (persistiéndolos en MarkStore si está disponible) para que al llegar una
+// vela de un símbolo no desaparezca el PnL de otros.
 func (e *Engine) MarkPrice(ctx context.Context, k domain.Kline) error {
 	open, err := e.store.OpenPositions(ctx)
 	if err != nil {
@@ -192,15 +202,37 @@ func (e *Engine) MarkPrice(ctx context.Context, k domain.Kline) error {
 		return fmt.Errorf("mark-price: leyendo cuenta: %w", err)
 	}
 
+	// Guardar el mark del símbolo/timeframe actual (para sobrevivir reinicios).
+	if e.marks != nil {
+		if err := e.marks.SaveMark(ctx, domain.Mark{Symbol: k.Symbol, Timeframe: k.Timeframe, Price: k.Close, TS: k.Start}); err != nil {
+			return fmt.Errorf("mark-price: guardando mark: %w", err)
+		}
+	}
+
+	// Construir el mapa de últimos precios por símbolo+timeframe: primero los
+	// persistidos y luego el precio de la vela actual (más reciente).
+	prices := make(map[string]float64)
+	if e.marks != nil {
+		marks, err := e.marks.Marks(ctx)
+		if err != nil {
+			return fmt.Errorf("mark-price: leyendo marks: %w", err)
+		}
+		for _, mk := range marks {
+			prices[markKey(mk.Symbol, mk.Timeframe)] = mk.Price
+		}
+	}
+	prices[markKey(k.Symbol, k.Timeframe)] = k.Close
+
 	unrealized := 0.0
 	for _, p := range open {
-		if p.Symbol != k.Symbol || p.Timeframe != k.Timeframe {
-			continue
+		price, ok := prices[markKey(p.Symbol, p.Timeframe)]
+		if !ok {
+			continue // sin mark aún, se valorará cuando llegue la primera vela
 		}
 		if p.Side == domain.DirectionBuy {
-			unrealized += (k.Close - p.EntryPrice) * p.Quantity
+			unrealized += (price - p.EntryPrice) * p.Quantity
 		} else {
-			unrealized += (p.EntryPrice - k.Close) * p.Quantity
+			unrealized += (p.EntryPrice - price) * p.Quantity
 		}
 	}
 	acc.UnrealizedPnL = unrealized
@@ -216,6 +248,10 @@ func (e *Engine) MarkPrice(ctx context.Context, k domain.Kline) error {
 	}
 	acc.UpdatedAt = time.Now()
 	return e.store.UpdateAccount(ctx, acc)
+}
+
+func markKey(symbol, timeframe string) string {
+	return symbol + "|" + timeframe
 }
 
 // Performance calcula las métricas de paper trading sobre trades cerrados.

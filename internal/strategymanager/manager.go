@@ -131,11 +131,17 @@ func (m *Manager) Backtest(ctx context.Context, id string) (domain.BacktestResul
 	return res, nil
 }
 
-// Activate fuerza la activación de una estrategia (con override explícito).
+// Activate fuerza la activación de una estrategia con override explícito.
+// Solo se permite la transición CANDIDATE → ACTIVE (revisión manual): una
+// estrategia rechazada, en backtesting o en borrador no puede activarse
+// silenciosamente.
 func (m *Manager) Activate(ctx context.Context, id string) error {
 	st, err := m.store.GetStrategy(ctx, id)
 	if err != nil {
 		return err
+	}
+	if st.Status != domain.StrategyCandidate {
+		return fmt.Errorf("no se puede activar una estrategia en estado %s (solo CANDIDATE)", st.Status)
 	}
 	st.Status = domain.StrategyActive
 	st.UpdatedAt = time.Now()

@@ -62,18 +62,28 @@ func (m *Manager) EvaluateSignal(ctx context.Context, ev domain.SignalEvent) (De
 func (m *Manager) Evaluate(ctx context.Context, ev domain.SignalEvent) (Decision, error) {
 	acc, err := m.store.GetAccount(ctx)
 	if errors.Is(err, domain.ErrNotFound) {
-		acc = domain.Account{Balance: m.cfg.StartingBalance, PeakEquity: m.cfg.StartingBalance}
+		acc = domain.Account{
+			Balance:        m.cfg.StartingBalance,
+			Equity:         m.cfg.StartingBalance,
+			InitialBalance: m.cfg.StartingBalance,
+			PeakEquity:     m.cfg.StartingBalance,
+		}
 	} else if err != nil {
 		return Decision{}, fmt.Errorf("obteniendo cuenta: %w", err)
 	}
 	if acc.PeakEquity <= 0 {
 		acc.PeakEquity = acc.Balance
 	}
+	// Equity incluye el PnL no realizado; para el kill-switch usamos equity.
+	eq := acc.Equity
+	if eq <= 0 {
+		eq = acc.Balance
+	}
 
 	d := Decision{
 		Side:       ev.Direction,
 		EntryPrice: ev.Price,
-		Drawdown:   drawdown(acc.Balance, acc.PeakEquity),
+		Drawdown:   drawdown(eq, acc.PeakEquity),
 	}
 
 	if math.Abs(d.Drawdown) >= m.cfg.KillSwitchPct {
