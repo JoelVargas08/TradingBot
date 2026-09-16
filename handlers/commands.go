@@ -50,7 +50,7 @@ func (ch *CommandsHandler) HandleStart(chatID int64, args string) {
 	parts := strings.Fields(args)
 	if len(parts) < 1 {
 		ch.telegram.SendMessage(chatID,
-			"uso: /start <tu_chat_id>\n\n "+
+			"uso: /start &lt;tu_chat_id&gt;\n\n "+
 				"Para obtener tu chat_id, envía /myid al bot @userinfobot")
 		return
 	}
@@ -77,7 +77,7 @@ func (ch *CommandsHandler) HandleClose(chatID int64) {
 	ch.telegram.SendMessage(chatID,
 		"❌ <b>Alertas desactivadas</b>\n\n"+
 			"No recibirás más notificaciones.\n"+
-			"Para reactivar: /start <tu_chat_id>")
+			"Para reactivar: /start &lt;tu_chat_id&gt;")
 }
 func (ch *CommandsHandler) HandleMyID(chatID int64) {
 	ch.telegram.SendMessage(chatID, fmt.Sprintf("Tu chat ID es: <code>%d</code>", chatID))
