@@ -14,6 +14,7 @@ import (
 
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/store"
+	"tradingview-bot/internal/strategymanager"
 )
 
 const (
@@ -79,27 +80,27 @@ func (t FlexTimestamp) Time() time.Time {
 }
 
 type WebhookPayload struct {
-	Strategy    string      `json:"strategy"`
-	Timeframe   string      `json:"timeframe"`
-	Interval    string      `json:"interval,omitempty"`
-	Symbol      string      `json:"symbol"`
-	Exchange    string      `json:"exchange,omitempty"`
-	Action      string      `json:"action,omitempty"`
-	Price       FlexPrice   `json:"price"`
+	Strategy    string       `json:"strategy"`
+	Timeframe   string       `json:"timeframe"`
+	Interval    string       `json:"interval,omitempty"`
+	Symbol      string       `json:"symbol"`
+	Exchange    string       `json:"exchange,omitempty"`
+	Action      string       `json:"action,omitempty"`
+	Price       FlexPrice    `json:"price"`
 	Time        FlexTimestamp `json:"time"`
-	Open        *FlexPrice  `json:"open,omitempty"`
-	High        *FlexPrice  `json:"high,omitempty"`
-	Low         *FlexPrice  `json:"low,omitempty"`
-	Close       *FlexPrice  `json:"close,omitempty"`
-	Volume      *FlexPrice  `json:"volume,omitempty"`
-	Closed      *bool       `json:"closed,omitempty"`
-	Secret      string      `json:"secret"`
-	RSI         *float64    `json:"rsi,omitempty"`
-	VolumeRatio *float64    `json:"volume_ratio,omitempty"`
-	Trend4H     string      `json:"trend4h,omitempty"`
-	StopLoss    *float64    `json:"stop_loss,omitempty"`
-	TakeProfit  *float64    `json:"take_profit,omitempty"`
-	Regime      string      `json:"regime,omitempty"`
+	Open        *FlexPrice   `json:"open,omitempty"`
+	High        *FlexPrice   `json:"high,omitempty"`
+	Low         *FlexPrice   `json:"low,omitempty"`
+	Close       *FlexPrice   `json:"close,omitempty"`
+	Volume      *FlexPrice   `json:"volume,omitempty"`
+	Closed      *bool        `json:"closed,omitempty"`
+	Secret      string       `json:"secret"`
+	RSI         *float64     `json:"rsi,omitempty"`
+	VolumeRatio *float64     `json:"volume_ratio,omitempty"`
+	Trend4H     string       `json:"trend4h,omitempty"`
+	StopLoss    *float64     `json:"stop_loss,omitempty"`
+	TakeProfit  *float64     `json:"take_profit,omitempty"`
+	Regime      string       `json:"regime,omitempty"`
 }
 
 type Publisher interface {
@@ -110,12 +111,14 @@ type WebhookHandler struct {
 	publisher   Publisher
 	secret      string
 	candleStore domain.CandleStore
+	liveEngine  *strategymanager.LiveEngine
 }
 
 // NewWebhookHandler mantiene compatibilidad con las llamadas existentes.
 // Si no se inyecta CandleStore, las velas se guardan bajo demanda en la
-// misma base SQLite del bot. Esto permite que el /webhook actual empiece a
-// recibir TradingView sin obligar a cambiar todavía el wiring de main.go.
+// misma base SQLite del bot. También conecta automáticamente esas velas con
+// el motor de estrategia en vivo para que TradingView alimente el paper
+// trading sin depender de Binance.
 func NewWebhookHandler(publisher Publisher, secret string, candleStores ...domain.CandleStore) *WebhookHandler {
 	var candleStore domain.CandleStore
 	if len(candleStores) > 0 {
@@ -127,6 +130,7 @@ func NewWebhookHandler(publisher Publisher, secret string, candleStores ...domai
 		publisher:   publisher,
 		secret:      secret,
 		candleStore: candleStore,
+		liveEngine:  strategymanager.NewLiveEngine(candleStore, nil, publisher),
 	}
 }
 
@@ -190,7 +194,7 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 	}
 
 	// TradingView puede enviar una vela completa con OHLCV y sin action. En
-	// ese caso la guardamos para que el motor de estrategias pueda analizarla.
+	// ese caso la guardamos y la pasamos al motor de estrategia en vivo.
 	if payload.hasCandleData() {
 		if err := validateCandle(payload); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -219,8 +223,16 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 			formatLogPrice(k.Open), formatLogPrice(k.High), formatLogPrice(k.Low),
 			formatLogPrice(k.Close), formatLogPrice(k.Volume), payload.Exchange)
 
+		if wh.liveEngine != nil {
+			if err := wh.liveEngine.OnCandle(ctx, k); err != nil {
+				log.Printf("estrategia en vivo %s %s: %v", k.Symbol, k.Timeframe, err)
+				http.Error(w, "Servicio ocupado", http.StatusServiceUnavailable)
+				return
+			}
+		}
+
 		// Si además viene action, conservamos el comportamiento anterior y
-		// publicamos la señal después de guardar la vela.
+		// publicamos la señal después de guardar/evaluar la vela.
 		if payload.Action == "" {
 			respondAccepted(w)
 			return
