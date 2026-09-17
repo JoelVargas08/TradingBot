@@ -80,7 +80,10 @@ func Load() (*Config, error) {
 		Mode:              getEnv("MODE", "paper"),
 		Symbols:           splitCSV(getEnv("SYMBOLS", "BTCUSDT,ETHUSDT")),
 		Timeframes:        splitCSV(getEnv("TIMEFRAMES", "1m,1h")),
-		IngestEnabled:     getEnvBool("INGEST_ENABLED", true),
+		// TradingView es ahora la fuente de mercado principal. Binance queda
+		// disponible como adaptador legado, pero no se inicia por defecto para
+		// evitar mezclar dos fuentes de datos.
+		IngestEnabled:     getEnvBool("INGEST_ENABLED", false),
 		WatchTrades:       getEnvBool("WATCH_TRADES", true),
 		WhaleUSD:          getEnvFloat("WHALE_USD", 100000),
 		BinanceWSURL:      getEnv("BINANCE_WS_URL", "wss://stream.binance.com:9443"),
