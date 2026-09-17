@@ -4,9 +4,11 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"tradingview-bot/internal/domain"
@@ -38,13 +40,57 @@ func (p *FlexPrice) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// FlexTimestamp acepta tanto Unix seconds como el formato UTC que usa
+// TradingView para {{time}} (yyyy-MM-ddTHH:mm:ssZ).
+type FlexTimestamp int64
+
+func (t *FlexTimestamp) UnmarshalJSON(data []byte) error {
+	var num int64
+	if err := json.Unmarshal(data, &num); err == nil {
+		*t = FlexTimestamp(num)
+		return nil
+	}
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	if n, err := strconv.ParseInt(strings.TrimSpace(str), 10, 64); err == nil {
+		*t = FlexTimestamp(n)
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, str)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339Nano, str)
+	}
+	if err != nil {
+		return fmt.Errorf("time debe ser Unix seconds o RFC3339: %w", err)
+	}
+	*t = FlexTimestamp(parsed.Unix())
+	return nil
+}
+
+func (t FlexTimestamp) Time() time.Time {
+	if t <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(int64(t), 0).UTC()
+}
+
 type WebhookPayload struct {
 	Strategy    string    `json:"strategy"`
 	Timeframe   string    `json:"timeframe"`
+	Interval    string    `json:"interval,omitempty"`
 	Symbol      string    `json:"symbol"`
-	Action      string    `json:"action"`
+	Exchange    string    `json:"exchange,omitempty"`
+	Action      string    `json:"action,omitempty"`
 	Price       FlexPrice `json:"price"`
-	Time        int64     `json:"time"`
+	Time        FlexTimestamp `json:"time"`
+	Open        *FlexPrice `json:"open,omitempty"`
+	High        *FlexPrice `json:"high,omitempty"`
+	Low         *FlexPrice `json:"low,omitempty"`
+	Close       *FlexPrice `json:"close,omitempty"`
+	Volume      *FlexPrice `json:"volume,omitempty"`
+	Closed      *bool     `json:"closed,omitempty"`
 	Secret      string    `json:"secret"`
 	RSI         *float64  `json:"rsi,omitempty"`
 	VolumeRatio *float64  `json:"volume_ratio,omitempty"`
@@ -59,14 +105,23 @@ type Publisher interface {
 }
 
 type WebhookHandler struct {
-	publisher Publisher
-	secret    string
+	publisher   Publisher
+	secret      string
+	candleStore domain.CandleStore
 }
 
-func NewWebhookHandler(publisher Publisher, secret string) *WebhookHandler {
+// NewWebhookHandler mantiene compatibilidad con las llamadas existentes y
+// permite opcionalmente inyectar un CandleStore para recibir velas de
+// TradingView sin cambiar el flujo de señales existente.
+func NewWebhookHandler(publisher Publisher, secret string, candleStores ...domain.CandleStore) *WebhookHandler {
+	var candleStore domain.CandleStore
+	if len(candleStores) > 0 {
+		candleStore = candleStores[0]
+	}
 	return &WebhookHandler{
-		publisher: publisher,
-		secret:    secret,
+		publisher:   publisher,
+		secret:      secret,
+		candleStore: candleStore,
 	}
 }
 
@@ -90,24 +145,79 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "Campos requeridos: symbol", http.StatusBadRequest)
 		return
 	}
+	if payload.Timeframe == "" {
+		payload.Timeframe = payload.Interval
+	}
+	if payload.Timeframe == "" {
+		payload.Timeframe = defaultTimeframe
+	}
+	barTS := payload.Time.Time()
+	if barTS.IsZero() {
+		barTS = time.Now().UTC()
+	}
+
+	// TradingView puede enviar una vela completa con OHLCV y sin acción. En
+	// ese caso la guardamos para que el motor de estrategias pueda analizarla.
+	if payload.hasCandleData() {
+		if wh.candleStore == nil {
+			http.Error(w, "Recepción de velas no configurada", http.StatusServiceUnavailable)
+			return
+		}
+		if err := validateCandle(payload); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		k := domain.Kline{
+			Symbol:    payload.Symbol,
+			Timeframe: payload.Timeframe,
+			Start:     barTS,
+			Open:      float64(*payload.Open),
+			High:      float64(*payload.High),
+			Low:       float64(*payload.Low),
+			Close:     float64(*payload.Close),
+			Volume:    float64(*payload.Volume),
+			Closed:    payload.Closed == nil || *payload.Closed,
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), publishTimeout)
+		defer cancel()
+		if err := wh.candleStore.SaveCandle(ctx, k); err != nil {
+			log.Printf("Error guardando vela %s %s: %v", payload.Symbol, payload.Timeframe, err)
+			http.Error(w, "Servicio ocupado", http.StatusServiceUnavailable)
+			return
+		}
+		log.Printf("Vela TradingView guardada: %s %s O=%s H=%s L=%s C=%s V=%s exchange=%s",
+			payload.Symbol, payload.Timeframe,
+			formatLogPrice(k.Open), formatLogPrice(k.High), formatLogPrice(k.Low),
+			formatLogPrice(k.Close), formatLogPrice(k.Volume), payload.Exchange)
+
+		// Si además viene action, conservamos el comportamiento anterior y
+		// publicamos la señal después de guardar la vela.
+		if payload.Action == "" {
+			respondAccepted(w)
+			return
+		}
+	}
+
+	if payload.Action == "" {
+		http.Error(w, "action requerido cuando no se envía una vela OHLCV completa", http.StatusBadRequest)
+		return
+	}
+
 	direction := domain.Direction(payload.Action)
 	if !direction.Valid() {
 		http.Error(w, "action debe ser 'buy' o 'sell'", http.StatusBadRequest)
 		return
 	}
 	if payload.Price <= 0 {
-		http.Error(w, "price debe ser mayor que 0", http.StatusBadRequest)
-		return
+		if payload.Close != nil {
+			payload.Price = *payload.Close
+		} else {
+			http.Error(w, "price debe ser mayor que 0", http.StatusBadRequest)
+			return
+		}
 	}
 	if payload.Strategy == "" {
 		payload.Strategy = defaultStrategy
-	}
-	if payload.Timeframe == "" {
-		payload.Timeframe = defaultTimeframe
-	}
-	barTS := time.Unix(payload.Time, 0)
-	if barTS.Unix() <= 0 {
-		barTS = time.Now()
 	}
 	ev := domain.SignalEvent{
 		StrategyID: payload.Strategy,
@@ -130,12 +240,45 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 	respondAccepted(w)
 }
 
+func (p WebhookPayload) hasCandleData() bool {
+	return p.Open != nil || p.High != nil || p.Low != nil || p.Close != nil || p.Volume != nil
+}
+
+func validateCandle(p WebhookPayload) error {
+	if p.Open == nil || p.High == nil || p.Low == nil || p.Close == nil || p.Volume == nil {
+		return fmt.Errorf("una vela requiere open, high, low, close y volume")
+	}
+	if p.Time.Time().IsZero() {
+		return fmt.Errorf("time de la vela es requerido")
+	}
+	if p.Closed != nil && !*p.Closed {
+		return fmt.Errorf("solo se aceptan velas cerradas; configura TradingView como 'Once Per Bar Close'")
+	}
+	open, high, low, close, volume := float64(*p.Open), float64(*p.High), float64(*p.Low), float64(*p.Close), float64(*p.Volume)
+	if open <= 0 || high <= 0 || low <= 0 || close <= 0 {
+		return fmt.Errorf("open, high, low y close deben ser mayores que 0")
+	}
+	if high < low || high < open || high < close || low > open || low > close {
+		return fmt.Errorf("OHLC inválido: high/low no contienen open y close")
+	}
+	if volume < 0 {
+		return fmt.Errorf("volume no puede ser negativo")
+	}
+	return nil
+}
+
 func formatLogPrice(p float64) string {
 	return strconv.FormatFloat(p, 'f', -1, 64)
 }
 
 func buildMeta(payload WebhookPayload) map[string]any {
 	meta := make(map[string]any)
+	if payload.Exchange != "" {
+		meta["exchange"] = payload.Exchange
+	}
+	if payload.Interval != "" {
+		meta["interval"] = payload.Interval
+	}
 	if payload.RSI != nil {
 		meta[domain.MetaKeyRSI] = *payload.RSI
 	}
