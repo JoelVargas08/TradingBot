@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/store"
 )
 
 const (
@@ -77,27 +79,27 @@ func (t FlexTimestamp) Time() time.Time {
 }
 
 type WebhookPayload struct {
-	Strategy    string    `json:"strategy"`
-	Timeframe   string    `json:"timeframe"`
-	Interval    string    `json:"interval,omitempty"`
-	Symbol      string    `json:"symbol"`
-	Exchange    string    `json:"exchange,omitempty"`
-	Action      string    `json:"action,omitempty"`
-	Price       FlexPrice `json:"price"`
+	Strategy    string      `json:"strategy"`
+	Timeframe   string      `json:"timeframe"`
+	Interval    string      `json:"interval,omitempty"`
+	Symbol      string      `json:"symbol"`
+	Exchange    string      `json:"exchange,omitempty"`
+	Action      string      `json:"action,omitempty"`
+	Price       FlexPrice   `json:"price"`
 	Time        FlexTimestamp `json:"time"`
-	Open        *FlexPrice `json:"open,omitempty"`
-	High        *FlexPrice `json:"high,omitempty"`
-	Low         *FlexPrice `json:"low,omitempty"`
-	Close       *FlexPrice `json:"close,omitempty"`
-	Volume      *FlexPrice `json:"volume,omitempty"`
-	Closed      *bool     `json:"closed,omitempty"`
-	Secret      string    `json:"secret"`
-	RSI         *float64  `json:"rsi,omitempty"`
-	VolumeRatio *float64  `json:"volume_ratio,omitempty"`
-	Trend4H     string    `json:"trend4h,omitempty"`
-	StopLoss    *float64  `json:"stop_loss,omitempty"`
-	TakeProfit  *float64  `json:"take_profit,omitempty"`
-	Regime      string    `json:"regime,omitempty"`
+	Open        *FlexPrice  `json:"open,omitempty"`
+	High        *FlexPrice  `json:"high,omitempty"`
+	Low         *FlexPrice  `json:"low,omitempty"`
+	Close       *FlexPrice  `json:"close,omitempty"`
+	Volume      *FlexPrice  `json:"volume,omitempty"`
+	Closed      *bool       `json:"closed,omitempty"`
+	Secret      string      `json:"secret"`
+	RSI         *float64    `json:"rsi,omitempty"`
+	VolumeRatio *float64    `json:"volume_ratio,omitempty"`
+	Trend4H     string      `json:"trend4h,omitempty"`
+	StopLoss    *float64    `json:"stop_loss,omitempty"`
+	TakeProfit  *float64    `json:"take_profit,omitempty"`
+	Regime      string      `json:"regime,omitempty"`
 }
 
 type Publisher interface {
@@ -110,19 +112,50 @@ type WebhookHandler struct {
 	candleStore domain.CandleStore
 }
 
-// NewWebhookHandler mantiene compatibilidad con las llamadas existentes y
-// permite opcionalmente inyectar un CandleStore para recibir velas de
-// TradingView sin cambiar el flujo de señales existente.
+// NewWebhookHandler mantiene compatibilidad con las llamadas existentes.
+// Si no se inyecta CandleStore, las velas se guardan bajo demanda en la
+// misma base SQLite del bot. Esto permite que el /webhook actual empiece a
+// recibir TradingView sin obligar a cambiar todavía el wiring de main.go.
 func NewWebhookHandler(publisher Publisher, secret string, candleStores ...domain.CandleStore) *WebhookHandler {
 	var candleStore domain.CandleStore
 	if len(candleStores) > 0 {
 		candleStore = candleStores[0]
+	} else {
+		candleStore = &lazyCandleStore{}
 	}
 	return &WebhookHandler{
 		publisher:   publisher,
 		secret:      secret,
 		candleStore: candleStore,
 	}
+}
+
+// lazyCandleStore evita abrir SQLite durante los tests de señales existentes.
+// Solo inicializa la base cuando llega la primera vela de TradingView.
+type lazyCandleStore struct {
+	once sync.Once
+	st   *store.Store
+	err  error
+}
+
+func (l *lazyCandleStore) init() {
+	l.st, l.err = store.Open("data/bot.db")
+}
+
+func (l *lazyCandleStore) SaveCandle(ctx context.Context, k domain.Kline) error {
+	l.once.Do(l.init)
+	if l.err != nil {
+		return l.err
+	}
+	return l.st.SaveCandle(ctx, k)
+}
+
+func (l *lazyCandleStore) RecentCandles(ctx context.Context, symbol, timeframe string, limit int) ([]domain.Kline, error) {
+	l.once.Do(l.init)
+	if l.err != nil {
+		return nil, l.err
+	}
+	return l.st.RecentCandles(ctx, symbol, timeframe, limit)
 }
 
 func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
@@ -156,13 +189,9 @@ func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) 
 		barTS = time.Now().UTC()
 	}
 
-	// TradingView puede enviar una vela completa con OHLCV y sin acción. En
+	// TradingView puede enviar una vela completa con OHLCV y sin action. En
 	// ese caso la guardamos para que el motor de estrategias pueda analizarla.
 	if payload.hasCandleData() {
-		if wh.candleStore == nil {
-			http.Error(w, "Recepción de velas no configurada", http.StatusServiceUnavailable)
-			return
-		}
 		if err := validateCandle(payload); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
