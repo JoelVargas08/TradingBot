@@ -72,14 +72,14 @@ type Config struct {
 func Load() (*Config, error) {
 	loadDotEnv(".env")
 	cfg := &Config{
-		TelegramBotToken:  os.Getenv("TELEGRAM_BOT_TOKEN"),
-		WebhookSecret:     os.Getenv("WEBHOOK_SECRET"),
-		Port:              getEnv("PORT", "8080"),
-		StorageFile:       getEnv("STORAGE_FILE", "data/users.json"),
-		DBFile:            getEnv("DB_FILE", "data/bot.db"),
-		Mode:              getEnv("MODE", "paper"),
-		Symbols:           splitCSV(getEnv("SYMBOLS", "BTCUSDT,ETHUSDT")),
-		Timeframes:        splitCSV(getEnv("TIMEFRAMES", "1m,1h")),
+		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
+		WebhookSecret:    os.Getenv("WEBHOOK_SECRET"),
+		Port:             getEnv("PORT", "8080"),
+		StorageFile:      getEnv("STORAGE_FILE", "data/users.json"),
+		DBFile:           getEnv("DB_FILE", "data/bot.db"),
+		Mode:             getEnv("MODE", "paper"),
+		Symbols:          splitCSV(getEnv("SYMBOLS", "BTCUSDT,ETHUSDT")),
+		Timeframes:       splitCSV(getEnv("TIMEFRAMES", "1m,1h")),
 		// TradingView es ahora la fuente de mercado principal. Binance queda
 		// disponible como adaptador legado, pero no se inicia por defecto para
 		// evitar mezclar dos fuentes de datos.

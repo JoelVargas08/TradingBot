@@ -453,7 +453,7 @@ func main() {
 		positionsStore = paperEngine
 	}
 	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, positionsStore, tradingSession, paperEngine)
-	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret)
+	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret, sqliteStore, sqliteStore)
 
 	// Configurar bot de Telegram para polling
 	log.Println("Telegram polling iniciado; esperando mensajes...")

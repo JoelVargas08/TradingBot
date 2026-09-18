@@ -80,27 +80,27 @@ func (t FlexTimestamp) Time() time.Time {
 }
 
 type WebhookPayload struct {
-	Strategy    string       `json:"strategy"`
-	Timeframe   string       `json:"timeframe"`
-	Interval    string       `json:"interval,omitempty"`
-	Symbol      string       `json:"symbol"`
-	Exchange    string       `json:"exchange,omitempty"`
-	Action      string       `json:"action,omitempty"`
-	Price       FlexPrice    `json:"price"`
+	Strategy    string        `json:"strategy"`
+	Timeframe   string        `json:"timeframe"`
+	Interval    string        `json:"interval,omitempty"`
+	Symbol      string        `json:"symbol"`
+	Exchange    string        `json:"exchange,omitempty"`
+	Action      string        `json:"action,omitempty"`
+	Price       FlexPrice     `json:"price"`
 	Time        FlexTimestamp `json:"time"`
-	Open        *FlexPrice   `json:"open,omitempty"`
-	High        *FlexPrice   `json:"high,omitempty"`
-	Low         *FlexPrice   `json:"low,omitempty"`
-	Close       *FlexPrice   `json:"close,omitempty"`
-	Volume      *FlexPrice   `json:"volume,omitempty"`
-	Closed      *bool        `json:"closed,omitempty"`
-	Secret      string       `json:"secret"`
-	RSI         *float64     `json:"rsi,omitempty"`
-	VolumeRatio *float64     `json:"volume_ratio,omitempty"`
-	Trend4H     string       `json:"trend4h,omitempty"`
-	StopLoss    *float64     `json:"stop_loss,omitempty"`
-	TakeProfit  *float64     `json:"take_profit,omitempty"`
-	Regime      string       `json:"regime,omitempty"`
+	Open        *FlexPrice    `json:"open,omitempty"`
+	High        *FlexPrice    `json:"high,omitempty"`
+	Low         *FlexPrice    `json:"low,omitempty"`
+	Close       *FlexPrice    `json:"close,omitempty"`
+	Volume      *FlexPrice    `json:"volume,omitempty"`
+	Closed      *bool         `json:"closed,omitempty"`
+	Secret      string        `json:"secret"`
+	RSI         *float64      `json:"rsi,omitempty"`
+	VolumeRatio *float64      `json:"volume_ratio,omitempty"`
+	Trend4H     string        `json:"trend4h,omitempty"`
+	StopLoss    *float64      `json:"stop_loss,omitempty"`
+	TakeProfit  *float64      `json:"take_profit,omitempty"`
+	Regime      string        `json:"regime,omitempty"`
 }
 
 type Publisher interface {
@@ -115,22 +115,34 @@ type WebhookHandler struct {
 }
 
 // NewWebhookHandler mantiene compatibilidad con las llamadas existentes.
-// Si no se inyecta CandleStore, las velas se guardan bajo demanda en la
-// misma base SQLite del bot. También conecta automáticamente esas velas con
-// el motor de estrategia en vivo para que TradingView alimente el paper
-// trading sin depender de Binance.
-func NewWebhookHandler(publisher Publisher, secret string, candleStores ...domain.CandleStore) *WebhookHandler {
+// Acepta opcionalmente un CandleStore y un StrategyStore para conectar el
+// motor de estrategia en vivo. Si no se inyecta CandleStore, las velas se
+// guardan bajo demanda en la misma base SQLite del bot. También conecta
+// automáticamente esas velas con el motor de estrategia en vivo para que
+// TradingView alimente el paper trading sin depender de Binance.
+func NewWebhookHandler(publisher Publisher, secret string, stores ...any) *WebhookHandler {
 	var candleStore domain.CandleStore
-	if len(candleStores) > 0 {
-		candleStore = candleStores[0]
-	} else {
+	var strategyStore domain.StrategyStore
+	for _, s := range stores {
+		switch v := s.(type) {
+		case domain.CandleStore:
+			if candleStore == nil {
+				candleStore = v
+			}
+		case domain.StrategyStore:
+			if strategyStore == nil {
+				strategyStore = v
+			}
+		}
+	}
+	if candleStore == nil {
 		candleStore = &lazyCandleStore{}
 	}
 	return &WebhookHandler{
 		publisher:   publisher,
 		secret:      secret,
 		candleStore: candleStore,
-		liveEngine:  strategymanager.NewLiveEngine(candleStore, nil, publisher),
+		liveEngine:  strategymanager.NewLiveEngine(candleStore, strategyStore, publisher),
 	}
 }
 
