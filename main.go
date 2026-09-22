@@ -505,6 +505,10 @@ func main() {
 				go runInvestingBullsLearn(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
 			case "validateib":
 				go runInvestingBullsValidate(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
+			case "learnibmtf":
+				go runInvestingBullsLearnMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
+			case "validateibmtf":
+				go runInvestingBullsValidateMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
 			case "strategies":
 				if strategyCommands != nil {
 					strategyCommands.HandleStrategies(chatID)
@@ -657,6 +661,25 @@ func runInvestingBullsValidate(ctx context.Context, store investingbulls.Learner
 	telegram.SendMessage(chatID, fmt.Sprintf("🔬 OOS %s\nEstado: %s\nFolds: %d | Trades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%", strategyID, state, bt.Folds, bt.Trades, bt.WinRate*100, bt.ProfitFactor, bt.TotalReturn*100, bt.MaxDrawdown*100))
 }
 
+// runInvestingBullsLearnMTF trains the complete 1H -> 15m -> optional 5m pipeline.
+func runInvestingBullsLearnMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
+ parts:=strings.Fields(args); if len(parts)<1 {telegram.SendMessage(chatID,"Uso: /learnibmtf BTCUSDT [limite] [confirm5m]");return}
+ limit:=5000; if len(parts)>=2 {if n,err:=strconv.Atoi(parts[1]);err==nil&&n>0{limit=n}}
+ require5m:=false; if len(parts)>=3 {require5m=strings.EqualFold(parts[2],"true")||parts[2]=="1"||strings.EqualFold(parts[2],"yes")}
+ symbol:=parts[0]; mtf:=investingbulls.DefaultMultiTimeframeConfig(); mtf.RequireConfirm=require5m
+ telegram.SendMessage(chatID,fmt.Sprintf("🧠 Aprendiendo Investing Bulls MTF: %s (1H→15m→5m=%v)...",symbol,require5m))
+ st,learned,err:=investingbulls.LearnMultiTimeframeAndPersist(ctx,store,symbol,limit,investingbulls.DefaultLearnConfig(),mtf); if err!=nil{telegram.SendMessage(chatID,"❌ Learn MTF: "+err.Error());return}
+ telegram.SendMessage(chatID,fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nSetups: %v\nUsa /validateibmtf %s %s",st.ID,len(learned.Trades),learned.Model.Base.ProfitFactor,learned.Model.Base.TotalReturn*100,learned.Model.Base.MaxDrawdown*100,learned.Model.AllowedSetups,st.ID,symbol))
+}
+
+func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
+ parts:=strings.Fields(args);if len(parts)<2{telegram.SendMessage(chatID,"Uso: /validateibmtf <strategyID> BTCUSDT [limite]");return}
+ limit:=5000;if len(parts)>=3{if n,err:=strconv.Atoi(parts[2]);err==nil&&n>0{limit=n}}
+ telegram.SendMessage(chatID,"🔬 Validando candidato MTF con OOS fijo...")
+ bt,err:=investingbulls.ValidateMultiTimeframeCandidate(ctx,store,parts[0],parts[1],limit,investingbulls.DefaultWalkForwardConfig());if err!=nil{telegram.SendMessage(chatID,"❌ OOS MTF: "+err.Error());return}
+ state:="REJECTED";if bt.Passed{state="ACTIVE"}
+ telegram.SendMessage(chatID,fmt.Sprintf("🔬 OOS MTF %s\nEstado: %s\nFolds: %d | Trades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%",parts[0],state,bt.Folds,bt.Trades,bt.WinRate*100,bt.ProfitFactor,bt.TotalReturn*100,bt.MaxDrawdown*100))
+}
 func downloadFile(ctx context.Context, url, path string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
