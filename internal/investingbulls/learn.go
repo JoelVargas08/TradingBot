@@ -154,6 +154,16 @@ func normalizeLearnConfig(cfg LearnConfig) LearnConfig {
 }
 
 func generateAndSimulate(ks []domain.Kline, cfg LearnConfig) []LearnedTrade {
+	return generateAndSimulateFrom(ks, cfg, 0)
+}
+
+func generateAndSimulateFrom(ks []domain.Kline, cfg LearnConfig, evaluationStart int) []LearnedTrade {
+	if evaluationStart < 0 {
+		evaluationStart = 0
+	}
+	if evaluationStart >= len(ks) {
+		return nil
+	}
 	var out []LearnedTrade
 	inTrade := false
 	var open LearnedTrade
