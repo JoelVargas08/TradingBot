@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -216,6 +217,11 @@ func main() {
 	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, processorPositionController, tradingSession, 10000)
 	processorSvc.Start(ctx)
 
+	// Motor de estrategia en vivo compartido: TradingView (webhook) y WEEX
+	// (MarketDataService) alimentan el mismo motor; las señales se publican en
+	// el mismo bus que ya consume el processor/paper engine.
+	liveEngine := strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
+
 	// Modo de ejecución (Fase 6)
 	if cfg.Mode == "live" {
 		log.Fatalf("MODE=live requiere un adaptador de broker configurado; actualmente solo está disponible paper trading")
@@ -364,6 +370,36 @@ func main() {
 		}()
 	}
 
+	// Fuente de mercado WEEX (Fase 2): backfill + WebSocket alimentan
+	// CandleStore y LiveEngine sin depender de TradingView. Activo solo con
+	// MARKET_DATA_PROVIDER=weex.
+	var marketDataService *ingest.MarketDataService
+	var marketCommands *handlers.MarketCommands
+	if cfg.MarketDataProvider == "weex" {
+		if cfg.IngestEnabled {
+			log.Println("ADVERTENCIA: MARKET_DATA_PROVIDER=weex e INGEST_ENABLED=true; dos fuentes podrían escribir la misma serie")
+		}
+		weexProvider := ingest.NewWEEXProvider(sqliteStore, ingest.WeexConfig{
+			RestURL:   cfg.WeexRestURL,
+			WSURL:     cfg.WeexWSURL,
+			PriceType: cfg.WeexPriceType,
+		})
+		marketDataService = ingest.NewMarketDataService(weexProvider, sqliteStore, liveEngine, cfg.WeexPriceType, 300)
+		marketCommands = handlers.NewMarketCommands(telegram, marketDataService)
+		if err := marketDataService.SetSelection("chandelier", cfg.TradingSymbol, cfg.TradingTimeframe); err != nil {
+			log.Fatalf("selección de mercado WEEX inválida: %v", err)
+		}
+		liveEngine.SetSource("weex")
+		go func() {
+			if err := marketDataService.Run(ctx); err != nil {
+				log.Printf("market data service finalizado: %v", err)
+			}
+		}()
+		log.Printf("Fuente de mercado WEEX activa: %s %s %s", cfg.TradingSymbol, cfg.TradingTimeframe, cfg.WeexPriceType)
+	} else {
+		log.Println("Fuente de mercado: TradingView (MARKET_DATA_PROVIDER vacío)")
+	}
+
 	// Sentimiento (Fear & Greed + CoinGecko trending) periódico
 	if cfg.SentimentEnabled {
 		sentimentClient := sentiment.New(sentiment.Config{CoinGeckoKey: cfg.CoinGeckoKey})
@@ -469,7 +505,7 @@ func main() {
 		positionsStore = paperEngine
 	}
 	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, positionsStore, tradingSession, paperEngine)
-	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret, sqliteStore, sqliteStore)
+	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret, sqliteStore, sqliteStore, liveEngine)
 
 	// Configurar bot de Telegram para polling
 	log.Println("Telegram polling iniciado; esperando mensajes...")
@@ -529,10 +565,31 @@ func main() {
 					telegram.SendMessage(chatID, "❌ Aprendizaje desde PDF no está habilitado (LLM_ENABLED=false)")
 				}
 			case "strategy":
-				if strategyCommands != nil {
+				switch {
+				case marketCommands != nil:
+					marketCommands.HandleStrategy(chatID, update.Message.CommandArguments())
+				case strategyCommands != nil:
 					strategyCommands.HandleStrategy(chatID, update.Message.CommandArguments())
+				default:
+					telegram.SendMessage(chatID, "❌ Gestión de estrategias no está habilitado")
+				}
+			case "market":
+				if marketCommands != nil {
+					marketCommands.HandleMarket(chatID)
 				} else {
-					telegram.SendMessage(chatID, "❌ Gestión de estrategias no está habilitado (LLM_ENABLED=false)")
+					telegram.SendMessage(chatID, "❌ Mercado en vivo no está habilitado (MARKET_DATA_PROVIDER=weex)")
+				}
+			case "symbol":
+				if marketCommands != nil {
+					marketCommands.HandleSymbol(chatID, update.Message.CommandArguments())
+				} else {
+					telegram.SendMessage(chatID, "❌ Mercado en vivo no está habilitado (MARKET_DATA_PROVIDER=weex)")
+				}
+			case "timeframe":
+				if marketCommands != nil {
+					marketCommands.HandleTimeframe(chatID, update.Message.CommandArguments())
+				} else {
+					telegram.SendMessage(chatID, "❌ Mercado en vivo no está habilitado (MARKET_DATA_PROVIDER=weex)")
 				}
 			case "backtest":
 				if strategyCommands != nil {
@@ -568,8 +625,19 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/webhook", webhookHandler.HandleWebhook)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		status := map[string]any{"status": "ok", "paper": paperEngine != nil}
+		if marketDataService != nil {
+			m := marketDataService.Status()
+			status["market_data"] = map[string]any{
+				"provider":  m.Provider,
+				"connected": m.Connected,
+				"symbol":    m.Symbol,
+				"timeframe": m.Timeframe,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		json.NewEncoder(w).Encode(status)
 	})
 	srv := &http.Server{
 		Addr:              ":" + cfg.Port,

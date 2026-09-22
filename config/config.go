@@ -67,6 +67,15 @@ type Config struct {
 	TradingSessionStart           string
 	TradingSessionEnd             string
 	TradingSessionTimezone        string
+
+	// Fuente de mercado WEEX (Fase 2): provee velas REST+WS a LiveEngine.
+	// Vacío = comportamiento legado (TradingView + adaptador Binance opcional).
+	MarketDataProvider string
+	WeexRestURL        string
+	WeexWSURL          string
+	WeexPriceType      string
+	TradingSymbol      string
+	TradingTimeframe   string
 }
 
 func Load() (*Config, error) {
@@ -133,6 +142,14 @@ func Load() (*Config, error) {
 		TradingSessionStart:           getEnv("TRADING_SESSION_START", "09:00"),
 		TradingSessionEnd:             getEnv("TRADING_SESSION_END", "17:00"),
 		TradingSessionTimezone:        getEnv("TRADING_SESSION_TIMEZONE", "America/New_York"),
+
+		// Fuente de mercado WEEX (Fase 2)
+		MarketDataProvider: getEnv("MARKET_DATA_PROVIDER", ""),
+		WeexRestURL:        getEnv("WEEX_CONTRACT_REST_URL", "https://api-contract.weex.com"),
+		WeexWSURL:          getEnv("WEEX_CONTRACT_WS_URL", "wss://ws-contract.weex.com/v3/ws/public"),
+		WeexPriceType:      getEnv("WEEX_PRICE_TYPE", "LAST_PRICE"),
+		TradingSymbol:      getEnv("TRADING_SYMBOL", "BTCUSDT"),
+		TradingTimeframe:   getEnv("TRADING_TIMEFRAME", "1h"),
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "paper"

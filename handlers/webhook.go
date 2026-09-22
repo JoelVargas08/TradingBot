@@ -115,14 +115,16 @@ type WebhookHandler struct {
 }
 
 // NewWebhookHandler mantiene compatibilidad con las llamadas existentes.
-// Acepta opcionalmente un CandleStore y un StrategyStore para conectar el
-// motor de estrategia en vivo. Si no se inyecta CandleStore, las velas se
-// guardan bajo demanda en la misma base SQLite del bot. También conecta
-// automáticamente esas velas con el motor de estrategia en vivo para que
-// TradingView alimente el paper trading sin depender de Binance.
+// Acepta opcionalmente un CandleStore, un StrategyStore y un LiveEngine para
+// conectar el motor de estrategia en vivo. Si no se inyecta CandleStore, las
+// velas se guardan bajo demanda en la misma base SQLite del bot. Si no se
+// inyecta un LiveEngine, se crea uno interno a partir de los stores; cuando
+// main.go comparte su LiveEngine (alimentado por WEEX) se reutiliza para que
+// TradingView y WEEX publiquen en el mismo motor sin feeds duplicados.
 func NewWebhookHandler(publisher Publisher, secret string, stores ...any) *WebhookHandler {
 	var candleStore domain.CandleStore
 	var strategyStore domain.StrategyStore
+	var liveEngine *strategymanager.LiveEngine
 	for _, s := range stores {
 		switch v := s.(type) {
 		case domain.CandleStore:
@@ -133,16 +135,23 @@ func NewWebhookHandler(publisher Publisher, secret string, stores ...any) *Webho
 			if strategyStore == nil {
 				strategyStore = v
 			}
+		case *strategymanager.LiveEngine:
+			if liveEngine == nil {
+				liveEngine = v
+			}
 		}
 	}
 	if candleStore == nil {
 		candleStore = &lazyCandleStore{}
 	}
+	if liveEngine == nil {
+		liveEngine = strategymanager.NewLiveEngine(candleStore, strategyStore, publisher)
+	}
 	return &WebhookHandler{
 		publisher:   publisher,
 		secret:      secret,
 		candleStore: candleStore,
-		liveEngine:  strategymanager.NewLiveEngine(candleStore, strategyStore, publisher),
+		liveEngine:  liveEngine,
 	}
 }
 

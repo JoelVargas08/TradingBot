@@ -30,6 +30,7 @@ type LiveEngine struct {
 	strategyID string
 	symbol     string
 	timeframe  string
+	source     string
 	lastBar    map[string]int64
 }
 
@@ -41,8 +42,20 @@ func NewLiveEngine(candles CandleSource, strategyStore domain.StrategyStore, pub
 		strategyID: "chandelier",
 		symbol:     "BTCUSDT",
 		timeframe:  "1h",
+		source:     "tradingview",
 		lastBar:    make(map[string]int64),
 	}
+}
+
+// SetSource identifica el origen de los datos (tradingview | weex) en el Meta
+// de las señales emitidas.
+func (e *LiveEngine) SetSource(source string) {
+	if strings.TrimSpace(source) == "" {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.source = strings.TrimSpace(source)
 }
 
 func (e *LiveEngine) SetSelection(strategyID, symbol, timeframe string) error {
@@ -73,6 +86,10 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 	if !strings.EqualFold(k.Symbol, symbol) || !strings.EqualFold(k.Timeframe, timeframe) {
 		return nil
 	}
+
+	e.mu.RLock()
+	source := e.source
+	e.mu.RUnlock()
 
 	key := sid + "|" + k.Symbol + "|" + k.Timeframe
 	ts := k.Start.UnixMilli()
@@ -145,7 +162,7 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 		BarTS:      k.Start,
 		ReceivedAt: time.Now().UTC(),
 		Meta: map[string]any{
-			"source": "tradingview",
+			"source": source,
 		},
 	}
 	return e.publisher.Publish(ctx, ev)

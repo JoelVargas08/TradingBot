@@ -286,10 +286,19 @@ func (s *Store) LastSignal(ctx context.Context, strategyID, symbol, timeframe st
 	return ev, nil
 }
 
+// SaveCandle guarda o actualiza una vela. La UNIQUE(symbol,timeframe,ts) hace
+// que actualizar una vela en formación con su cierre final sobrescriba los
+// campos OHLCV en lugar de duplicar la fila.
 func (s *Store) SaveCandle(ctx context.Context, k domain.Kline) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO candles (symbol, timeframe, ts, open, high, low, close, volume)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO candles (symbol, timeframe, ts, open, high, low, close, volume)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(symbol, timeframe, ts) DO UPDATE SET
+			open = excluded.open,
+			high = excluded.high,
+			low = excluded.low,
+			close = excluded.close,
+			volume = excluded.volume`,
 		k.Symbol, k.Timeframe, k.Start.UnixMilli(), k.Open, k.High, k.Low, k.Close, k.Volume)
 	if err != nil {
 		return fmt.Errorf("guardando vela: %w", err)

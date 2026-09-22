@@ -197,6 +197,9 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/strategies - Listar estrategias aprendidas\n" +
 		"/strategy <id> - Detalle de una estrategia\n" +
 		"/backtest <id> - Re-validar una estrategia (OOS)\n" +
+		"/market - Estado del mercado en vivo (WEEX)\n" +
+		"/symbol <contrato> - Cambiar el símbolo del feed\n" +
+		"/timeframe <tf> - Cambiar la temporalidad del feed\n" +
 		"/help - Mostrar esta ayuda"
 	ch.telegram.SendMessage(chatID, text)
 }
