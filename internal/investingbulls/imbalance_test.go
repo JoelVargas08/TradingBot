@@ -3,15 +3,16 @@ package investingbulls
 import (
 	"math"
 	"testing"
+	"time"
 
 	"tradingview-bot/internal/domain"
 )
 
 func TestDetectBullishImbalance(t *testing.T) {
 	ks := []domain.Kline{
-		{High: 100, Low: 95, Close: 98, Start: 1},
-		{High: 108, Low: 101, Close: 106, Start: 2},
-		{High: 115, Low: 105, Close: 112, Start: 3},
+		{High: 100, Low: 95, Close: 98, Start: time.Unix(1, 0)},
+		{High: 108, Low: 101, Close: 106, Start: time.Unix(2, 0)},
+		{High: 115, Low: 105, Close: 112, Start: time.Unix(3, 0)},
 	}
 	got := DetectImbalances(ks, DefaultImbalanceConfig())
 	if len(got) != 1 {
@@ -24,9 +25,9 @@ func TestDetectBullishImbalance(t *testing.T) {
 
 func TestDetectBearishImbalance(t *testing.T) {
 	ks := []domain.Kline{
-		{High: 105, Low: 100, Close: 102, Start: 1},
-		{High: 99, Low: 92, Close: 94, Start: 2},
-		{High: 95, Low: 88, Close: 90, Start: 3},
+		{High: 105, Low: 100, Close: 102, Start: time.Unix(1, 0)},
+		{High: 99, Low: 92, Close: 94, Start: time.Unix(2, 0)},
+		{High: 95, Low: 88, Close: 90, Start: time.Unix(3, 0)},
 	}
 	got := DetectImbalances(ks, DefaultImbalanceConfig())
 	if len(got) != 1 {
@@ -42,9 +43,9 @@ func TestDetectImbalanceMinGap(t *testing.T) {
 	cfg.MinGapPct = 0.05
 
 	ks := []domain.Kline{
-		{High: 100, Low: 95, Close: 98, Start: 1},
-		{High: 104, Low: 101, Close: 103, Start: 2},
-		{High: 103, Low: 100.5, Close: 102, Start: 3},
+		{High: 100, Low: 95, Close: 98, Start: time.Unix(1, 0)},
+		{High: 104, Low: 101, Close: 103, Start: time.Unix(2, 0)},
+		{High: 103, Low: 100.5, Close: 102, Start: time.Unix(3, 0)},
 	}
 	if got := DetectImbalances(ks, cfg); len(got) != 0 {
 		t.Fatalf("expected small gap to be filtered, got %d", len(got))
@@ -53,11 +54,11 @@ func TestDetectImbalanceMinGap(t *testing.T) {
 
 func TestUpdateBullishImbalanceFill(t *testing.T) {
 	ks := []domain.Kline{
-		{High: 100, Low: 95, Close: 98, Start: 1},
-		{High: 108, Low: 101, Close: 106, Start: 2},
-		{High: 115, Low: 105, Close: 112, Start: 3},
-		{High: 110, Low: 103, Close: 107, Start: 4},
-		{High: 108, Low: 100, Close: 102, Start: 5},
+		{High: 100, Low: 95, Close: 98, Start: time.Unix(1, 0)},
+		{High: 108, Low: 101, Close: 106, Start: time.Unix(2, 0)},
+		{High: 115, Low: 105, Close: 112, Start: time.Unix(3, 0)},
+		{High: 110, Low: 103, Close: 107, Start: time.Unix(4, 0)},
+		{High: 108, Low: 100, Close: 102, Start: time.Unix(5, 0)},
 	}
 	imbs := DetectImbalances(ks, DefaultImbalanceConfig())
 	got := UpdateImbalances(imbs, ks, DefaultImbalanceConfig())
@@ -68,10 +69,10 @@ func TestUpdateBullishImbalanceFill(t *testing.T) {
 
 func TestUpdateBearishImbalancePartialFill(t *testing.T) {
 	ks := []domain.Kline{
-		{High: 105, Low: 100, Close: 102, Start: 1},
-		{High: 99, Low: 92, Close: 94, Start: 2},
-		{High: 95, Low: 88, Close: 90, Start: 3},
-		{High: 97, Low: 90, Close: 92, Start: 4},
+		{High: 105, Low: 100, Close: 102, Start: time.Unix(1, 0)},
+		{High: 99, Low: 92, Close: 94, Start: time.Unix(2, 0)},
+		{High: 95, Low: 88, Close: 90, Start: time.Unix(3, 0)},
+		{High: 97, Low: 90, Close: 92, Start: time.Unix(4, 0)},
 	}
 	imbs := DetectImbalances(ks, DefaultImbalanceConfig())
 	got := UpdateImbalances(imbs, ks, DefaultImbalanceConfig())

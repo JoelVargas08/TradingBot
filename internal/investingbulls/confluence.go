@@ -8,9 +8,9 @@ import (
 
 // ConfluenceConfig defines the minimum evidence required for a setup.
 type ConfluenceConfig struct {
-	RequireFibonacci bool
-	RequireImbalance bool
-	RequireOrderBlock bool
+	RequireFibonacci   bool
+	RequireImbalance   bool
+	RequireOrderBlock  bool
 	MaxZoneDistancePct float64
 }
 
@@ -18,9 +18,9 @@ type ConfluenceConfig struct {
 // the source material: Fibonacci + Order Block + Imbalance.
 func DefaultConfluenceConfig() ConfluenceConfig {
 	return ConfluenceConfig{
-		RequireFibonacci:  true,
-		RequireImbalance:  true,
-		RequireOrderBlock: true,
+		RequireFibonacci:   true,
+		RequireImbalance:   true,
+		RequireOrderBlock:  true,
 		MaxZoneDistancePct: 0.01,
 	}
 }
@@ -28,12 +28,12 @@ func DefaultConfluenceConfig() ConfluenceConfig {
 // Setup is a candidate LONG/SHORT generated from confluence rather than from
 // a single indicator.
 type Setup struct {
-	Index          int
-	Direction      domain.Direction
-	Trend          Trend
-	FibZone        int
-	FibonacciPrice float64
-	ImbalanceIndex int
+	Index           int
+	Direction       domain.Direction
+	Trend           Trend
+	FibZone         int
+	FibonacciPrice  float64
+	ImbalanceIndex  int
 	OrderBlockIndex int
 	Score           int
 	Valid           bool
@@ -98,13 +98,13 @@ func EvaluateConfluence(
 		out = append(out, Setup{
 			Index:           i,
 			Direction:       direction,
-			Trend:            structure.Trend,
+			Trend:           structure.Trend,
 			FibZone:         zone,
-			FibonacciPrice: c.Close,
+			FibonacciPrice:  c.Close,
 			ImbalanceIndex:  imbIdx,
 			OrderBlockIndex: obIdx,
-			Score:            score,
-			Valid:            score >= requiredScore(cfg),
+			Score:           score,
+			Valid:           score >= requiredScore(cfg),
 		})
 	}
 	return out
@@ -112,9 +112,15 @@ func EvaluateConfluence(
 
 func requiredScore(cfg ConfluenceConfig) int {
 	n := 0
-	if cfg.RequireFibonacci { n++ }
-	if cfg.RequireImbalance { n++ }
-	if cfg.RequireOrderBlock { n++ }
+	if cfg.RequireFibonacci {
+		n++
+	}
+	if cfg.RequireImbalance {
+		n++
+	}
+	if cfg.RequireOrderBlock {
+		n++
+	}
 	return n
 }
 
@@ -127,7 +133,7 @@ func nearestCompatibleImbalance(index int, direction domain.Direction, price flo
 	best, bestDist := -1, math.MaxFloat64
 	for i := range imbs {
 		imb := imbs[i]
-		if imb.Direction != want || imb.IsFilled || imb.Index >= index {
+		if imb.Direction != want || imb.IsFilled || imb.Index > index {
 			continue
 		}
 		if price < imb.Low || price > imb.High {
@@ -153,7 +159,7 @@ func nearestCompatibleOrderBlock(index int, direction domain.Direction, price fl
 	best, bestDist := -1, math.MaxFloat64
 	for i := range blocks {
 		ob := blocks[i]
-		if ob.Direction != want || !ob.Valid || ob.Index >= index {
+		if ob.Direction != want || !ob.Valid || ob.Index > index {
 			continue
 		}
 		if price < ob.Low || price > ob.High {

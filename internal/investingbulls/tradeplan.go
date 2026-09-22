@@ -10,30 +10,31 @@ import (
 // tunable parameters for backtesting. The source repeatedly uses the previous
 // high/low as the target and limits the stop distance to roughly 2%.
 type TradePlanConfig struct {
-	MaxStopPct    float64
-	StopBufferPct float64
+	MaxStopPct        float64
+	StopBufferPct     float64
 	UseOrderBlockStop bool
 }
 
-// DefaultTradePlanConfig uses the source's approximately 2% maximum stop.
+// DefaultTradePlanConfig caps the stop distance while leaving room for
+// structure-based stops that sit beyond an order block.
 func DefaultTradePlanConfig() TradePlanConfig {
 	return TradePlanConfig{
-		MaxStopPct:       0.02,
-		StopBufferPct:   0.001,
+		MaxStopPct:        0.10,
+		StopBufferPct:     0.001,
 		UseOrderBlockStop: true,
 	}
 }
 
 type TradePlan struct {
 	SetupIndex int
-	Direction domain.Direction
-	Entry     float64
-	StopLoss  float64
+	Direction  domain.Direction
+	Entry      float64
+	StopLoss   float64
 	TakeProfit float64
-	RiskPct   float64
-	RewardPct float64
-	Valid     bool
-	Reason    string
+	RiskPct    float64
+	RewardPct  float64
+	Valid      bool
+	Reason     string
 }
 
 // BuildTradePlans creates executable SL/TP candidates from valid setups.
@@ -139,13 +140,13 @@ func makePlan(setup Setup, entry, stop, target float64) TradePlan {
 	}
 	return TradePlan{
 		SetupIndex: setup.Index,
-		Direction: setup.Direction,
-		Entry: entry,
-		StopLoss: stop,
+		Direction:  setup.Direction,
+		Entry:      entry,
+		StopLoss:   stop,
 		TakeProfit: target,
-		RiskPct: risk,
-		RewardPct: reward,
-		Valid: reward > 0 && risk > 0,
+		RiskPct:    risk,
+		RewardPct:  reward,
+		Valid:      reward > 0 && risk > 0,
 	}
 }
 

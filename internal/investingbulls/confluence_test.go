@@ -2,13 +2,14 @@ package investingbulls
 
 import (
 	"testing"
+	"time"
 
 	"tradingview-bot/internal/domain"
 )
 
 func TestEvaluateConfluenceRequiresThreeFactors(t *testing.T) {
 	ks := []domain.Kline{
-		{Open: 100, High: 105, Low: 98, Close: 100, Start: 1},
+		{Open: 100, High: 105, Low: 98, Close: 100, Start: time.Unix(1, 0)},
 	}
 	fib, ok := NewFibonacci(90, 110, TrendBullish, DefaultFibConfig())
 	if !ok {
@@ -28,7 +29,7 @@ func TestEvaluateConfluenceRequiresThreeFactors(t *testing.T) {
 }
 
 func TestEvaluateConfluenceRejectsFilledImbalance(t *testing.T) {
-	ks := []domain.Kline{{Open: 100, High: 105, Low: 98, Close: 100, Start: 1}}
+	ks := []domain.Kline{{Open: 100, High: 105, Low: 98, Close: 100, Start: time.Unix(1, 0)}}
 	fib, _ := NewFibonacci(90, 110, TrendBullish, DefaultFibConfig())
 
 	imbs := []Imbalance{{Index: 0, Low: 99, High: 101, Direction: ImbalanceBullish, IsFilled: true}}
@@ -41,7 +42,7 @@ func TestEvaluateConfluenceRejectsFilledImbalance(t *testing.T) {
 }
 
 func TestEvaluateConfluenceBearish(t *testing.T) {
-	ks := []domain.Kline{{Open: 100, High: 105, Low: 98, Close: 100, Start: 1}}
+	ks := []domain.Kline{{Open: 100, High: 105, Low: 98, Close: 100, Start: time.Unix(1, 0)}}
 	fib, _ := NewFibonacci(90, 110, TrendBearish, DefaultFibConfig())
 
 	imbs := []Imbalance{{Index: 0, Low: 99, High: 101, Direction: ImbalanceBearish}}
@@ -54,7 +55,7 @@ func TestEvaluateConfluenceBearish(t *testing.T) {
 }
 
 func TestEvaluateConfluenceOptionalFactors(t *testing.T) {
-	ks := []domain.Kline{{Open: 100, High: 105, Low: 98, Close: 100, Start: 1}}
+	ks := []domain.Kline{{Open: 100, High: 105, Low: 98, Close: 100, Start: time.Unix(1, 0)}}
 	fib, _ := NewFibonacci(90, 110, TrendBullish, DefaultFibConfig())
 
 	cfg := DefaultConfluenceConfig()

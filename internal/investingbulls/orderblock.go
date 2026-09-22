@@ -25,15 +25,15 @@ type OrderBlock struct {
 
 // OrderBlockConfig makes the subjective parts of the concept tunable.
 type OrderBlockConfig struct {
-	Lookback       int
-	MinImpulsePct  float64
+	Lookback         int
+	MinImpulsePct    float64
 	InvalidateByWick bool
 }
 
 func DefaultOrderBlockConfig() OrderBlockConfig {
 	return OrderBlockConfig{
 		Lookback:         5,
-		MinImpulsePct:   0,
+		MinImpulsePct:    0,
 		InvalidateByWick: true,
 	}
 }
@@ -77,7 +77,7 @@ func DetectOrderBlocks(ks []domain.Kline, breaks []StructureBreak, cfg OrderBloc
 				High:      c.High,
 				Low:       c.Low,
 				Direction: dir,
-				CreatedAt: c.Start,
+				CreatedAt: c.Start.UnixMilli(),
 				Valid:     true,
 			})
 			break
@@ -114,7 +114,7 @@ func UpdateOrderBlocks(obs []OrderBlock, ks []domain.Kline, cfg OrderBlockConfig
 				if c.High >= ob.Low && c.Low <= ob.High {
 					ob.Tested = true
 				}
-				if c.Close > ob.High || (cfg.InvalidateByWick && c.High > ob.High) {
+				if c.Close < ob.Low || (cfg.InvalidateByWick && c.Low < ob.Low) {
 					ob.Valid = false
 					break
 				}

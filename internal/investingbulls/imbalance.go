@@ -14,13 +14,13 @@ const (
 // three-candle sequence. It is intentionally modeled independently from
 // Order Blocks so the learner can test their confluence later.
 type Imbalance struct {
-	Index       int
-	High        float64
-	Low         float64
-	Direction   ImbalanceDirection
-	CreatedAt   int64
-	FilledPct   float64
-	IsFilled    bool
+	Index     int
+	High      float64
+	Low       float64
+	Direction ImbalanceDirection
+	CreatedAt int64
+	FilledPct float64
+	IsFilled  bool
 }
 
 // ImbalanceConfig controls the minimum size and fill tolerance.
@@ -57,11 +57,11 @@ func DetectImbalances(ks []domain.Kline, cfg ImbalanceConfig) []Imbalance {
 			gap := current.Low - older.High
 			if qualifiesGap(gap, older.High, cfg.MinGapPct) {
 				out = append(out, Imbalance{
-					Index:       i,
-					High:        current.Low,
-					Low:         older.High,
-					Direction:   ImbalanceBullish,
-					CreatedAt:   current.Start,
+					Index:     i,
+					High:      current.Low,
+					Low:       older.High,
+					Direction: ImbalanceBullish,
+					CreatedAt: current.Start.UnixMilli(),
 				})
 			}
 		}
@@ -70,11 +70,11 @@ func DetectImbalances(ks []domain.Kline, cfg ImbalanceConfig) []Imbalance {
 			gap := older.Low - current.High
 			if qualifiesGap(gap, older.Low, cfg.MinGapPct) {
 				out = append(out, Imbalance{
-					Index:       i,
-					High:        older.Low,
-					Low:        current.High,
-					Direction:   ImbalanceBearish,
-					CreatedAt:   current.Start,
+					Index:     i,
+					High:      older.Low,
+					Low:       current.High,
+					Direction: ImbalanceBearish,
+					CreatedAt: current.Start.UnixMilli(),
 				})
 			}
 		}
