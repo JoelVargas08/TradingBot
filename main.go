@@ -158,6 +158,16 @@ func main() {
 
 	// Pipeline de señales: bus → evaluador → notifier (rate-limit + retry)
 	eventBus := bus.New(512)
+	// Investing Bulls live evaluator: activation is explicit through environment.
+	var investingBullsLive *strategymanager.LiveEngine
+	if sid := strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID")); sid != "" {
+		investingBullsLive = strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
+		liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL")); if liveSymbol == "" { liveSymbol = "BTCUSDT" }
+		liveTF := strings.TrimSpace(os.Getenv("INVESTING_BULLS_ENTRY_TIMEFRAME")); if liveTF == "" { liveTF = "15m" }
+		if err := investingBullsLive.SetSelection(sid, liveSymbol, liveTF); err != nil { log.Printf("Investing Bulls live: %v", err) } else { log.Printf("Investing Bulls live activo: %s %s %s", sid, liveSymbol, liveTF) }
+	} else {
+		log.Println("Investing Bulls live: deshabilitado (INVESTING_BULLS_STRATEGY_ID vacío)")
+	}
 	evaluatorSvc := evaluator.New(sqliteStore)
 	notifierSvc := notifier.New(telegram, userManager, notifier.Config{})
 	notifierSvc.Start(ctx)
@@ -297,6 +307,9 @@ func main() {
 					}
 					if err := sqliteStore.SaveCandle(ctx, k); err != nil && !errors.Is(err, domain.ErrDuplicate) {
 						log.Printf("guardando vela %s %s: %v", k.Symbol, k.Timeframe, err)
+					}
+					if investingBullsLive != nil {
+						if err := investingBullsLive.OnCandle(ctx, k); err != nil { log.Printf("Investing Bulls live %s %s: %v", k.Symbol, k.Timeframe, err) }
 					}
 					if paperEngine != nil && k.Closed {
 						if err := paperEngine.MarkPrice(ctx, k); err != nil {
