@@ -24,7 +24,7 @@ func EvaluateLive(ctx context.Context, store domain.CandleStore, strategy domain
     es:=Analyze(ep,model.Base.SwingLeft,model.Base.SwingRight);classified:=ClassifySetups(es);if len(classified)==0{return domain.SignalEvent{},false,nil}
     var candidate *ClassifiedSetup
     allowed:=map[SetupType]bool{};for _,s:=range model.AllowedSetups{allowed[s]=true}
-    for i:=len(classified)-1;i>=0;i-- {c:=classified[i];if c.Index>=len(ep)-1{continue};if !allowed[c.SetupType]{continue};if c.Direction==domain.DirectionBuy&&ms.Trend!=TrendBullish{continue};if c.Direction==domain.DirectionSell&&ms.Trend!=TrendBearish{continue};candidate=&c;break}
+    for i:=len(classified)-1;i>=0;i-- {c:=classified[i];if c.Index>len(ep)-1{continue};if !allowed[c.SetupType]{continue};if c.Direction==domain.DirectionBuy&&ms.Trend!=TrendBullish{continue};if c.Direction==domain.DirectionSell&&ms.Trend!=TrendBearish{continue};candidate=&c;break}
     if candidate==nil{return domain.SignalEvent{},false,nil}
     if model.Timeframes.RequireConfirm&&!confirmationMatches(confirm,k.Start,candidate.Direction,model.Timeframes){return domain.SignalEvent{},false,nil}
     fib,ok:=fibonacciFromLatestImpulse(es,model.Base.Fib);if !ok{return domain.SignalEvent{},false,nil}
