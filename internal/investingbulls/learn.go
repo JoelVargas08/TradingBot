@@ -35,21 +35,21 @@ func DefaultLearnConfig() LearnConfig {
 }
 
 type LearnedModel struct {
-	Version int
-	Family string
-	Symbol string
-	Timeframe string
-	SwingLeft int
-	SwingRight int
-	Fib FibConfig
-	Confluence ConfluenceConfig
-	TradePlan TradePlanConfig
-	Trades int
-	WinRate float64
-	ProfitFactor float64
-	TotalReturn float64
-	MaxDrawdown float64
-	LearnedAt time.Time
+	Version int `json:"version"`
+	Family string `json:"family"`
+	Symbol string `json:"symbol"`
+	Timeframe string `json:"timeframe"`
+	SwingLeft int `json:"swing_left"`
+	SwingRight int `json:"swing_right"`
+	Fib FibConfig `json:"fib"`
+	Confluence ConfluenceConfig `json:"confluence"`
+	TradePlan TradePlanConfig `json:"trade_plan"`
+	Trades int `json:"trades"`
+	WinRate float64 `json:"win_rate"`
+	ProfitFactor float64 `json:"profit_factor"`
+	TotalReturn float64 `json:"total_return"`
+	MaxDrawdown float64 `json:"max_drawdown"`
+	LearnedAt time.Time `json:"learned_at"`
 }
 
 type LearnResult struct {
