@@ -191,8 +191,8 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/performance - Métricas de paper trading\n" +
 		"/learn - Aprender estrategia desde un PDF adjunto\n" +
 		"/learnib <symbol> <tf> [limit] - Aprender Investing Bulls\n" +
-				/learnibmtf <symbol> [limit] [confirm5m] - Aprender 1H→15m→5m
-				/validateibmtf <strategy_id> <symbol> [limit] - Validar OOS fijo y activar
+		"/learnibmtf <symbol> [limit] [confirm5m] - Aprender 1H→15m→5m\n" +
+		"/validateibmtf <strategy_id> <symbol> [limit] - Validar OOS fijo y activar\n" +
 		"/validateib <strategy_id> <symbol> <tf> [limit] - Validar OOS y activar si pasa\n" +
 		"/strategies - Listar estrategias aprendidas\n" +
 		"/strategy <id> - Detalle de una estrategia\n" +
