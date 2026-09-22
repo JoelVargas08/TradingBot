@@ -10,6 +10,8 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +22,7 @@ import (
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/evaluator"
 	"tradingview-bot/internal/ingest"
+	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/jobqueue"
 	"tradingview-bot/internal/llm"
 	"tradingview-bot/internal/ml"
@@ -498,6 +501,10 @@ func main() {
 				commandsHandler.HandlePerformance(chatID)
 			case "learn":
 				telegram.SendMessage(chatID, "📥 Envíame el PDF de la estrategia como documento adjunto (opcionalmente con nombre en el caption).")
+			case "learnib":
+				go runInvestingBullsLearn(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
+			case "validateib":
+				go runInvestingBullsValidate(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
 			case "strategies":
 				if strategyCommands != nil {
 					strategyCommands.HandleStrategies(chatID)
@@ -597,6 +604,59 @@ func main() {
 // downloadFile descarga una URL a un archivo local con límite de tamaño y
 // timeout. Devuelve error si la descarga supera maxUploadBytes o no llega a
 // completarse.
+
+// runInvestingBullsLearn trains and persists the deterministic Investing Bulls
+// candidate. OOS validation is intentionally a second step so the training
+// result remains inspectable before promotion.
+func runInvestingBullsLearn(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
+	parts := strings.Fields(args)
+	if len(parts) < 2 {
+		telegram.SendMessage(chatID, "Uso: /learnib BTCUSDT 1h [limite]")
+		return
+	}
+	limit := 5000
+	if len(parts) >= 3 {
+		if n, err := strconv.Atoi(parts[2]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	symbol, timeframe := parts[0], parts[1]
+	telegram.SendMessage(chatID, fmt.Sprintf("🧠 Aprendiendo Investing Bulls: %s %s...", symbol, timeframe))
+	cfg := investingbulls.DefaultLearnConfig()
+	strategy, result, err := investingbulls.LearnAndPersist(ctx, store, symbol, timeframe, limit, cfg)
+	if err != nil {
+		telegram.SendMessage(chatID, "❌ Learn: "+err.Error())
+		return
+	}
+	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato guardado: %s\nTrades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nEstado: candidate. Usa /validateib %s %s %s", strategy.ID, result.Model.Trades, result.Model.WinRate*100, result.Model.ProfitFactor, result.Model.TotalReturn*100, result.Model.MaxDrawdown*100, strategy.ID, symbol, timeframe))
+}
+
+// runInvestingBullsValidate runs walk-forward OOS and changes the strategy
+// state to active only when the configured validation criteria pass.
+func runInvestingBullsValidate(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
+	parts := strings.Fields(args)
+	if len(parts) < 3 {
+		telegram.SendMessage(chatID, "Uso: /validateib <strategyID> BTCUSDT 1h [limite]")
+		return
+	}
+	limit := 5000
+	if len(parts) >= 4 {
+		if n, err := strconv.Atoi(parts[3]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	strategyID, symbol, timeframe := parts[0], parts[1], parts[2]
+	telegram.SendMessage(chatID, "🔬 Ejecutando Walk-Forward / OOS...")
+	bt, err := investingbulls.ValidateAndPromote(ctx, store, strategyID, symbol, timeframe, limit, investingbulls.DefaultWalkForwardConfig())
+	if err != nil {
+		telegram.SendMessage(chatID, "❌ OOS: "+err.Error())
+		return
+	}
+	state := "REJECTED"
+	if bt.Passed { state = "ACTIVE" }
+	telegram.SendMessage(chatID, fmt.Sprintf("🔬 OOS %s\nEstado: %s\nFolds: %d | Trades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%", strategyID, state, bt.Folds, bt.Trades, bt.WinRate*100, bt.ProfitFactor, bt.TotalReturn*100, bt.MaxDrawdown*100))
+}
+
 func downloadFile(ctx context.Context, url, path string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
