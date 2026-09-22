@@ -33,8 +33,9 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 	if err != nil {
 		return domain.Strategy{}, LearnResult{}, fmt.Errorf("learn: cargando histórico: %w", err)
 	}
+	ks = closedCandles(ks)
 	if len(ks) < 100 {
-		return domain.Strategy{}, LearnResult{}, fmt.Errorf("learn: histórico insuficiente: %d velas", len(ks))
+		return domain.Strategy{}, LearnResult{}, fmt.Errorf("learn: histórico cerrado insuficiente: %d velas", len(ks))
 	}
 
 	cfg.Symbol = symbol
@@ -83,4 +84,10 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 	}
 
 	return strategy, result, nil
+}
+
+func closedCandles(ks []domain.Kline) []domain.Kline {
+	out := make([]domain.Kline, 0, len(ks))
+	for _, k := range ks { if k.Closed { out = append(out, k) } }
+	return out
 }
