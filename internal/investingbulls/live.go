@@ -18,6 +18,7 @@ func EvaluateLive(ctx context.Context, store domain.CandleStore, strategy domain
     entry,err:=store.RecentCandles(ctx,k.Symbol,model.Timeframes.EntryTimeframe,5000);if err!=nil{return domain.SignalEvent{},false,err}
     var confirm []domain.Kline
     if model.Timeframes.RequireConfirm {confirm,err=store.RecentCandles(ctx,k.Symbol,model.Timeframes.ConfirmTimeframe,5000);if err!=nil{return domain.SignalEvent{},false,err}}
+    main=closedCandles(main);entry=closedCandles(entry);confirm=closedCandles(confirm)
     if len(main)<30||len(entry)<30{return domain.SignalEvent{},false,nil}
     ms:=Analyze(candlesThrough(main,k.Start),model.Timeframes.MainSwingLeft,model.Timeframes.MainSwingRight)
     ep:=candlesThrough(entry,k.Start);if len(ep)<30{return domain.SignalEvent{},false,nil}
