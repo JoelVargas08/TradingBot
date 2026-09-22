@@ -190,6 +190,8 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/session_schedule - Mostrar el horario de trading\n" +
 		"/performance - Métricas de paper trading\n" +
 		"/learn - Aprender estrategia desde un PDF adjunto\n" +
+		"/learnib <symbol> <tf> [limit] - Aprender Investing Bulls\n" +
+		"/validateib <strategy_id> <symbol> <tf> [limit] - Validar OOS y activar si pasa\n" +
 		"/strategies - Listar estrategias aprendidas\n" +
 		"/strategy <id> - Detalle de una estrategia\n" +
 		"/backtest <id> - Re-validar una estrategia (OOS)\n" +
