@@ -53,6 +53,7 @@ func LearnMultiTimeframe(main, entry, confirm []domain.Kline, cfg LearnConfig, m
     mtf=normalizeMTF(mtf); if len(main)<100 || len(entry)<100 {return MultiTimeframeLearnResult{},fmt.Errorf("learn mtf: se necesitan al menos 100 velas en 1H y 15m")}
     cfg.Timeframe=mtf.EntryTimeframe
     base,err:=Learn(entry,cfg); if err!=nil{return MultiTimeframeLearnResult{},err}
+    if base.SpecJSON=="" { return MultiTimeframeLearnResult{},fmt.Errorf("learn mtf: el aprendizaje base no produjo un candidato") }
     allowed:=[]SetupType{SetupCHOCHLong,SetupCHOCHShort,SetupContinuationLong,SetupContinuationShort}
     trades:=simulateMultiTimeframe(main,entry,confirm,cfg,mtf,base.Model,allowed)
     stats:=statsBySetup(trades,cfg.InitialBalance)
