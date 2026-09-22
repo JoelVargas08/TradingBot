@@ -69,6 +69,7 @@ type LearnedTrade struct {
 	ExitPrice float64
 	PnL float64
 	Reason string
+	Setup SetupType
 }
 
 // Learn performs a deterministic parameter search over the source strategy.
@@ -219,6 +220,7 @@ func generateAndSimulateFrom(ks []domain.Kline, cfg LearnConfig, evaluationStart
 			Direction: setup.Direction,
 			EntryBar: entryBar,
 			EntryPrice: entry * entryMultiplier(setup.Direction, cfg.SlippagePct),
+			Setup: inferSetupType(structure, i, setup.Direction),
 		}
 		stop, target = plan.StopLoss, plan.TakeProfit
 		inTrade = true
@@ -308,4 +310,13 @@ func tradeMetrics(trades []LearnedTrade, initial float64) learnMetrics {
 	pf := 0.0
 	if losses > 0 { pf = gains/losses } else if gains > 0 { pf = math.Inf(1) }
 	return learnMetrics{trades: len(trades), winRate: wr, profitFactor: pf, totalReturn: equity/initial-1, maxDrawdown: maxDD, finalBalance: equity}
+}
+
+func inferSetupType(s Structure, index int, dir domain.Direction) SetupType {
+	classified := ClassifySetups(s)
+	for i := len(classified)-1; i >= 0; i-- {
+		if classified[i].Index <= index && classified[i].Direction == dir { return classified[i].SetupType }
+	}
+	if dir == domain.DirectionBuy { return SetupContinuationLong }
+	return SetupContinuationShort
 }
