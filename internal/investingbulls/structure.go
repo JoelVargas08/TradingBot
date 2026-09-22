@@ -52,27 +52,15 @@ func DetectSwings(ks []domain.Kline, left, right int) []Swing {
 	for i := left; i < len(ks)-right; i++ {
 		isHigh, isLow := true, true
 		for j := 1; j <= left; j++ {
-			if ks[i].High <= ks[i-j].High {
-				isHigh = false
-			}
-			if ks[i].Low >= ks[i-j].Low {
-				isLow = false
-			}
+			if ks[i].High <= ks[i-j].High { isHigh = false }
+			if ks[i].Low >= ks[i-j].Low { isLow = false }
 		}
 		for j := 1; j <= right; j++ {
-			if ks[i].High <= ks[i+j].High {
-				isHigh = false
-			}
-			if ks[i].Low >= ks[i+j].Low {
-				isLow = false
-			}
+			if ks[i].High <= ks[i+j].High { isHigh = false }
+			if ks[i].Low >= ks[i+j].Low { isLow = false }
 		}
-		if isHigh {
-			out = append(out, Swing{Index: i, Price: ks[i].High, High: true})
-		}
-		if isLow {
-			out = append(out, Swing{Index: i, Price: ks[i].Low, High: false})
-		}
+		if isHigh { out = append(out, Swing{Index: i, Price: ks[i].High, High: true}) }
+		if isLow { out = append(out, Swing{Index: i, Price: ks[i].Low, High: false}) }
 	}
 	return out
 }
@@ -80,39 +68,26 @@ func DetectSwings(ks []domain.Kline, left, right int) []Swing {
 // DetectBreaks detects BOS/CHOCH from confirmed swings. A wick beyond a
 // swing without a closing price beyond it does not create a break.
 func DetectBreaks(ks []domain.Kline, swings []Swing) []StructureBreak {
-	if len(ks) == 0 || len(swings) == 0 {
-		return nil
-	}
+	if len(ks) == 0 || len(swings) == 0 { return nil }
 	var out []StructureBreak
 	trend := TrendUnknown
 	lastHigh, lastLow := -1, -1
-
 	for i := range ks {
 		for _, s := range swings {
-			if s.Index >= i {
-				continue
-			}
-			if s.High {
-				lastHigh = s.Index
-			} else {
-				lastLow = s.Index
-			}
+			if s.Index >= i { continue }
+			if s.High { lastHigh = s.Index } else { lastLow = s.Index }
 		}
 		if lastHigh >= 0 && ks[i].Close > ks[lastHigh].High {
 			typ := BreakBOS
-			if trend == TrendBearish {
-				typ = BreakCHOCH
-			}
-			out = append(out, StructureBreak{Index: i, Level: ks[lastHigh].High, Direction: domain.DirectionBuy, Type: typ})
+			if trend == TrendBearish { typ = BreakCHOCH }
+			out = append(out, StructureBreak{Index:i, Level:ks[lastHigh].High, Direction:domain.DirectionBuy, Type:typ})
 			trend = TrendBullish
 			lastHigh = -1
 		}
 		if lastLow >= 0 && ks[i].Close < ks[lastLow].Low {
 			typ := BreakBOS
-			if trend == TrendBullish {
-				typ = BreakCHOCH
-			}
-			out = append(out, StructureBreak{Index: i, Level: ks[lastLow].Low, Direction: domain.DirectionSell, Type: typ})
+			if trend == TrendBullish { typ = BreakCHOCH }
+			out = append(out, StructureBreak{Index:i, Level:ks[lastLow].Low, Direction:domain.DirectionSell, Type:typ})
 			trend = TrendBearish
 			lastLow = -1
 		}
@@ -126,7 +101,10 @@ func Analyze(ks []domain.Kline, left, right int) Structure {
 	breaks := DetectBreaks(ks, swings)
 	trend := TrendUnknown
 	if len(breaks) > 0 {
-		trend = Trend(breaks[len(breaks)-1].Direction)
+		switch breaks[len(breaks)-1].Direction {
+		case domain.DirectionBuy: trend = TrendBullish
+		case domain.DirectionSell: trend = TrendBearish
+		}
 	}
 	return Structure{Swings: swings, Trend: trend, Breaks: breaks}
 }
