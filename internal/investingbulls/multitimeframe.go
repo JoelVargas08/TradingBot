@@ -83,7 +83,7 @@ func simulateMultiTimeframe(main,entry,confirm []domain.Kline,cfg LearnConfig,mt
         for _,s:=range setups {if s.Index==i&&s.Direction==candidate.Direction&&s.Valid {valid=true;matched=s;break}};if !valid {continue}
         if mtf.RequireConfirm&&!confirmationMatches(confirm,entry[i].Start,candidate.Direction,mtf){continue}
         epPrice:=entry[i+1].Open;if epPrice<=0 {epPrice=entry[i+1].Close};plan,ok:=buildLearningPlan(matched,fib,epPrice,es,blocks,base.TradePlan);if !ok {continue}
-        open=LearnedTrade{Direction:candidate.Direction,EntryBar:i+1,EntryPrice:epPrice*entryMultiplier(candidate.Direction,cfg.SlippagePct),Reason:string(candidate.SetupType)};stop,target=plan.StopLoss,plan.TakeProfit;inTrade=true
+        open=LearnedTrade{Direction:candidate.Direction,EntryBar:i+1,EntryPrice:epPrice*entryMultiplier(candidate.Direction,cfg.SlippagePct),Setup:candidate.SetupType};stop,target=plan.StopLoss,plan.TakeProfit;inTrade=true
     }
     if inTrade {last:=entry[len(entry)-1];open.ExitBar=len(entry)-1;open.ExitPrice=last.Close;open.Reason="end";open.PnL=tradePnL(open.Direction,open.EntryPrice,last.Close)-2*cfg.FeePct-2*cfg.SlippagePct;out=append(out,open)}
     return out
@@ -92,7 +92,7 @@ func simulateMultiTimeframe(main,entry,confirm []domain.Kline,cfg LearnConfig,mt
 func candlesThrough(ks []domain.Kline,ts time.Time) []domain.Kline {n:=sort.Search(len(ks),func(i int)bool{return !ks[i].Start.Before(ts)});if n==0{return nil};if n<len(ks)&&ks[n].Start.Equal(ts){return ks[:n+1]};return ks[:n]}
 func confirmationMatches(ks []domain.Kline,ts time.Time,dir domain.Direction,c MultiTimeframeConfig) bool {p:=candlesThrough(ks,ts);if len(p)<10{return false};s:=Analyze(p,c.ConfirmSwingLeft,c.ConfirmSwingRight);if len(s.Breaks)==0{return false};return s.Breaks[len(s.Breaks)-1].Direction==dir}
 
-func statsBySetup(trades []LearnedTrade,initial float64) map[SetupType]SetupStats {groups:=map[SetupType][]LearnedTrade{};for _,t:=range trades {s:=SetupType(t.Reason);if s.Valid(){groups[s]=append(groups[s],t)}};out:=map[SetupType]SetupStats{};for s,ts:=range groups {m:=tradeMetrics(ts,initial);out[s]=SetupStats{Trades:m.trades,WinRate:m.winRate,ProfitFactor:m.profitFactor,TotalReturn:m.totalReturn,MaxDrawdown:m.maxDrawdown}};return out}
+func statsBySetup(trades []LearnedTrade,initial float64) map[SetupType]SetupStats {groups:=map[SetupType][]LearnedTrade{};for _,t:=range trades {s:=t.Setup;if s.Valid(){groups[s]=append(groups[s],t)}};out:=map[SetupType]SetupStats{};for s,ts:=range groups {m:=tradeMetrics(ts,initial);out[s]=SetupStats{Trades:m.trades,WinRate:m.winRate,ProfitFactor:m.profitFactor,TotalReturn:m.totalReturn,MaxDrawdown:m.maxDrawdown}};return out}
 func filterTradesBySetup(trades []LearnedTrade,allowed []SetupType) []LearnedTrade {set:=map[SetupType]bool{};for _,s:=range allowed{set[s]=true};out:=make([]LearnedTrade,0,len(trades));for _,t:=range trades{if set[SetupType(t.Reason)]{out=append(out,t)}};return out}
 
 func LearnMultiTimeframeAndPersist(ctx context.Context,store LearnerStore,symbol string,limit int,cfg LearnConfig,mtf MultiTimeframeConfig)(domain.Strategy,MultiTimeframeLearnResult,error){
