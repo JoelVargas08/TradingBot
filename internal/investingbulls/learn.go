@@ -169,7 +169,9 @@ func generateAndSimulateFrom(ks []domain.Kline, cfg LearnConfig, evaluationStart
 	var open LearnedTrade
 	stop, target := 0.0, 0.0
 
-	for i := 20; i < len(ks)-1; i++ {
+	start := 20
+	if evaluationStart > start { start = evaluationStart }
+	for i := start; i < len(ks)-1; i++ {
 		if inTrade {
 			k := ks[i]
 			hitStop, hitTarget := false, false
