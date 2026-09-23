@@ -28,6 +28,16 @@ func (f *fakeCandleStore) RecentCandles(ctx context.Context, symbol, timeframe s
 	return f.candles, f.err
 }
 
+func (f *fakeCandleStore) CandlesBetween(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
+	var out []domain.Kline
+	for _, k := range f.candles {
+		if k.Symbol == symbol && k.Timeframe == timeframe && !k.Start.Before(start) && k.Start.Before(end) {
+			out = append(out, k)
+		}
+	}
+	return out, f.err
+}
+
 func TestWebhookAcceptsTradingViewCandle(t *testing.T) {
 	pub := &fakePublisher{}
 	candles := &fakeCandleStore{}

@@ -183,6 +183,14 @@ func (l *lazyCandleStore) RecentCandles(ctx context.Context, symbol, timeframe s
 	return l.st.RecentCandles(ctx, symbol, timeframe, limit)
 }
 
+func (l *lazyCandleStore) CandlesBetween(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
+	l.once.Do(l.init)
+	if l.err != nil {
+		return nil, l.err
+	}
+	return l.st.CandlesBetween(ctx, symbol, timeframe, start, end)
+}
+
 func (wh *WebhookHandler) HandleWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Método no permitido", http.StatusMethodNotAllowed)

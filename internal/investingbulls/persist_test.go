@@ -3,6 +3,7 @@ package investingbulls
 import (
 	"context"
 	"testing"
+	"time"
 
 	"tradingview-bot/internal/domain"
 )
@@ -16,6 +17,15 @@ type memoryLearnStore struct {
 func (m *memoryLearnStore) SaveCandle(context.Context, domain.Kline) error { return nil }
 func (m *memoryLearnStore) RecentCandles(context.Context, string, string, int) ([]domain.Kline, error) {
 	return m.candles, nil
+}
+func (m *memoryLearnStore) CandlesBetween(_ context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
+	var out []domain.Kline
+	for _, k := range m.candles {
+		if k.Symbol == symbol && k.Timeframe == timeframe && !k.Start.Before(start) && k.Start.Before(end) {
+			out = append(out, k)
+		}
+	}
+	return out, nil
 }
 func (m *memoryLearnStore) UpsertStrategy(_ context.Context, s domain.Strategy) error {
 	if m.strategies == nil {

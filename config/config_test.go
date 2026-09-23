@@ -11,9 +11,14 @@ func TestModeValidation(t *testing.T) {
 	t.Cleanup(func() {
 		os.Unsetenv("WEBHOOK_SECRET")
 		os.Unsetenv("MODE")
+		os.Unsetenv("TRADING_MODE")
+		os.Unsetenv("LIVE_TRADING_CONFIRM")
+		os.Unsetenv("WEEX_API_KEY")
+		os.Unsetenv("WEEX_API_SECRET")
 	})
 
 	os.Unsetenv("MODE")
+	os.Unsetenv("TRADING_MODE")
 	if cfg, err := Load(); err != nil || cfg.Mode != "paper" {
 		t.Fatalf("sin MODE: err=%v mode=%q, esperado paper", err, func() string {
 			if cfg != nil {
@@ -23,14 +28,31 @@ func TestModeValidation(t *testing.T) {
 		}())
 	}
 
-	os.Setenv("MODE", "live")
+	// TRADING_MODE gana sobre MODE legacy.
+	os.Setenv("MODE", "paper")
+	os.Setenv("TRADING_MODE", "live")
+	os.Setenv("LIVE_TRADING_CONFIRM", "true")
+	os.Setenv("WEEX_API_KEY", "k")
+	os.Setenv("WEEX_API_SECRET", "s")
 	if cfg, err := Load(); err != nil || cfg.Mode != "live" {
-		t.Fatalf("MODE=live: err=%v mode=%q", err, func() string {
+		t.Fatalf("TRADING_MODE=live con confirmación y claves: err=%v mode=%q", err, func() string {
 			if cfg != nil {
 				return cfg.Mode
 			}
 			return ""
 		}())
+	}
+
+	// LIVE sin confirmación debe fallar.
+	os.Setenv("LIVE_TRADING_CONFIRM", "false")
+	if _, err := Load(); err == nil {
+		t.Fatal("TRADING_MODE=LIVE sin LIVE_TRADING_CONFIRM=true debería fallar")
+	}
+	// LIVE sin claves WEEX debe fallar.
+	os.Setenv("LIVE_TRADING_CONFIRM", "true")
+	os.Unsetenv("WEEX_API_KEY")
+	if _, err := Load(); err == nil {
+		t.Fatal("TRADING_MODE=LIVE sin WEEX_API_KEY debería fallar")
 	}
 
 	os.Setenv("MODE", "mars")

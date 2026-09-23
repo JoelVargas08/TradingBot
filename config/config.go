@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -76,6 +77,27 @@ type Config struct {
 	WeexPriceType      string
 	TradingSymbol      string
 	TradingTimeframe   string
+
+	// Modo LIVE con broker real WEEX (Fases 6-7).
+	WeexAPIKey         string
+	WeexAPISecret      string
+	WeexTestnet        bool
+	WeexSymbol         string
+	LiveTradingConfirm bool
+	WeexBackfillBars   int
+
+	// Investing Bulls multi-timeframe (configuración centralizada).
+	IBMainTimeframe    string
+	IBEntryTimeframe   string
+	IBConfirmTimeframe string
+	IBConfirm5M        bool
+	IBMinTrades        int
+	IBMaxStopPct       float64
+	IBWFFolds          int
+	IBWFTrainPct       float64
+	IBWFOOSPct         float64
+	IBWFStepPct        float64
+	IBRetrainHours     int
 }
 
 func Load() (*Config, error) {
@@ -86,7 +108,7 @@ func Load() (*Config, error) {
 		Port:             getEnv("PORT", "8080"),
 		StorageFile:      getEnv("STORAGE_FILE", "data/users.json"),
 		DBFile:           getEnv("DB_FILE", "data/bot.db"),
-		Mode:             getEnv("MODE", "paper"),
+		Mode:             getEnv("TRADING_MODE", getEnv("MODE", "paper")),
 		Symbols:          splitCSV(getEnv("SYMBOLS", "BTCUSDT,ETHUSDT")),
 		Timeframes:       splitCSV(getEnv("TIMEFRAMES", "1m,1h")),
 		// TradingView es ahora la fuente de mercado principal. Binance queda
@@ -150,12 +172,39 @@ func Load() (*Config, error) {
 		WeexPriceType:      getEnv("WEEX_PRICE_TYPE", "LAST_PRICE"),
 		TradingSymbol:      getEnv("TRADING_SYMBOL", "BTCUSDT"),
 		TradingTimeframe:   getEnv("TRADING_TIMEFRAME", "1h"),
+		WeexAPIKey:         os.Getenv("WEEX_API_KEY"),
+		WeexAPISecret:      os.Getenv("WEEX_API_SECRET"),
+		WeexTestnet:        getEnvBool("WEEX_TESTNET", false),
+		WeexSymbol:         getEnv("WEEX_SYMBOL", "BTCUSDT"),
+		LiveTradingConfirm: getEnvBool("LIVE_TRADING_CONFIRM", false),
+		WeexBackfillBars:   getEnvInt("WEEX_BACKFILL_BARS", 5000),
+
+		// Investing Bulls multi-timeframe (Fase 7)
+		IBMainTimeframe:    getEnv("INVESTING_BULLS_MAIN_TIMEFRAME", "1h"),
+		IBEntryTimeframe:   getEnv("INVESTING_BULLS_ENTRY_TIMEFRAME", "15m"),
+		IBConfirmTimeframe: getEnv("INVESTING_BULLS_CONFIRM_TIMEFRAME", "5m"),
+		IBConfirm5M:        getEnvBool("INVESTING_BULLS_CONFIRM_5M", true),
+		IBMinTrades:        getEnvInt("INVESTING_BULLS_MIN_TRADES", 8),
+		IBMaxStopPct:       getEnvFloat("INVESTING_BULLS_MAX_STOP", 0.02),
+		IBWFFolds:          getEnvInt("INVESTING_BULLS_WF_FOLDS", 4),
+		IBWFTrainPct:       getEnvFloat("INVESTING_BULLS_WF_TRAIN_PCT", 0.60),
+		IBWFOOSPct:         getEnvFloat("INVESTING_BULLS_WF_OOS_PCT", 0.10),
+		IBWFStepPct:        getEnvFloat("INVESTING_BULLS_WF_STEP_PCT", 0.10),
+		IBRetrainHours:     getEnvInt("INVESTING_BULLS_RETRAIN_HOURS", 24),
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "paper"
 	}
 	if cfg.Mode != "paper" && cfg.Mode != "live" {
-		return nil, errors.New("MODE inválido: use paper o live")
+		return nil, fmt.Errorf("TRADING_MODE/MODE inválido: use paper o live (dado %q)", cfg.Mode)
+	}
+	if cfg.Mode == "live" {
+		if !cfg.LiveTradingConfirm {
+			return nil, errors.New("TRADING_MODE=LIVE exige LIVE_TRADING_CONFIRM=true")
+		}
+		if cfg.WeexAPIKey == "" || cfg.WeexAPISecret == "" {
+			return nil, errors.New("TRADING_MODE=LIVE exige WEEX_API_KEY y WEEX_API_SECRET")
+		}
 	}
 	return cfg, nil
 }

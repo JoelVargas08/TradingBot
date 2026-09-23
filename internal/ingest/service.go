@@ -47,6 +47,7 @@ type MarketDataService struct {
 	strategyID string
 	symbol     string
 	timeframe  string
+	extras     []string
 	connected  bool
 	lastCandle domain.Kline
 	lastUpdate time.Time
@@ -69,6 +70,47 @@ func NewMarketDataService(provider MarketDataProvider, candleStore domain.Candle
 		symbol:       "BTCUSDT",
 		timeframe:    "1h",
 	}
+}
+
+// SetTimeframes fija los timeframes adicionales que deben mantenerse en vivo
+// (p. ej. 15m y 5m junto al primario) para el pipeline multi-timeframe.
+// Cada timeframe recibe backfill y suscripción propios.
+func (s *MarketDataService) SetTimeframes(extras []string) error {
+	cleaned := make([]string, 0, len(extras))
+	for _, tf := range extras {
+		tf = strings.TrimSpace(tf)
+		if tf == "" {
+			continue
+		}
+		if err := validateTimeframe(tf); err != nil {
+			return err
+		}
+		cleaned = append(cleaned, tf)
+	}
+	s.mu.Lock()
+	s.extras = cleaned
+	s.version++
+	s.mu.Unlock()
+	select {
+	case s.changed <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// feedTimeframes devuelve [primario, extras...] sin duplicados.
+func (s *MarketDataService) feedTimeframes() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := map[string]bool{s.timeframe: true}
+	out := []string{s.timeframe}
+	for _, tf := range s.extras {
+		if !seen[tf] {
+			seen[tf] = true
+			out = append(out, tf)
+		}
+	}
+	return out
 }
 
 // SetSelection actualiza la selección de mercado y reinicia el feed. El cambio
@@ -130,59 +172,86 @@ func (s *MarketDataService) Status() MarketStatus {
 	}
 }
 
-// Run mantiene vivo el feed: backfill → suscripción → consume. Ante un cambio
-// de selección reinicia el ciclo con los nuevos parámetros.
+// Run mantiene vivos los feeds de todos los timeframes (primario + extras):
+// backfill → suscripción → consume por timeframe. Ante un cambio de selección
+// o de timeframes reinicia el ciclo con los nuevos parámetros.
 func (s *MarketDataService) Run(ctx context.Context) error {
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
-		strategyID, symbol, timeframe := s.Selection()
-		version := s.currentVersion()
-		if err := s.provider.Backfill(ctx, symbol, timeframe, s.backfillBars); err != nil {
-			log.Printf("market data: backfill %s %s falló: %v", symbol, timeframe, err)
-		}
+		strategyID, symbol, _ := s.Selection()
+		tfs := s.feedTimeframes()
+		s.setConnected(false)
 		subCtx, cancel := context.WithCancel(ctx)
-		ch, err := s.provider.Subscribe(subCtx, symbol, timeframe)
-		if err != nil {
+		var wg sync.WaitGroup
+		for _, tf := range tfs {
+			wg.Add(1)
+			go func(tf string) {
+				defer wg.Done()
+				s.runFeed(subCtx, strategyID, symbol, tf)
+			}(tf)
+		}
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+		select {
+		case <-ctx.Done():
 			cancel()
-			log.Printf("market data: suscripción %s %s falló: %v", symbol, timeframe, err)
-			if !waitOrDone(ctx, 2*time.Second) {
-				return nil
-			}
-			continue
-		}
-		if s.currentVersion() != version || ctx.Err() != nil {
+			<-done
+			return nil
+		case <-s.changed:
 			cancel()
-			continue
-		}
-		s.setConnected(true)
-		log.Printf("market data: feed activo %s %s %s (estrategia %s)", symbol, timeframe, s.priceType, strategyID)
-		s.consume(ctx, subCtx, cancel, ch)
-		if ctx.Err() != nil {
-			return nil
-		}
-		if !waitOrDone(ctx, 500*time.Millisecond) {
-			return nil
+			<-done
 		}
 	}
 }
 
-func (s *MarketDataService) consume(ctx context.Context, subCtx context.Context, cancel context.CancelFunc, ch <-chan domain.Kline) {
-	defer cancel()
+// runFeed gestiona backfill + suscripción + consumo de un único timeframe,
+// reintentando ante errores transitorios hasta que se cancele el subContext.
+func (s *MarketDataService) runFeed(ctx context.Context, strategyID, symbol, tf string) {
 	for {
-		select {
-		case <-ctx.Done():
+		if ctx.Err() != nil {
 			return
-		case <-s.changed:
-			return
-		case k, ok := <-ch:
-			if !ok {
+		}
+		if err := s.provider.Backfill(ctx, symbol, tf, s.backfillBars); err != nil {
+			log.Printf("market data: backfill %s %s falló: %v", symbol, tf, err)
+		}
+		ch, err := s.provider.Subscribe(ctx, symbol, tf)
+		if err != nil {
+			log.Printf("market data: suscripción %s %s falló: %v", symbol, tf, err)
+			if !waitOrDone(ctx, 2*time.Second) {
 				return
 			}
-			s.onCandle(ctx, k)
+			continue
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		if tf == s.primaryTimeframe() {
+			s.setConnected(true)
+			log.Printf("market data: feed activo %s %s %s (estrategia %s)", symbol, tf, s.priceType, strategyID)
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case k, ok := <-ch:
+				if !ok {
+					return
+				}
+				s.onCandle(ctx, k)
+			}
 		}
 	}
+}
+
+func (s *MarketDataService) primaryTimeframe() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.timeframe
 }
 
 func (s *MarketDataService) onCandle(ctx context.Context, k domain.Kline) {
@@ -209,12 +278,6 @@ func (s *MarketDataService) setConnected(v bool) {
 	s.mu.Lock()
 	s.connected = v
 	s.mu.Unlock()
-}
-
-func (s *MarketDataService) currentVersion() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.version
 }
 
 func validateTimeframe(tf string) error {

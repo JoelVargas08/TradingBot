@@ -230,6 +230,28 @@ func TestServiceSetSelectionValidation(t *testing.T) {
 	}
 }
 
+func TestServiceSetTimeframesFeedAll(t *testing.T) {
+	fp := newFakeProvider()
+	svc, _, _, cancel := baseSvc(t, fp)
+	defer cancel()
+
+	if err := svc.SetTimeframes([]string{"15m", "5m"}); err != nil {
+		t.Fatalf("SetTimeframes: %v", err)
+	}
+	waitFor(t, 3*time.Second, func() bool {
+		subs := fp.subscribes()
+		seen := map[string]bool{}
+		for _, s := range subs {
+			seen[s] = true
+		}
+		return seen["BTCUSDT|1h"] && seen["BTCUSDT|15m"] && seen["BTCUSDT|5m"]
+	})
+
+	if err := svc.SetTimeframes([]string{"invalid!"}); err == nil {
+		t.Error("timeframe inválido debería fallar")
+	}
+}
+
 func TestServiceSubscribeErrorNonFatalUntilCancel(t *testing.T) {
 	fp := newFakeProvider()
 	fp.subscribeErr = errors.New("ws caído")

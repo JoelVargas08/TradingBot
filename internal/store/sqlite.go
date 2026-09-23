@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -174,6 +175,36 @@ CREATE TABLE IF NOT EXISTS positions (
 CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(status, strategy_id);
 CREATE INDEX IF NOT EXISTS idx_positions_closed ON positions(status, exit_ts);
 
+CREATE TABLE IF NOT EXISTS orders (
+	client_id   TEXT PRIMARY KEY,
+	order_id    TEXT NOT NULL DEFAULT '',
+	strategy_id TEXT NOT NULL DEFAULT '',
+	symbol      TEXT NOT NULL,
+	side        TEXT NOT NULL,
+	quantity    REAL NOT NULL,
+	price       REAL NOT NULL DEFAULT 0,
+	status      TEXT NOT NULL DEFAULT 'pending',
+	filled_price REAL NOT NULL DEFAULT 0,
+	filled_qty  REAL NOT NULL DEFAULT 0,
+	stop_loss   REAL NOT NULL DEFAULT 0,
+	take_profit REAL NOT NULL DEFAULT 0,
+	created_at  INTEGER NOT NULL,
+	updated_at  INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, strategy_id);
+
+CREATE TABLE IF NOT EXISTS model_versions (
+	id            INTEGER PRIMARY KEY AUTOINCREMENT,
+	strategy_id   TEXT NOT NULL,
+	model_version INTEGER NOT NULL DEFAULT 1,
+	dataset_hash  TEXT NOT NULL DEFAULT '',
+	code_version  TEXT NOT NULL DEFAULT '',
+	spec          TEXT NOT NULL DEFAULT '',
+	status        TEXT NOT NULL DEFAULT 'candidate',
+	created_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_versions_strategy ON model_versions(strategy_id, created_at);
+
 CREATE TABLE IF NOT EXISTS account (
 	id         INTEGER PRIMARY KEY CHECK (id = 1),
 	balance    REAL NOT NULL,
@@ -227,10 +258,20 @@ func migrate(db *sql.DB) error {
 		"ALTER TABLE strategy_backtests ADD COLUMN folds INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE strategy_backtests ADD COLUMN oos_folds TEXT NOT NULL DEFAULT '[]'",
 		"ALTER TABLE strategy_backtests ADD COLUMN status TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE strategy_backtests ADD COLUMN average_win REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategy_backtests ADD COLUMN average_loss REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategy_backtests ADD COLUMN expectancy REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategy_backtests ADD COLUMN gross_profit REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategy_backtests ADD COLUMN gross_loss REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE strategy_backtests ADD COLUMN fees_paid REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE signals ADD COLUMN idem_key TEXT NOT NULL DEFAULT ''",
 	} {
 		if _, err := db.Exec(stmt); err != nil && !strings.Contains(err.Error(), "duplicate column") {
 			return fmt.Errorf("migrando strategies: %w", err)
 		}
+	}
+	if _, err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_idem ON signals(idem_key) WHERE idem_key <> ''"); err != nil {
+		return fmt.Errorf("creando índice idem de señales: %w", err)
 	}
 	return nil
 }
@@ -241,10 +282,10 @@ func (s *Store) SaveSignal(ctx context.Context, ev domain.SignalEvent) error {
 		return fmt.Errorf("serializando meta: %w", err)
 	}
 	res, err := s.db.ExecContext(ctx, `
-		INSERT OR IGNORE INTO signals (strategy_id, symbol, timeframe, direction, price, bar_ts, received_at, emitted, meta)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT OR IGNORE INTO signals (strategy_id, symbol, timeframe, direction, price, bar_ts, received_at, emitted, meta, idem_key)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ev.StrategyID, ev.Symbol, ev.Timeframe, string(ev.Direction), ev.Price,
-		ev.BarTS.UnixMilli(), ev.ReceivedAt.UnixMilli(), 0, string(meta))
+		ev.BarTS.UnixMilli(), ev.ReceivedAt.UnixMilli(), 0, string(meta), ev.IdempotencyKey())
 	if err != nil {
 		return fmt.Errorf("insertando señal: %w", err)
 	}
@@ -342,6 +383,42 @@ func (s *Store) RecentCandles(ctx context.Context, symbol, timeframe string, lim
 	return klines, nil
 }
 
+// CandlesBetween devuelve velas cerradas en [start, end), ordenadas por ts.
+func (s *Store) CandlesBetween(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
+	if start.IsZero() {
+		return nil, fmt.Errorf("start requerido")
+	}
+	if end.IsZero() {
+		end = time.Now()
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT ts, open, high, low, close, volume
+		FROM candles
+		WHERE symbol = ? AND timeframe = ? AND ts >= ? AND ts < ?
+		ORDER BY ts ASC`, symbol, timeframe, start.UnixMilli(), end.UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("leyendo velas en rango: %w", err)
+	}
+	defer rows.Close()
+	var klines []domain.Kline
+	for rows.Next() {
+		var k domain.Kline
+		var ts int64
+		if err := rows.Scan(&ts, &k.Open, &k.High, &k.Low, &k.Close, &k.Volume); err != nil {
+			return nil, fmt.Errorf("escaneando vela en rango: %w", err)
+		}
+		k.Symbol = symbol
+		k.Timeframe = timeframe
+		k.Start = time.UnixMilli(ts)
+		k.Closed = true
+		klines = append(klines, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return klines, nil
+}
+
 func (s *Store) UpsertStrategy(ctx context.Context, st domain.Strategy) error {
 	if st.CreatedAt.IsZero() {
 		st.CreatedAt = time.Now()
@@ -430,10 +507,12 @@ func (s *Store) SaveBacktest(ctx context.Context, r domain.BacktestResult) error
 	}
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO strategy_backtests
-			(strategy_id, trades, win_rate, profit_factor, sharpe, sortino, max_drawdown, total_return, test_bars, passed, folds, oos_folds, status, metrics_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			(strategy_id, trades, win_rate, profit_factor, sharpe, sortino, max_drawdown, total_return, test_bars, passed, folds, oos_folds, status, metrics_at,
+			 average_win, average_loss, expectancy, gross_profit, gross_loss, fees_paid)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.StrategyID, r.Trades, r.WinRate, r.ProfitFactor, r.Sharpe, r.Sortino, r.MaxDrawdown,
-		r.TotalReturn, r.TestBars, boolToInt(r.Passed), r.Folds, string(oos), r.Status, r.MetricsAt.UnixMilli())
+		r.TotalReturn, r.TestBars, boolToInt(r.Passed), r.Folds, string(oos), r.Status, r.MetricsAt.UnixMilli(),
+		r.AverageWin, r.AverageLoss, r.Expectancy, r.GrossProfit, r.GrossLoss, r.FeesPaid)
 	if err != nil {
 		return fmt.Errorf("guardando backtest: %w", err)
 	}
@@ -446,13 +525,15 @@ func (s *Store) LastBacktest(ctx context.Context, strategyID string) (domain.Bac
 	var metricsAt int64
 	var oosRaw string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT strategy_id, trades, win_rate, profit_factor, sharpe, sortino, max_drawdown, total_return, test_bars, passed, folds, oos_folds, status, metrics_at
+		SELECT strategy_id, trades, win_rate, profit_factor, sharpe, sortino, max_drawdown, total_return, test_bars, passed, folds, oos_folds, status, metrics_at,
+			average_win, average_loss, expectancy, gross_profit, gross_loss, fees_paid
 		FROM strategy_backtests
 		WHERE strategy_id = ?
 		ORDER BY metrics_at DESC, id DESC
 		LIMIT 1`, strategyID).Scan(&r.StrategyID, &r.Trades, &r.WinRate, &r.ProfitFactor,
 		&r.Sharpe, &r.Sortino, &r.MaxDrawdown, &r.TotalReturn, &r.TestBars, &passed, &r.Folds,
-		&oosRaw, &r.Status, &metricsAt)
+		&oosRaw, &r.Status, &metricsAt, &r.AverageWin, &r.AverageLoss, &r.Expectancy,
+		&r.GrossProfit, &r.GrossLoss, &r.FeesPaid)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, domain.ErrNotFound
 	}
@@ -727,4 +808,147 @@ func (s *Store) UpdateAccount(ctx context.Context, a domain.Account) error {
 		return fmt.Errorf("actualizando cuenta: %w", err)
 	}
 	return nil
+}
+
+// SaveOrder persiste una orden (upsert por client_id) para idempotencia y
+// reconciliación. Nunca debe existir una segunda orden con el mismo client_id.
+func (s *Store) SaveOrder(ctx context.Context, o domain.Order) error {
+	now := time.Now()
+	if o.UpdatedAt.IsZero() {
+		o.UpdatedAt = now
+	}
+	if o.ClientID == "" {
+		return fmt.Errorf("client_id requerido")
+	}
+	if o.Status == "" {
+		o.Status = "pending"
+	}
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO orders (client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(client_id) DO UPDATE SET
+			order_id = excluded.order_id,
+			status = excluded.status,
+			filled_price = excluded.filled_price,
+			filled_qty = excluded.filled_qty,
+			price = excluded.price,
+			stop_loss = excluded.stop_loss,
+			take_profit = excluded.take_profit,
+			quantity = excluded.quantity,
+			updated_at = excluded.updated_at`,
+		o.ClientID, o.ID, o.StrategyID, o.Symbol, string(o.Side), o.Quantity, o.Price,
+		o.Status, o.FilledPrice, o.FilledQty, o.StopLoss, o.TakeProfit,
+		o.Time.UnixMilli(), o.UpdatedAt.UnixMilli())
+	if err != nil {
+		return fmt.Errorf("guardando orden: %w", err)
+	}
+	return nil
+}
+
+// OrderByClientID devuelve una orden por su client_id determinista.
+func (s *Store) OrderByClientID(ctx context.Context, clientID string) (domain.Order, error) {
+	var o domain.Order
+	var side, createdAt, updatedAt string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, created_at, updated_at
+		FROM orders WHERE client_id = ?`, clientID).Scan(
+		&o.ClientID, &o.ID, &o.StrategyID, &o.Symbol, &side, &o.Quantity, &o.Price,
+		&o.Status, &o.FilledPrice, &o.FilledQty, &o.StopLoss, &o.TakeProfit, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return o, domain.ErrNotFound
+	}
+	if err != nil {
+		return o, fmt.Errorf("leyendo orden: %w", err)
+	}
+	o.Side = domain.Direction(side)
+	o.Time = time.UnixMilli(mustParseInt(createdAt))
+	if u, err := strconv.ParseInt(updatedAt, 10, 64); err == nil && u > 0 {
+		o.UpdatedAt = time.UnixMilli(u)
+	}
+	return o, nil
+}
+
+// ListOrders devuelve las órdenes persistidas, opcionalmente filtradas por estado.
+func (s *Store) ListOrders(ctx context.Context, status string) ([]domain.Order, error) {
+	q := `SELECT client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, created_at, updated_at
+		FROM orders`
+	args := []any{}
+	if status != "" {
+		q += " WHERE status = ?"
+		args = append(args, status)
+	}
+	q += " ORDER BY updated_at DESC"
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listando órdenes: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.Order
+	for rows.Next() {
+		var o domain.Order
+		var side, createdAt string
+		if err := rows.Scan(&o.ClientID, &o.ID, &o.StrategyID, &o.Symbol, &side, &o.Quantity,
+			&o.Price, &o.Status, &o.FilledPrice, &o.FilledQty, &o.StopLoss, &o.TakeProfit,
+			&createdAt, &o.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("escaneando orden: %w", err)
+		}
+		o.Side = domain.Direction(side)
+		o.Time = time.UnixMilli(mustParseInt(createdAt))
+		out = append(out, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func mustParseInt(s string) int64 {
+	v, _ := strconv.ParseInt(s, 10, 64)
+	return v
+}
+
+// SaveModelVersion registra una versión de modelo para auditoría/rollback.
+func (s *Store) SaveModelVersion(ctx context.Context, mv domain.ModelVersion) (int64, error) {
+	if mv.CreatedAt.IsZero() {
+		mv.CreatedAt = time.Now()
+	}
+	if mv.Status == "" {
+		mv.Status = "candidate"
+	}
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO model_versions (strategy_id, model_version, dataset_hash, code_version, spec, status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		mv.StrategyID, mv.Version, mv.DatasetHash, mv.CodeVersion, mv.Spec, mv.Status, mv.CreatedAt.UnixMilli())
+	if err != nil {
+		return 0, fmt.Errorf("guardando versión de modelo: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// ListModelVersions devuelve las versiones de un modelo, nuevas primero.
+func (s *Store) ListModelVersions(ctx context.Context, strategyID string) ([]domain.ModelVersion, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, strategy_id, model_version, dataset_hash, code_version, spec, status, created_at
+		FROM model_versions
+		WHERE strategy_id = ?
+		ORDER BY created_at DESC, id DESC`, strategyID)
+	if err != nil {
+		return nil, fmt.Errorf("listando versiones de modelo: %w", err)
+	}
+	defer rows.Close()
+	var out []domain.ModelVersion
+	for rows.Next() {
+		var mv domain.ModelVersion
+		var createdAt int64
+		if err := rows.Scan(&mv.ID, &mv.StrategyID, &mv.Version, &mv.DatasetHash, &mv.CodeVersion,
+			&mv.Spec, &mv.Status, &createdAt); err != nil {
+			return nil, fmt.Errorf("escaneando versión de modelo: %w", err)
+		}
+		mv.CreatedAt = time.UnixMilli(createdAt)
+		out = append(out, mv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

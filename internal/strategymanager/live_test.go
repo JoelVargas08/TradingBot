@@ -20,6 +20,16 @@ func (s *liveCandleSource) RecentCandles(ctx context.Context, symbol, timeframe 
 	return out, nil
 }
 
+func (s *liveCandleSource) CandlesBetween(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
+	var out []domain.Kline
+	for _, k := range s.candles {
+		if k.Symbol == symbol && k.Timeframe == timeframe && !k.Start.Before(start) && k.Start.Before(end) {
+			out = append(out, k)
+		}
+	}
+	return out, nil
+}
+
 type livePublisher struct {
 	events []domain.SignalEvent
 }

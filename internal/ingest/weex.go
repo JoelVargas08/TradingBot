@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"tradingview-bot/internal/domain"
 
@@ -28,8 +31,12 @@ type WeexConfig struct {
 	ReconnectBase time.Duration
 	ReconnectMax  time.Duration
 	BackfillBars  int
+	MaxAttempts   int
 	HTTPClient    *http.Client
 }
+
+// RestMaxBars es el límite de velas por llamada REST de WEEX.
+const RestMaxBars = 1000
 
 func (c WeexConfig) withDefaults() WeexConfig {
 	if c.RestURL == "" {
@@ -54,12 +61,15 @@ func (c WeexConfig) withDefaults() WeexConfig {
 		c.ReconnectMax = 30 * time.Second
 	}
 	if c.BackfillBars <= 0 {
-		c.BackfillBars = 300
+		c.BackfillBars = 5000
+	}
+	if c.MaxAttempts <= 1 {
+		c.MaxAttempts = 4
 	}
 	if c.HTTPClient != nil {
 		return c
 	}
-	c.HTTPClient = &http.Client{Timeout: 20 * time.Second}
+	c.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	return c
 }
 
@@ -87,56 +97,173 @@ func NewWEEXProvider(store domain.CandleStore, cfg WeexConfig) *WeexProvider {
 	}
 }
 
-// Backfill descarga velas históricas cerradas y las persiste en el CandleStore.
+// Backfill descarga velas históricas cerradas de forma paginada (avanzando por
+// timestamp, nunca dependiendo de una única llamada REST) y las persiste en el
+// CandleStore. Reintenta errores transitorios (429/5xx) con backoff.
 func (p *WeexProvider) Backfill(ctx context.Context, symbol, timeframe string, limit int) error {
-	if symbol == "" {
-		return fmt.Errorf("symbol requerido")
-	}
-	if timeframe == "" {
-		return fmt.Errorf("timeframe requerido")
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	timeframe = strings.TrimSpace(timeframe)
+	if err := validateSymbolTimeframe(symbol, timeframe); err != nil {
+		return err
 	}
 	if limit <= 0 {
 		limit = p.cfg.BackfillBars
 	}
-	if limit > 1000 {
-		limit = 1000
-	}
-	bars, err := p.fetchKlines(ctx, symbol, timeframe, limit)
+	current := time.Now().Truncate(parseInterval(timeframe))
+	start := current.Add(-time.Duration(limit) * parseInterval(timeframe))
+	rows, err := p.GetKlines(ctx, symbol, timeframe, start, current, limit)
 	if err != nil {
-		return err
+		return fmt.Errorf("weex backfill %s %s: %w", symbol, timeframe, err)
 	}
-	for _, k := range bars {
+	seen := 0
+	for _, k := range rows {
 		if err := p.store.SaveCandle(ctx, k); err != nil && !errors.Is(err, domain.ErrDuplicate) {
 			return err
 		}
+		seen++
 	}
-	log.Printf("weex backfill: %s %s -> %d velas almacenadas", symbol, timeframe, len(bars))
+	log.Printf("weex backfill: %s %s -> %d velas almacenadas", symbol, timeframe, seen)
 	return nil
 }
 
-func (p *WeexProvider) klinesURL(symbol, timeframe string, limit int) string {
-	return fmt.Sprintf("%s/capi/v3/market/klines?symbol=%s&interval=%s&limit=%d",
-		strings.TrimRight(p.cfg.RestURL, "/"), symbol, timeframe, limit)
+// GetKlines descarga velas históricas en [start, end), con paginación por
+// timestamp, ordenadas ascendentemente, sin duplicados y validadas.
+func (p *WeexProvider) GetKlines(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, error) {
+	symbol = strings.ToUpper(strings.TrimSpace(symbol))
+	timeframe = strings.TrimSpace(timeframe)
+	if err := validateSymbolTimeframe(symbol, timeframe); err != nil {
+		return nil, err
+	}
+	if start.IsZero() {
+		return nil, fmt.Errorf("start requerido")
+	}
+	if end.IsZero() {
+		end = time.Now()
+	}
+	if limit <= 0 {
+		limit = p.cfg.BackfillBars
+	}
+	step := parseInterval(timeframe)
+	from := start
+	var out []domain.Kline
+	remaining := limit
+	for {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if remaining <= 0 {
+			break
+		}
+		want := remaining
+		if want > RestMaxBars {
+			want = RestMaxBars
+		}
+		bars, err := p.fetchKlinesRange(ctx, symbol, timeframe, from, end, want)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, bars...)
+		if len(bars) == 0 {
+			break
+		}
+		last := bars[len(bars)-1].Start
+		remaining -= len(bars)
+		if len(bars) < want || !last.Add(step).Before(end) {
+			break
+		}
+		from = last.Add(step)
+	}
+	out = dedupeSortKlines(out)
+	return out, nil
 }
 
-func (p *WeexProvider) fetchKlines(ctx context.Context, symbol, timeframe string, limit int) ([]domain.Kline, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.klinesURL(symbol, timeframe, limit), nil)
+func (p *WeexProvider) klinesURL(symbol, timeframe string, start, end time.Time, limit int) string {
+	u := fmt.Sprintf("%s/capi/v3/market/klines?symbol=%s&interval=%s&limit=%d",
+		strings.TrimRight(p.cfg.RestURL, "/"), symbol, timeframe, limit)
+	if !start.IsZero() {
+		u += fmt.Sprintf("&startTime=%d", start.UnixMilli())
+	}
+	if !end.IsZero() {
+		u += fmt.Sprintf("&endTime=%d", end.UnixMilli())
+	}
+	return u
+}
+
+// fetchKlines recupera un bloque REST y reintenta errores transitorios.
+func (p *WeexProvider) fetchKlinesRange(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, error) {
+	var lastErr error
+	for attempt := 1; attempt <= p.cfg.MaxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		bars, retriable, err := p.doFetchKlines(ctx, symbol, timeframe, start, end, limit)
+		if err == nil {
+			return bars, nil
+		}
+		lastErr = err
+		if !retriable {
+			return nil, err
+		}
+		delay := time.Duration(1<<uint(attempt)) * 300 * time.Millisecond
+		if delay > 5*time.Second {
+			delay = 5 * time.Second
+		}
+		log.Printf("weex rest: intento %d/%d falló (%v); reintentando en %v", attempt, p.cfg.MaxAttempts, err, delay)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return nil, lastErr
+}
+
+// doFetchKlines ejecuta una única llamada REST. Devuelve retriable=true para
+// errores transitorios (429 o 5xx).
+func (p *WeexProvider) doFetchKlines(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.klinesURL(symbol, timeframe, start, end, limit), nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, true, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return nil, err
+		return nil, true, err
+	}
+	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		return nil, true, fmt.Errorf("weex rest %d: %s", resp.StatusCode, string(body))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("weex rest %d: %s", resp.StatusCode, string(body))
+		return nil, false, fmt.Errorf("weex rest %d: %s", resp.StatusCode, string(body))
 	}
-	return parseWeexKlines(body, symbol, timeframe)
+	bars, err := parseWeexKlines(body, symbol, timeframe)
+	if err != nil {
+		return nil, false, err
+	}
+	return bars, false, nil
+}
+
+// ValidateKlinesData valida un conjunto de velas que va a ser usado por el
+// pipeline de aprendizaje: timestamps ordenados, sin duplicados, OHLCV coherente.
+func ValidateKlinesData(ks []domain.Kline) error {
+	for i := range ks {
+		if err := validateKline(ks[i]); err != nil {
+			return fmt.Errorf("kline[%d]: %w", i, err)
+		}
+		if i > 0 {
+			if ks[i].Start.Before(ks[i-1].Start) {
+				return fmt.Errorf("kline[%d]: timestamps no ordenados", i)
+			}
+			if ks[i].Start.Equal(ks[i-1].Start) {
+				return fmt.Errorf("kline[%d]: vela duplicada", i)
+			}
+		}
+	}
+	return nil
 }
 
 // Subscribe abre un canal de velas en streaming para un symbol/timeframe.
@@ -166,12 +293,13 @@ func (p *WeexProvider) runStream(ctx context.Context, key, symbol, timeframe str
 		p.mu.Unlock()
 	}()
 	backoff := p.cfg.ReconnectBase
+	lastTS := time.Time{}
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		started := time.Now()
-		err := p.runConnection(ctx, symbol, timeframe, out)
+		err := p.runConnection(ctx, symbol, timeframe, out, &lastTS)
 		select {
 		case <-ctx.Done():
 			return
@@ -179,6 +307,11 @@ func (p *WeexProvider) runStream(ctx context.Context, key, symbol, timeframe str
 		}
 		if err != nil {
 			log.Printf("weex ws: conexión finalizada (%s %s): %v", symbol, timeframe, err)
+		}
+		// Backfill del hueco: tras perder la conexión, recuperar las velas que
+		// pudieron quedar sin recibir entre la última vela y ahora.
+		if !lastTS.IsZero() {
+			p.backfillGap(ctx, symbol, timeframe, lastTS, out)
 		}
 		if time.Since(started) >= 60*time.Second {
 			backoff = p.cfg.ReconnectBase
@@ -195,11 +328,37 @@ func (p *WeexProvider) runStream(ctx context.Context, key, symbol, timeframe str
 	}
 }
 
+// backfillGap recupera las velas posteriores a lastTS y las emite al canal,
+// de modo que el consumidor (servicio) las persista y reenvíe si están cerradas.
+func (p *WeexProvider) backfillGap(ctx context.Context, symbol, timeframe string, lastTS time.Time, out chan<- domain.Kline) {
+	step := parseInterval(timeframe)
+	start := lastTS.Add(step)
+	end := time.Now().Add(step)
+	bars, err := p.GetKlines(ctx, symbol, timeframe, start, end, p.cfg.BackfillBars)
+	if err != nil {
+		log.Printf("weex ws: backfill de hueco %s %s falló: %v", symbol, timeframe, err)
+		return
+	}
+	for _, k := range bars {
+		if !k.Start.After(lastTS) {
+			continue
+		}
+		select {
+		case out <- k:
+		case <-ctx.Done():
+			return
+		}
+	}
+	if len(bars) > 0 {
+		log.Printf("weex ws: backfill de hueco %s %s -> %d velas", symbol, timeframe, len(bars))
+	}
+}
+
 func (p *WeexProvider) channelName(symbol, timeframe string) string {
 	return strings.ToUpper(symbol) + "@kline_" + timeframe + "_" + p.cfg.PriceType
 }
 
-func (p *WeexProvider) runConnection(ctx context.Context, symbol, timeframe string, out chan<- domain.Kline) error {
+func (p *WeexProvider) runConnection(ctx context.Context, symbol, timeframe string, out chan<- domain.Kline, lastTS *time.Time) error {
 	dialer := websocket.Dialer{HandshakeTimeout: p.cfg.DialTimeout}
 	conn, _, err := dialer.DialContext(ctx, p.cfg.WSURL, nil)
 	if err != nil {
@@ -238,6 +397,9 @@ func (p *WeexProvider) runConnection(ctx context.Context, symbol, timeframe stri
 		if !ok {
 			continue
 		}
+		if c.Start.After(*lastTS) {
+			*lastTS = c.Start
+		}
 		select {
 		case out <- c:
 		case <-ctx.Done():
@@ -263,30 +425,40 @@ func (p *WeexProvider) isPing(msg []byte) bool {
 }
 
 // parseWSKline extrae una vela del mensaje de un canal kline, tolerando que
-// los campos vengan en "data" (objeto o array) o en la raíz del mensaje.
+// los campos vengan en "data" (objeto o array), en "d" (formato real de algunas
+// versiones WEEX, objeto o array bajo "d[]") o en la raíz del mensaje.
 func (p *WeexProvider) parseWSKline(msg []byte, symbol, timeframe string) (domain.Kline, bool, error) {
 	var top struct {
 		Data json.RawMessage `json:"data"`
+		D    json.RawMessage `json:"d"`
 	}
 	if err := json.Unmarshal(msg, &top); err != nil {
 		return domain.Kline{}, false, err
 	}
-	payload := msg
-	if len(top.Data) > 0 && string(top.Data) != "null" {
-		payload = top.Data
+	var candidates []json.RawMessage
+	for _, raw := range []json.RawMessage{top.Data, top.D} {
+		if len(raw) > 0 && string(raw) != "null" {
+			candidates = append(candidates, raw)
+		}
+	}
+
+	for _, payload := range candidates {
+		var fields weexKlineFields
+		if err := json.Unmarshal(payload, &fields); err == nil && fields.hasPrice() {
+			return buildKline(fields, symbol, timeframe, p.isClosed(fields, p.now())), true, nil
+		}
+		var arr []weexKlineFields
+		if err := json.Unmarshal(payload, &arr); err == nil && len(arr) > 0 {
+			last := arr[len(arr)-1]
+			if last.hasPrice() {
+				return buildKline(last, symbol, timeframe, p.isClosed(last, p.now())), true, nil
+			}
+		}
 	}
 
 	var fields weexKlineFields
-	if err := json.Unmarshal(payload, &fields); err == nil && fields.hasPrice() {
+	if err := json.Unmarshal(msg, &fields); err == nil && fields.hasPrice() {
 		return buildKline(fields, symbol, timeframe, p.isClosed(fields, p.now())), true, nil
-	}
-
-	var arr []weexKlineFields
-	if err := json.Unmarshal(payload, &arr); err == nil && len(arr) > 0 {
-		last := arr[len(arr)-1]
-		if last.hasPrice() {
-			return buildKline(last, symbol, timeframe, p.isClosed(last, p.now())), true, nil
-		}
 	}
 	return domain.Kline{}, false, nil
 }
@@ -405,18 +577,67 @@ func parseWeexKlines(body []byte, symbol, timeframe string) ([]domain.Kline, err
 		}
 		out = append(out, k)
 	}
-	return out, nil
+	return dedupeSortKlines(out), nil
+}
+
+// dedupeSortKlines ordena ascendentemente y elimina duplicados por timestamp
+// (conservando la última aparición, que normalmente es la más completa).
+func dedupeSortKlines(ks []domain.Kline) []domain.Kline {
+	if len(ks) == 0 {
+		return ks
+	}
+	sort.SliceStable(ks, func(i, j int) bool { return ks[i].Start.Before(ks[j].Start) })
+	seen := make(map[int64]bool, len(ks))
+	out := ks[:0]
+	for i := range ks {
+		ts := ks[i].Start.UnixMilli()
+		if seen[ts] {
+			ks[i] = domain.Kline{}
+			continue
+		}
+		seen[ts] = true
+		out = append(out, ks[i])
+	}
+	return out[:len(out):len(out)]
 }
 
 func validateKline(k domain.Kline) error {
 	if k.Symbol == "" || k.Timeframe == "" || k.Start.IsZero() {
 		return fmt.Errorf("symbol/timeframe/ts requeridos")
 	}
+	vals := []float64{k.Open, k.High, k.Low, k.Close, k.Volume}
+	for _, v := range vals {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			return fmt.Errorf("precio inválido (NaN/Inf)")
+		}
+		if v < 0 {
+			return fmt.Errorf("precios/volumen no pueden ser negativos")
+		}
+	}
 	if k.Open <= 0 || k.High <= 0 || k.Low <= 0 || k.Close <= 0 {
 		return fmt.Errorf("precios deben ser positivos")
 	}
 	if k.Low > minF(k.Open, k.Close) || k.High < maxF(k.Open, k.Close) {
 		return fmt.Errorf("OHLC incoherente")
+	}
+	return nil
+}
+
+// validateSymbolTimeframe valida el formato básico de símbolo y timeframe.
+func validateSymbolTimeframe(symbol, timeframe string) error {
+	if symbol == "" {
+		return fmt.Errorf("symbol requerido")
+	}
+	for _, r := range symbol {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return fmt.Errorf("symbol inválido %q", symbol)
+		}
+	}
+	if len(symbol) < 3 {
+		return fmt.Errorf("symbol inválido %q", symbol)
+	}
+	if err := validateTimeframe(timeframe); err != nil {
+		return err
 	}
 	return nil
 }

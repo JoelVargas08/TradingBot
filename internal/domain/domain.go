@@ -41,6 +41,8 @@ const (
 	MetaKeyRegime      = "regime"
 	MetaKeyConfidence  = "confidence"
 	MetaKeyProbability = "probability"
+	MetaKeySetup       = "setup"
+	MetaKeyMainTrend   = "main_trend"
 )
 
 func (e SignalEvent) Valid() error {
@@ -68,6 +70,13 @@ func (e SignalEvent) Key() string {
 
 func (e SignalEvent) BarKey() string {
 	return fmt.Sprintf("%s|%s|%s|%d", e.StrategyID, e.Symbol, e.Timeframe, e.BarTS.UnixMilli())
+}
+
+// IdempotencyKey identifica de forma única una señal/orden: una repetición del
+// WebSocket o un reinicio no debe crear una segunda orden para la misma vela.
+func (e SignalEvent) IdempotencyKey() string {
+	setup, _ := e.Meta[MetaKeySetup].(string)
+	return fmt.Sprintf("%s|%s|%s|%d|%s|%s", e.StrategyID, e.Symbol, e.Timeframe, e.BarTS.UnixMilli(), setup, e.Direction)
 }
 
 type StrategyStatus string
@@ -116,6 +125,13 @@ type BacktestResult struct {
 	Folds        int
 	OOSFolds     []OOSFold
 	Status       string
+
+	AverageWin  float64
+	AverageLoss float64
+	Expectancy  float64
+	GrossProfit float64
+	GrossLoss   float64
+	FeesPaid    float64
 }
 
 // OOSFold guarda las métricas de un único fold de walk-forward.
@@ -189,6 +205,7 @@ type Trade struct {
 type CandleStore interface {
 	SaveCandle(ctx context.Context, k Kline) error
 	RecentCandles(ctx context.Context, symbol, timeframe string, limit int) ([]Kline, error)
+	CandlesBetween(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]Kline, error)
 }
 
 type TextNotifier interface {
@@ -328,6 +345,14 @@ type Order struct {
 	TakeProfit float64
 	ClientID   string
 	Time       time.Time
+
+	// Persistencia / broker real
+	ID          string
+	StrategyID  string
+	Status      string
+	FilledPrice float64
+	FilledQty   float64
+	UpdatedAt   time.Time
 }
 
 // OrderResult es el resultado de colocar una orden en un broker.
@@ -339,6 +364,18 @@ type OrderResult struct {
 	Price    float64
 	Status   string
 	Time     time.Time
+}
+
+// ModelVersion registra una versión de modelo aprendido para auditoría/rollback.
+type ModelVersion struct {
+	ID          int64
+	StrategyID  string
+	Version     int
+	DatasetHash string
+	CodeVersion string
+	Spec        string
+	Status      string
+	CreatedAt   time.Time
 }
 
 type PositionStore interface {

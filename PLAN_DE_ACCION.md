@@ -1,8 +1,7 @@
-# Plan de acción — Trading algorítmico (bot TradingView → Telegram)
+gu# Plan de acción — Trading algorítmico (bot TradingView → Telegram)
 
 > Plan consolidado elaborado a partir del análisis de 6 especialistas (TradingView, backend, IA/CNN, datos, scraping, estrategia crypto).
 > Estado actual del proyecto: bot Go que recibe webhooks de TradingView (Chandelier Exit) y reenvía alertas a Telegram.
-> ✅ Fase 0 (endurecer bot) — ✅ Fase 1 (desacoplar señales + multi-estrategia) — ✅ Fase 2 (ingesta de datos) — ✅ Fase 3 (Chandelier Multi-Confirm) — ✅ Fase 4 (aprendizaje desde PDF) — ✅ Fase 5 (motor de señales con IA) — ✅ Fase 6 (backtesting + KPIs + despliegue) — ✅ Fase 7 (bot PDF usable + reparación de errores del main) completada → siguiente: paper-trading 4–6 semanas y CNN-1D condicionada a datos reales.
 
 ---
 
@@ -31,39 +30,35 @@
 7. Dedupe por clave `(strategyID, symbol, timeframe)` en vez de solo símbolo (hoy `models/user.go` se pisan las estrategias sobre BTCUSDT).
 8. Persistencia a **SQLite** (`modernc.org/sqlite`, puro Go) con esquema de `candles`, `signals`, `trades`, `strategies`, `performance`.
 
-## Fase 2 — Ingesta de datos y detección de movimientos (1 semana) ✅
+## Fase 2 — Ingesta de datos y detección de movimientos (1 semana)
 
 9. Paquete `internal/ingest`: cliente **WebSocket de Binance** (o Bybit si la región lo bloquea) para `kline_1m/1h` de BTCUSDT/ETHUSDT + backfill REST; throttler token-bucket y reconexión con backoff.
 10. Detector de eventos: vela grande, spike de volumen (z≥3σ), quiebre S/R, whale trades — emiten alertas al mismo pipeline de Telegram.
 11. Sentimiento: Fear&Greed (alternative.me, gratis) + CoinGecko trending + RSS de noticias. **No** scrapear X/Reddit HTML.
 
-## Fase 3 — Estrategia "Chandelier Multi-Confirm" (1–2 semanas) ✅
+## Fase 3 — Estrategia "Chandelier Multi-Confirm" (1–2 semanas)
 
 12. Pine Script v6 mejorado en TradingView (Chandelier 22/3.0 en 1H + filtros vol 1.2×, RSI 40–70, EMA 20/50, régimen EMA100 4H sin repaint) con `alert.freq_once_per_bar_close` y payload JSON enriquecido (`timeframe`, `rsi`, `volume_ratio`, `trend4h`, `stop_loss`).
 13. Playbook de alerta enriquecido en `services/telegram.go` (contexto + nivel de riesgo + stop/objetivo).
 14. Reglas de riesgo: 1% por operación, R/R 2:1, máx 3 posiciones, kill-switch a -15% drawdown, rotación por dominancia BTC. Persistir posiciones en `models` + SQLite.
 15. El bot añade comandos `/positions`, `/risk`, `/regime`.
 
-## Fase 4 — Aprendizaje desde PDF (2 semanas) ✅
+## Fase 4 — Aprendizaje desde PDF (2 semanas)
 
-16. Job queue para tareas largas; extracción PDF con extractor propio en Go puro (stdlib, `pdfcpu` descartado por red inestable; FlateDecode + operadores Tj/TJ); LLM sidecar (OpenAI/Anthropic/DeepSeek) que genera Pine Script v6 + spec JSON desde el texto.
-17. `StrategyManager` con estados `draft → backtesting → active|rejected`; **validación automática en backtest OOS antes de activar** (bloquea estrategias que no pasen los umbrales). Comandos Telegram `/learn`, `/strategies`, `/strategy`, `/backtest` y recepción de PDF adjuntos.
+16. Job queue para tareas largas; extracción PDF con `pdfcpu` (puro Go, sin poppler); LLM sidecar (OpenAI/Anthropic/DeepSeek) que genera Pine Script v6 desde el texto.
+17. `StrategyManager` con estados `draft → backtesting → active`; **validación automática en backtest antes de activar** (bloquea estrategias que no pasen los umbrales OOS).
 
-## Fase 5 — Motor de señales con IA (3–6 semanas) ✅
+## Fase 5 — Motor de señales con IA (3–6 semanas)
 
-18. Sidecar **Python (FastAPI + REST)**: baseline **XGBoost** sobre features (momentum, RSI, MACD, ATR, volumen); etiquetado **triple-barrier** (barreras ±1.5σ), ventana 64×1h, walk-forward con purga/embargo. Implementado en `ml/` (`features.py`, `labels.py`, `train.py`, `api.py`). Entrenamiento desde el SQLite del bot, CSV o datos sintéticos; el mejor modelo por Sharpe OOS se guarda en `ml/models/`.
-19. Escalar a **CNN-1D con convoluciones dilatadas** (campo receptivo 67 ≥ 64) **solo si** supera a XGBoost y al Chandelier en Sharpe/maxDD entre folds con datos reales. Export ONNX para inferencia. → pendiente, condicionado a datos reales.
-20. Integración: Go mantiene un **buffer de 64 velas** (`internal/ml`), llama a `/predict` al cierre de cada vela 1h, filtra por umbral de confianza + cooldown, y emite al mismo pipeline de Telegram (`ML_ENABLED=true`). Chandelier queda como fallback.
+18. Sidecar **Python (FastAPI + gRPC/REST)**: Fase 0 = XGBoost baseline sobre features (momentum, RSI, MACD, ATR, volumen); etiquetado triple-barrier (barreras ±1.5σ), ventana 64×1h, walk-forward con purga.
+19. Escalar a **CNN-1D con convoluciones dilatadas** (campo receptivo 67 ≥ 64) solo si supera a XGBoost y al Chandelier en Sharpe/maxDD entre folds. Export ONNX para inferencia.
+20. Integración: Go mantiene un buffer de 64 velas, llama a `/predict` al cierre de cada vela 1h, filtra por umbral de confianza + cooldown, y envía vía el Telegram actual. Chandelier queda como fallback.
 
-## Fase 6 — Backtesting + KPIs + despliegue (2 semanas) ✅
+## Fase 6 — Backtesting + KPIs + despliegue (2 semanas)
 
-21. Motor de backtest en Go (event-driven, costos reales), benchmarks: buy&hold vs Chandelier vs IA. Dashboard comparativo. → **Implementado**: `internal/backtest` (fees+slippage, stops/take intrabarra, Sharpe/Sortino/CAGR/MaxDD/PF), `internal/strategies` (Chandelier en Go puro), `internal/benchmark` (comparativa 3 estrategias), `ml/api.py /predict_batch` (señal por barra sin lookahead) + cliente `PredictBatch`, CLI `go run ./cmd/backtest` (fuente: `--db`/`--csv`/`--synthetic`) con salida JSON + tabla + dashboard HTML autocontenido en `--html`.
-22. Docker multi-stage + `docker-compose` (`bot`, `ml-engine`, `caddy` para servir el dashboard y HTTPS). → **Implementado**: `Dockerfile` (Go multi-stage, imagen mínima, sin CGO), `ml/Dockerfile`, `docker-compose.yml`, `Caddyfile`, `.dockerignore`. **Nota**: Docker no está disponible en el entorno de desarrollo (validar en un host con Docker).
-23. Paper-trading 4–6 semanas antes de capital real. → **Implementado el modo**: `MODE=paper|live` (default `paper`). El bot ya registra posiciones simuladas en SQLite a partir de las señales (libro de posiciones, stop/take y sizing por riesgo). `MODE=live` sin adaptador de broker avisa y continúa en modo simulado.
-
-## Fase 7 — Bot de Telegram listo para PDF + reparación de errores ✅
-
-24. Flujo "adjuntar PDF → /learn" en estado usable: carga automática de `.env`, `WEBHOOK_SECRET` opcional (el bloqueo de arranque desaparece), notificación de fallos de aprendizaje (`Queue.OnFailed`), validación de documentos por nombre/MIME, limpieza del adjunto tras extraer, descargas con timeout y detección de truncado, mensajes truncados a 4096 chars y `log.Fatalf` eliminado de la gorutina de ingesta. → **Implementado**: `MEMORIA_FASE_7.md`, `.env.example`, cambios en `main.go`, `config/`, `internal/jobqueue/`, `handlers/strategies.go`, `services/telegram.go`.
+21. Motor de backtest en Go (event-driven, costos reales), benchmarks: buy&hold vs Chandelier vs IA. Dashboard comparativo.
+22. Docker multi-stage + `docker-compose` (`bot`, `worker`, `ml-engine`, `postgres`/`sqlite`, `caddy` para HTTPS — obligatorio para webhooks de TradingView).
+23. Paper-trading 4–6 semanas antes de capital real.
 
 ---
 

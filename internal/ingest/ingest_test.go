@@ -148,6 +148,18 @@ func (f *fakeCandleStore) RecentCandles(ctx context.Context, symbol, timeframe s
 	return nil, nil
 }
 
+func (f *fakeCandleStore) CandlesBetween(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []domain.Kline
+	for _, k := range f.candles {
+		if k.Symbol == symbol && k.Timeframe == timeframe && !k.Start.Before(start) && k.Start.Before(end) {
+			out = append(out, k)
+		}
+	}
+	return out, nil
+}
+
 func klineRow(openTime int64) string {
 	return fmt.Sprintf(`[%d,"60000.0","60100.0","59900.0","60050.5","123.45",%d,"60000.0",100,"100.0","200.0","0"]`,
 		openTime, openTime+60000)
