@@ -7,11 +7,18 @@ import (
 
 	"tradingview-bot/internal/dedupe"
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/observability"
 )
 
 // SessionGate permite al processor consultar si la sesión de trading activa.
 type SessionGate interface {
 	IsActive() bool
+}
+
+// FeedGate permite al processor bloquear la ejecución de nuevas posiciones
+// cuando el feed de mercado está stale (datos viejos o no confiables).
+type FeedGate interface {
+	Healthy() bool
 }
 
 type Source interface {
@@ -26,6 +33,7 @@ type Processor struct {
 	notify   domain.Notifier
 	position domain.PositionController
 	session  SessionGate
+	feed     FeedGate
 }
 
 func New(src Source, store domain.SignalStore, eval domain.Evaluator, notify domain.Notifier, position domain.PositionController, session SessionGate, dedupeLimit int) *Processor {
@@ -41,6 +49,12 @@ func New(src Source, store domain.SignalStore, eval domain.Evaluator, notify dom
 		position: position,
 		session:  session,
 	}
+}
+
+// SetFeedGate habilita el cortafuegos por feed stale: con el mercado sin
+// datos frescos las señales se registran pero no abren posiciones nuevas.
+func (p *Processor) SetFeedGate(g FeedGate) {
+	p.feed = g
 }
 
 func (p *Processor) Start(ctx context.Context) {
@@ -83,6 +97,7 @@ func (p *Processor) handle(ctx context.Context, ev domain.SignalEvent) {
 		log.Printf("sin cambio de dirección (%s → %s), sin notificar", ev.Key(), ev.Direction)
 		return
 	}
+	observability.Log(observability.SignalCreated, "strategy", ev.StrategyID, "symbol", ev.Symbol, "timeframe", ev.Timeframe, "direction", ev.Direction, "bar_ts", ev.BarTS.UnixMilli(), "price", ev.Price)
 	if err := p.notify.Notify(ctx, ev); err != nil {
 		log.Printf("error notificando señal %s: %v", ev.Key(), err)
 	}
@@ -92,6 +107,13 @@ func (p *Processor) handle(ctx context.Context, ev domain.SignalEvent) {
 	if p.session != nil && !p.session.IsActive() {
 		log.Printf(
 			"sesión detenida: señal %s registrada pero no ejecutada",
+			ev.Key(),
+		)
+		return
+	}
+	if p.feed != nil && !p.feed.Healthy() {
+		log.Printf(
+			"feed de mercado stale: señal %s registrada pero no ejecutada",
 			ev.Key(),
 		)
 		return

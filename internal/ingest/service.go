@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/observability"
 )
 
 // CandleSink recibe las velas cerradas y la selección de mercado en vivo.
@@ -212,12 +213,17 @@ func (s *MarketDataService) Run(ctx context.Context) error {
 // runFeed gestiona backfill + suscripción + consumo de un único timeframe,
 // reintentando ante errores transitorios hasta que se cancele el subContext.
 func (s *MarketDataService) runFeed(ctx context.Context, strategyID, symbol, tf string) {
+	defer observability.Log(observability.MarketDisconnected, "symbol", symbol, "timeframe", tf)
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := s.provider.Backfill(ctx, symbol, tf, s.backfillBars); err != nil {
+		observability.Log(observability.BackfillStarted, "symbol", symbol, "timeframe", tf)
+		err := s.provider.Backfill(ctx, symbol, tf, s.backfillBars)
+		if err != nil {
 			log.Printf("market data: backfill %s %s falló: %v", symbol, tf, err)
+		} else {
+			observability.Log(observability.BackfillCompleted, "symbol", symbol, "timeframe", tf, "bars", s.backfillBars)
 		}
 		ch, err := s.provider.Subscribe(ctx, symbol, tf)
 		if err != nil {
@@ -233,6 +239,7 @@ func (s *MarketDataService) runFeed(ctx context.Context, strategyID, symbol, tf 
 		if tf == s.primaryTimeframe() {
 			s.setConnected(true)
 			log.Printf("market data: feed activo %s %s %s (estrategia %s)", symbol, tf, s.priceType, strategyID)
+			observability.Log(observability.MarketConnected, "provider", "weex", "symbol", symbol, "timeframe", tf)
 		}
 		for {
 			select {
