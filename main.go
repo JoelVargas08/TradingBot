@@ -22,6 +22,7 @@ import (
 	"tradingview-bot/internal/detect"
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/evaluator"
+	"tradingview-bot/internal/health"
 	"tradingview-bot/internal/ingest"
 	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/jobqueue"
@@ -163,9 +164,19 @@ func main() {
 	var investingBullsLive *strategymanager.LiveEngine
 	if sid := strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID")); sid != "" {
 		investingBullsLive = strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
-		liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL")); if liveSymbol == "" { liveSymbol = "BTCUSDT" }
-		liveTF := strings.TrimSpace(os.Getenv("INVESTING_BULLS_ENTRY_TIMEFRAME")); if liveTF == "" { liveTF = "15m" }
-		if err := investingBullsLive.SetSelection(sid, liveSymbol, liveTF); err != nil { log.Printf("Investing Bulls live: %v", err) } else { log.Printf("Investing Bulls live activo: %s %s %s", sid, liveSymbol, liveTF) }
+		liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL"))
+		if liveSymbol == "" {
+			liveSymbol = "BTCUSDT"
+		}
+		liveTF := strings.TrimSpace(os.Getenv("INVESTING_BULLS_ENTRY_TIMEFRAME"))
+		if liveTF == "" {
+			liveTF = "15m"
+		}
+		if err := investingBullsLive.SetSelection(sid, liveSymbol, liveTF); err != nil {
+			log.Printf("Investing Bulls live: %v", err)
+		} else {
+			log.Printf("Investing Bulls live activo: %s %s %s", sid, liveSymbol, liveTF)
+		}
 	} else {
 		log.Println("Investing Bulls live: deshabilitado (INVESTING_BULLS_STRATEGY_ID vacío)")
 	}
@@ -315,7 +326,9 @@ func main() {
 						log.Printf("guardando vela %s %s: %v", k.Symbol, k.Timeframe, err)
 					}
 					if investingBullsLive != nil {
-						if err := investingBullsLive.OnCandle(ctx, k); err != nil { log.Printf("Investing Bulls live %s %s: %v", k.Symbol, k.Timeframe, err) }
+						if err := investingBullsLive.OnCandle(ctx, k); err != nil {
+							log.Printf("Investing Bulls live %s %s: %v", k.Symbol, k.Timeframe, err)
+						}
 					}
 					if paperEngine != nil && k.Closed {
 						if err := paperEngine.MarkPrice(ctx, k); err != nil {
@@ -375,6 +388,7 @@ func main() {
 	// MARKET_DATA_PROVIDER=weex.
 	var marketDataService *ingest.MarketDataService
 	var marketCommands *handlers.MarketCommands
+	var feedMonitor *health.Monitor
 	if cfg.MarketDataProvider == "weex" {
 		if cfg.IngestEnabled {
 			log.Println("ADVERTENCIA: MARKET_DATA_PROVIDER=weex e INGEST_ENABLED=true; dos fuentes podrían escribir la misma serie")
@@ -384,8 +398,31 @@ func main() {
 			WSURL:     cfg.WeexWSURL,
 			PriceType: cfg.WeexPriceType,
 		})
-		marketDataService = ingest.NewMarketDataService(weexProvider, sqliteStore, liveEngine, cfg.WeexPriceType, 300)
+		// Investing Bulls live también recibe el feed WEEX: un fanout mantiene
+		// el motor compartido (chandelier/TradingView) e IB alimentados por la
+		// misma fuente sin mezclar sus selecciones.
+		var weexSink ingest.CandleSink = liveEngine
+		if investingBullsLive != nil {
+			weexSink = &candleFanout{primary: liveEngine, feed: []ingest.CandleSink{investingBullsLive}}
+		}
+		marketDataService = ingest.NewMarketDataService(weexProvider, sqliteStore, weexSink, cfg.WeexPriceType, cfg.WeexBackfillBars)
 		marketCommands = handlers.NewMarketCommands(telegram, marketDataService)
+		// Mantener en vivo los timeframes MTF de Investing Bulls (15m/5m)
+		// además del timeframe primario, para el pipeline 1H→15m→5m.
+		if investingBullsLive != nil {
+			var extras []string
+			for _, tf := range []string{cfg.IBEntryTimeframe, cfg.IBConfirmTimeframe} {
+				tf = strings.TrimSpace(tf)
+				if tf != "" && !strings.EqualFold(tf, cfg.TradingTimeframe) {
+					extras = append(extras, tf)
+				}
+			}
+			if len(extras) > 0 {
+				if err := marketDataService.SetTimeframes(extras); err != nil {
+					log.Fatalf("timeframes MTF inválidos (%v): %v", extras, err)
+				}
+			}
+		}
 		if err := marketDataService.SetSelection("chandelier", cfg.TradingSymbol, cfg.TradingTimeframe); err != nil {
 			log.Fatalf("selección de mercado WEEX inválida: %v", err)
 		}
@@ -395,7 +432,60 @@ func main() {
 				log.Printf("market data service finalizado: %v", err)
 			}
 		}()
-		log.Printf("Fuente de mercado WEEX activa: %s %s %s", cfg.TradingSymbol, cfg.TradingTimeframe, cfg.WeexPriceType)
+		log.Printf("Fuente de mercado WEEX activa: %s %s %s (backfill %d velas)", cfg.TradingSymbol, cfg.TradingTimeframe, cfg.WeexPriceType, cfg.WeexBackfillBars)
+		// Cortafuegos por feed stale (sec 32): si el feed no tiene datos
+		// frescos, las señales se registran pero no abren posiciones nuevas.
+		period, perr := health.ParsePeriod(cfg.TradingTimeframe)
+		if perr != nil {
+			period = time.Hour
+		}
+		mcfg := health.DefaultConfig()
+		mcfg.StaleAfter = 5 * period
+		mcfg.MaxTimestamps = 4 * period
+		mcfg.MaxGap = 3 * period
+		feedMonitor = health.NewMonitor(mcfg)
+		processorSvc.SetFeedGate(feedMonitor)
+		refreshFeedHealth := func() {
+			m := marketDataService.Status()
+			var recent []health.Candle
+			if ks, err := sqliteStore.RecentCandles(ctx, m.Symbol, m.Timeframe, 6); err == nil {
+				for _, k := range ks {
+					if !k.Closed {
+						continue
+					}
+					recent = append(recent, health.Candle{Start: k.Start, Open: k.Open, High: k.High, Low: k.Low, Close: k.Close, Volume: k.Volume})
+				}
+			}
+			snap := health.Snapshot{
+				Provider:   m.Provider,
+				Connected:  m.Connected,
+				Symbol:     m.Symbol,
+				Timeframe:  m.Timeframe,
+				LastUpdate: m.LastUpdate,
+				Recent:     recent,
+			}
+			if !m.LastCandle.Start.IsZero() {
+				k := m.LastCandle
+				snap.LastCandle = health.Candle{Start: k.Start, Open: k.Open, High: k.High, Low: k.Low, Close: k.Close, Volume: k.Volume}
+			}
+			feedMonitor.Update(snap)
+			if rep := feedMonitor.Latest(); rep.Stale {
+				log.Printf("feed de mercado STALE (%s %s): %v", m.Symbol, m.Timeframe, rep.Reasons)
+			}
+		}
+		refreshFeedHealth()
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					refreshFeedHealth()
+				}
+			}
+		}()
 	} else {
 		log.Println("Fuente de mercado: TradingView (MARKET_DATA_PROVIDER vacío)")
 	}
@@ -551,13 +641,13 @@ func main() {
 			case "learn":
 				telegram.SendMessage(chatID, "📥 Envíame el PDF de la estrategia como documento adjunto (opcionalmente con nombre en el caption).")
 			case "learnib":
-				go runInvestingBullsLearn(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
+				go runInvestingBullsLearn(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
 			case "validateib":
-				go runInvestingBullsValidate(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
+				go runInvestingBullsValidate(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
 			case "learnibmtf":
-				go runInvestingBullsLearnMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
+				go runInvestingBullsLearnMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
 			case "validateibmtf":
-				go runInvestingBullsValidateMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
+				go runInvestingBullsValidateMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
 			case "strategies":
 				if strategyCommands != nil {
 					strategyCommands.HandleStrategies(chatID)
@@ -635,6 +725,14 @@ func main() {
 				"timeframe": m.Timeframe,
 			}
 		}
+		if feedMonitor != nil {
+			rep := feedMonitor.Latest()
+			status["market_health"] = map[string]any{
+				"healthy": rep.Healthy,
+				"stale":   rep.Stale,
+				"reasons": rep.Reasons,
+			}
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(status)
@@ -693,7 +791,7 @@ func main() {
 // runInvestingBullsLearn trains and persists the deterministic Investing Bulls
 // candidate. OOS validation is intentionally a second step so the training
 // result remains inspectable before promotion.
-func runInvestingBullsLearn(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
+func runInvestingBullsLearn(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string, appCfg *config.Config) {
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
 		telegram.SendMessage(chatID, "Uso: /learnib BTCUSDT 1h [limite]")
@@ -708,6 +806,12 @@ func runInvestingBullsLearn(ctx context.Context, store investingbulls.LearnerSto
 	symbol, timeframe := parts[0], parts[1]
 	telegram.SendMessage(chatID, fmt.Sprintf("🧠 Aprendiendo Investing Bulls: %s %s...", symbol, timeframe))
 	cfg := investingbulls.DefaultLearnConfig()
+	if appCfg != nil && appCfg.IBMinTrades > 0 {
+		cfg.MinTrades = appCfg.IBMinTrades
+	}
+	if appCfg != nil && appCfg.IBMaxStopPct > 0 {
+		cfg.TradePlan.MaxStopPct = appCfg.IBMaxStopPct
+	}
 	strategy, result, err := investingbulls.LearnAndPersist(ctx, store, symbol, timeframe, limit, cfg)
 	if err != nil {
 		telegram.SendMessage(chatID, "❌ Learn: "+err.Error())
@@ -718,7 +822,7 @@ func runInvestingBullsLearn(ctx context.Context, store investingbulls.LearnerSto
 
 // runInvestingBullsValidate runs walk-forward OOS and changes the strategy
 // state to active only when the configured validation criteria pass.
-func runInvestingBullsValidate(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
+func runInvestingBullsValidate(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string, appCfg *config.Config) {
 	parts := strings.Fields(args)
 	if len(parts) < 3 {
 		telegram.SendMessage(chatID, "Uso: /validateib <strategyID> BTCUSDT 1h [limite]")
@@ -732,35 +836,151 @@ func runInvestingBullsValidate(ctx context.Context, store investingbulls.Learner
 	}
 	strategyID, symbol, timeframe := parts[0], parts[1], parts[2]
 	telegram.SendMessage(chatID, "🔬 Ejecutando Walk-Forward / OOS...")
-	bt, err := investingbulls.ValidateAndPromote(ctx, store, strategyID, symbol, timeframe, limit, investingbulls.DefaultWalkForwardConfig())
+	wcfg := investingbulls.DefaultWalkForwardConfig()
+	if appCfg != nil {
+		if appCfg.IBWFFolds > 0 {
+			wcfg.Folds = appCfg.IBWFFolds
+		}
+		if appCfg.IBWFTrainPct > 0 {
+			wcfg.TrainPct = appCfg.IBWFTrainPct
+		}
+		if appCfg.IBWFOOSPct > 0 {
+			wcfg.OOSPct = appCfg.IBWFOOSPct
+		}
+		if appCfg.IBWFStepPct > 0 {
+			wcfg.StepPct = appCfg.IBWFStepPct
+		}
+	}
+	bt, err := investingbulls.ValidateAndPromote(ctx, store, strategyID, symbol, timeframe, limit, wcfg)
 	if err != nil {
 		telegram.SendMessage(chatID, "❌ OOS: "+err.Error())
 		return
 	}
 	state := "REJECTED"
-	if bt.Passed { state = "ACTIVE" }
+	if bt.Passed {
+		state = "ACTIVE"
+	}
 	telegram.SendMessage(chatID, fmt.Sprintf("🔬 OOS %s\nEstado: %s\nFolds: %d | Trades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%", strategyID, state, bt.Folds, bt.Trades, bt.WinRate*100, bt.ProfitFactor, bt.TotalReturn*100, bt.MaxDrawdown*100))
 }
 
 // runInvestingBullsLearnMTF trains the complete 1H -> 15m -> optional 5m pipeline.
-func runInvestingBullsLearnMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
- parts:=strings.Fields(args); if len(parts)<1 {telegram.SendMessage(chatID,"Uso: /learnibmtf BTCUSDT [limite] [confirm5m]");return}
- limit:=5000; if len(parts)>=2 {if n,err:=strconv.Atoi(parts[1]);err==nil&&n>0{limit=n}}
- require5m:=false; if len(parts)>=3 {require5m=strings.EqualFold(parts[2],"true")||parts[2]=="1"||strings.EqualFold(parts[2],"yes")}
- symbol:=parts[0]; mtf:=investingbulls.DefaultMultiTimeframeConfig(); mtf.RequireConfirm=require5m
- telegram.SendMessage(chatID,fmt.Sprintf("🧠 Aprendiendo Investing Bulls MTF: %s (1H→15m→5m=%v)...",symbol,require5m))
- st,learned,err:=investingbulls.LearnMultiTimeframeAndPersist(ctx,store,symbol,limit,investingbulls.DefaultLearnConfig(),mtf); if err!=nil{telegram.SendMessage(chatID,"❌ Learn MTF: "+err.Error());return}
- telegram.SendMessage(chatID,fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nSetups: %v\nUsa /validateibmtf %s %s",st.ID,len(learned.Trades),learned.Model.Base.ProfitFactor,learned.Model.Base.TotalReturn*100,learned.Model.Base.MaxDrawdown*100,learned.Model.AllowedSetups,st.ID,symbol))
+func runInvestingBullsLearnMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string, appCfg *config.Config) {
+	parts := strings.Fields(args)
+	if len(parts) < 1 {
+		telegram.SendMessage(chatID, "Uso: /learnibmtf BTCUSDT [limite] [confirm5m]")
+		return
+	}
+	limit := 5000
+	if len(parts) >= 2 {
+		if n, err := strconv.Atoi(parts[1]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	require5m := func() bool {
+		if appCfg != nil {
+			return appCfg.IBConfirm5M
+		}
+		return false
+	}()
+	if len(parts) >= 3 {
+		require5m = strings.EqualFold(parts[2], "true") || parts[2] == "1" || strings.EqualFold(parts[2], "yes")
+	}
+	symbol := parts[0]
+	mtf := investingbulls.DefaultMultiTimeframeConfig()
+	if appCfg != nil {
+		if appCfg.IBMainTimeframe != "" {
+			mtf.MainTimeframe = appCfg.IBMainTimeframe
+		}
+		if appCfg.IBEntryTimeframe != "" {
+			mtf.EntryTimeframe = appCfg.IBEntryTimeframe
+		}
+		if appCfg.IBConfirmTimeframe != "" {
+			mtf.ConfirmTimeframe = appCfg.IBConfirmTimeframe
+		}
+	}
+	mtf.RequireConfirm = require5m
+	learnCfg := investingbulls.DefaultLearnConfig()
+	if appCfg != nil {
+		if appCfg.IBMinTrades > 0 {
+			learnCfg.MinTrades = appCfg.IBMinTrades
+		}
+		if appCfg.IBMaxStopPct > 0 {
+			learnCfg.TradePlan.MaxStopPct = appCfg.IBMaxStopPct
+		}
+	}
+	telegram.SendMessage(chatID, fmt.Sprintf("🧠 Aprendiendo Investing Bulls MTF: %s (%s→%s→%s=%v)...", symbol, mtf.MainTimeframe, mtf.EntryTimeframe, mtf.ConfirmTimeframe, require5m))
+	st, learned, err := investingbulls.LearnMultiTimeframeAndPersist(ctx, store, symbol, limit, learnCfg, mtf)
+	if err != nil {
+		telegram.SendMessage(chatID, "❌ Learn MTF: "+err.Error())
+		return
+	}
+	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nSetups: %v\nUsa /validateibmtf %s %s", st.ID, len(learned.Trades), learned.Model.Base.ProfitFactor, learned.Model.Base.TotalReturn*100, learned.Model.Base.MaxDrawdown*100, learned.Model.AllowedSetups, st.ID, symbol))
 }
 
-func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
- parts:=strings.Fields(args);if len(parts)<2{telegram.SendMessage(chatID,"Uso: /validateibmtf <strategyID> BTCUSDT [limite]");return}
- limit:=5000;if len(parts)>=3{if n,err:=strconv.Atoi(parts[2]);err==nil&&n>0{limit=n}}
- telegram.SendMessage(chatID,"🔬 Validando candidato MTF con OOS fijo...")
- bt,err:=investingbulls.ValidateMultiTimeframeCandidate(ctx,store,parts[0],parts[1],limit,investingbulls.DefaultWalkForwardConfig());if err!=nil{telegram.SendMessage(chatID,"❌ OOS MTF: "+err.Error());return}
- state:="REJECTED";if bt.Passed{state="ACTIVE"}
- telegram.SendMessage(chatID,fmt.Sprintf("🔬 OOS MTF %s\nEstado: %s\nFolds: %d | Trades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%",parts[0],state,bt.Folds,bt.Trades,bt.WinRate*100,bt.ProfitFactor,bt.TotalReturn*100,bt.MaxDrawdown*100))
+func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string, appCfg *config.Config) {
+	parts := strings.Fields(args)
+	if len(parts) < 2 {
+		telegram.SendMessage(chatID, "Uso: /validateibmtf <strategyID> BTCUSDT [limite]")
+		return
+	}
+	limit := 5000
+	if len(parts) >= 3 {
+		if n, err := strconv.Atoi(parts[2]); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	telegram.SendMessage(chatID, "🔬 Validando candidato MTF con OOS fijo...")
+	wcfg := investingbulls.DefaultWalkForwardConfig()
+	if appCfg != nil {
+		if appCfg.IBWFFolds > 0 {
+			wcfg.Folds = appCfg.IBWFFolds
+		}
+		if appCfg.IBWFTrainPct > 0 {
+			wcfg.TrainPct = appCfg.IBWFTrainPct
+		}
+		if appCfg.IBWFOOSPct > 0 {
+			wcfg.OOSPct = appCfg.IBWFOOSPct
+		}
+		if appCfg.IBWFStepPct > 0 {
+			wcfg.StepPct = appCfg.IBWFStepPct
+		}
+	}
+	bt, err := investingbulls.ValidateMultiTimeframeCandidate(ctx, store, parts[0], parts[1], limit, wcfg)
+	if err != nil {
+		telegram.SendMessage(chatID, "❌ OOS MTF: "+err.Error())
+		return
+	}
+	state := "REJECTED"
+	if bt.Passed {
+		state = "ACTIVE"
+	}
+	telegram.SendMessage(chatID, fmt.Sprintf("🔬 OOS MTF %s\nEstado: %s\nFolds: %d | Trades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%", parts[0], state, bt.Folds, bt.Trades, bt.WinRate*100, bt.ProfitFactor, bt.TotalReturn*100, bt.MaxDrawdown*100))
 }
+
+// candleFanout reenvía velas cerradas a los motores en vivo adicionales además
+// del motor compartido, manteniendo su propia selección intacta: solo OnCandle
+// se propaga a todos; SetSelection se delega al motor primario.
+type candleFanout struct {
+	primary ingest.CandleSink
+	feed    []ingest.CandleSink
+}
+
+func (f *candleFanout) OnCandle(ctx context.Context, k domain.Kline) error {
+	if err := f.primary.OnCandle(ctx, k); err != nil {
+		return err
+	}
+	for _, s := range f.feed {
+		if err := s.OnCandle(ctx, k); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f *candleFanout) SetSelection(strategyID, symbol, timeframe string) error {
+	return f.primary.SetSelection(strategyID, symbol, timeframe)
+}
+
 func downloadFile(ctx context.Context, url, path string) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
