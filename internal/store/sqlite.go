@@ -624,9 +624,9 @@ func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, 
 	var side string
 	var entryTS int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, quantity, status
+		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status
 		FROM positions
-		WHERE id = ?`, id).Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS, &p.EntryPrice, &p.StopLoss, &p.Quantity, &p.Status)
+		WHERE id = ?`, id).Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS, &p.EntryPrice, &p.StopLoss, &p.TakeProfit, &p.Quantity, &p.RiskAmount, &p.Status)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, domain.ErrNotFound
 	}
@@ -738,7 +738,8 @@ func (s *Store) ClosedPositions(ctx context.Context) ([]domain.Position, error) 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, exit_price,
 			quantity, risk_amount, pnl, exit_ts, exit_reason,
-			gross_pnl, net_pnl, r_multiple, duration_ms, ambiguous_bar
+			gross_pnl, net_pnl, r_multiple, duration_ms, ambiguous_bar,
+			entry_fee, exit_fee, slippage_entry, slippage_exit
 		FROM positions
 		WHERE status = 'closed'
 		ORDER BY exit_ts`)
@@ -753,7 +754,8 @@ func (s *Store) ClosedPositions(ctx context.Context) ([]domain.Position, error) 
 		var entryTS, exitTS, durMs, ambig int64
 		if err := rows.Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS,
 			&p.EntryPrice, &p.ExitPrice, &p.Quantity, &p.RiskAmount, &p.PnL, &exitTS,
-			&p.ExitReason, &p.GrossPnL, &p.NetPnL, &p.RMultiple, &durMs, &ambig); err != nil {
+			&p.ExitReason, &p.GrossPnL, &p.NetPnL, &p.RMultiple, &durMs, &ambig,
+			&p.EntryFee, &p.ExitFee, &p.SlippageEntry, &p.SlippageExit); err != nil {
 			return nil, fmt.Errorf("escaneando posición cerrada: %w", err)
 		}
 		p.Side = domain.Direction(side)
@@ -886,14 +888,17 @@ func (s *Store) ListOrders(ctx context.Context, status string) ([]domain.Order, 
 	var out []domain.Order
 	for rows.Next() {
 		var o domain.Order
-		var side, createdAt string
+		var side, createdAt, updatedAt string
 		if err := rows.Scan(&o.ClientID, &o.ID, &o.StrategyID, &o.Symbol, &side, &o.Quantity,
 			&o.Price, &o.Status, &o.FilledPrice, &o.FilledQty, &o.StopLoss, &o.TakeProfit,
-			&createdAt, &o.UpdatedAt); err != nil {
+			&createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("escaneando orden: %w", err)
 		}
 		o.Side = domain.Direction(side)
 		o.Time = time.UnixMilli(mustParseInt(createdAt))
+		if u, err := strconv.ParseInt(updatedAt, 10, 64); err == nil && u > 0 {
+			o.UpdatedAt = time.UnixMilli(u)
+		}
 		out = append(out, o)
 	}
 	if err := rows.Err(); err != nil {

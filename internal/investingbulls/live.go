@@ -47,7 +47,7 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 	if len(main) < 30 || len(entry) < 30 {
 		return domain.SignalEvent{}, false, nil
 	}
-	ms := Analyze(candlesThrough(main, k.Start), model.Timeframes.MainSwingLeft, model.Timeframes.MainSwingRight)
+	ms := Analyze(closedCandlesBefore(main, k.Start), model.Timeframes.MainSwingLeft, model.Timeframes.MainSwingRight)
 	ep := candlesThrough(entry, k.Start)
 	if len(ep) < 30 {
 		return domain.SignalEvent{}, false, nil

@@ -26,7 +26,11 @@ func DefaultFibConfig() FibConfig {
 
 // Fibonacci describes a directional swing and its retracement/projection prices.
 // Low and High are the endpoints of the impulse leg, independent of direction.
+// Origin and Destination are the confirmed swings that produced the impulse,
+// so a setup never uses a Fibonacci from an unrelated price swing.
 type Fibonacci struct {
+	Origin      Swing
+	Destination Swing
 	Low         float64
 	High        float64
 	Direction   Trend
@@ -67,6 +71,27 @@ func NewFibonacci(low, high float64, direction Trend, cfg FibConfig) (Fibonacci,
 	f.Target1 = f.Price(cfg.Target1)
 	f.Target2 = f.Price(cfg.Target2)
 
+	return f, true
+}
+
+// NewFibonacciFromSwings builds a Fibonacci attached to the exact swing pair
+// that originated the impulse leg. The origin is the first swing (movement
+// start) and the destination is the second swing (movement end).
+func NewFibonacciFromSwings(origin, destination Swing, cfg FibConfig) (Fibonacci, bool) {
+	low, high, direction := 0.0, 0.0, TrendUnknown
+	if !origin.High && destination.High && origin.Price < destination.Price {
+		low, high, direction = origin.Price, destination.Price, TrendBullish
+	} else if origin.High && !destination.High && origin.Price > destination.Price {
+		low, high, direction = destination.Price, origin.Price, TrendBearish
+	} else {
+		return Fibonacci{}, false
+	}
+	f, ok := NewFibonacci(low, high, direction, cfg)
+	if !ok {
+		return Fibonacci{}, false
+	}
+	f.Origin = origin
+	f.Destination = destination
 	return f, true
 }
 

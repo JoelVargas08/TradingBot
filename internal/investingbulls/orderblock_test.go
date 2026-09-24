@@ -83,12 +83,15 @@ func TestUpdateBearishOrderBlockInvalidation(t *testing.T) {
 		{Open: 100, High: 105, Low: 98, Close: 103, Start: time.Unix(1, 0)},
 		{Open: 103, High: 110, Low: 102, Close: 108, Start: time.Unix(2, 0)},
 		{Open: 108, High: 109, Low: 95, Close: 97, Start: time.Unix(3, 0)},
-		{Open: 97, High: 106, Low: 96, Close: 105, Start: time.Unix(4, 0)},
+		{Open: 97, High: 112, Low: 96, Close: 111, Start: time.Unix(4, 0)}, // cierra por encima del High → inválido
 	}
 	obs := []OrderBlock{{Index: 1, High: 110, Low: 102, Direction: OrderBlockBearish, Valid: true}}
 	got := UpdateOrderBlocks(obs, ks, DefaultOrderBlockConfig())
 	if len(got) != 1 || got[0].Valid {
 		t.Fatalf("expected invalidated bearish block, got %+v", got)
+	}
+	if !got[0].Invalidated {
+		t.Fatalf("expected Invalidated=true, got %+v", got[0])
 	}
 }
 

@@ -21,6 +21,7 @@ type OrderBlock struct {
 	CreatedAt int64
 	Tested    bool
 	Valid     bool
+	Invalidated bool
 }
 
 // OrderBlockConfig makes the subjective parts of the concept tunable.
@@ -45,7 +46,9 @@ func DefaultOrderBlockConfig() OrderBlockConfig {
 // Bearish break -> nearest bullish candle.
 //
 // The impulse filter is measured from the candidate candle close to the
-// break candle close. A later learner can optimize this definition.
+// break candle close and must be DIRECTIONAL: a bullish block needs a bullish
+// impulse (break close above candidate) and a bearish block a bearish one.
+// A later learner can optimize this definition.
 func DetectOrderBlocks(ks []domain.Kline, breaks []StructureBreak, cfg OrderBlockConfig) []OrderBlock {
 	if len(ks) == 0 || len(breaks) == 0 || cfg.Lookback < 1 || cfg.MinImpulsePct < 0 {
 		return nil
@@ -68,7 +71,7 @@ func DetectOrderBlocks(ks []domain.Kline, breaks []StructureBreak, cfg OrderBloc
 			if !isOppositeCandle(c, opposite) {
 				continue
 			}
-			if !meetsImpulse(c.Close, ks[br.Index].Close, cfg.MinImpulsePct) {
+			if !meetsImpulse(c.Close, ks[br.Index].Close, cfg.MinImpulsePct, dir == OrderBlockBullish) {
 				continue
 			}
 
@@ -87,7 +90,8 @@ func DetectOrderBlocks(ks []domain.Kline, breaks []StructureBreak, cfg OrderBloc
 }
 
 // UpdateOrderBlocks marks an order block as tested when a later candle trades
-// into its range. It becomes invalid if price closes through the far boundary.
+// into its range. A bullish block becomes invalid when price closes below its
+// low, a bearish block when price closes above its high.
 // When InvalidateByWick is true, a wick through the boundary invalidates it.
 func UpdateOrderBlocks(obs []OrderBlock, ks []domain.Kline, cfg OrderBlockConfig) []OrderBlock {
 	out := make([]OrderBlock, len(obs))
@@ -102,20 +106,19 @@ func UpdateOrderBlocks(obs []OrderBlock, ks []domain.Kline, cfg OrderBlockConfig
 		for j := ob.Index + 1; j < len(ks); j++ {
 			c := ks[j]
 
+			if c.High >= ob.Low && c.Low <= ob.High {
+				ob.Tested = true
+			}
 			if ob.Direction == OrderBlockBullish {
-				if c.High >= ob.Low && c.Low <= ob.High {
-					ob.Tested = true
-				}
 				if c.Close < ob.Low || (cfg.InvalidateByWick && c.Low < ob.Low) {
 					ob.Valid = false
+					ob.Invalidated = true
 					break
 				}
 			} else {
-				if c.High >= ob.Low && c.Low <= ob.High {
-					ob.Tested = true
-				}
-				if c.Close < ob.Low || (cfg.InvalidateByWick && c.Low < ob.Low) {
+				if c.Close > ob.High || (cfg.InvalidateByWick && c.High > ob.High) {
 					ob.Valid = false
+					ob.Invalidated = true
 					break
 				}
 			}
@@ -138,13 +141,24 @@ func isOppositeCandle(c domain.Kline, opposite bool) bool {
 	return c.Close > c.Open
 }
 
-func meetsImpulse(candidateClose, breakClose, minPct float64) bool {
+// meetsImpulse verifies a directional impulse between the candidate (order
+// block) candle close and the break candle close.
+// Bullish OB: the impulse must be bullish (break close above candidate close).
+// Bearish OB: the impulse must be bearish (break close below candidate close).
+func meetsImpulse(candidateClose, breakClose, minPct float64, bullish bool) bool {
 	if candidateClose <= 0 {
 		return false
 	}
 	diff := breakClose - candidateClose
-	if diff < 0 {
-		diff = -diff
+	if bullish && diff <= 0 {
+		return false
 	}
-	return diff/candidateClose >= minPct
+	if !bullish && diff >= 0 {
+		return false
+	}
+	mag := diff
+	if mag < 0 {
+		mag = -mag
+	}
+	return mag/candidateClose >= minPct
 }

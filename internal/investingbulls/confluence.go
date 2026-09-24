@@ -32,7 +32,7 @@ type Setup struct {
 	Direction       domain.Direction
 	Trend           Trend
 	FibZone         int
-	FibonacciPrice  float64
+	ReferencePrice  float64
 	ImbalanceIndex  int
 	OrderBlockIndex int
 	Score           int
@@ -100,7 +100,7 @@ func EvaluateConfluence(
 			Direction:       direction,
 			Trend:           structure.Trend,
 			FibZone:         zone,
-			FibonacciPrice:  c.Close,
+			ReferencePrice:  c.Close,
 			ImbalanceIndex:  imbIdx,
 			OrderBlockIndex: obIdx,
 			Score:           score,

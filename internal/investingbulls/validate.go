@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/observability"
 )
 
 // ValidateAndPromote performs walk-forward validation for a persisted candidate.
@@ -21,6 +22,7 @@ func ValidateAndPromote(ctx context.Context, store LearnerStore, strategyID, sym
 	if limit <= 0 {
 		limit = 5000
 	}
+	observability.Log(observability.OOSStarted, "strategy", strategyID, "symbol", symbol, "timeframe", timeframe)
 
 	strategy, err := store.GetStrategy(ctx, strategyID)
 	if err != nil {
@@ -57,6 +59,7 @@ func ValidateAndPromote(ctx context.Context, store LearnerStore, strategyID, sym
 
 	wf, err := WalkForward(ks, cfg, wcfg)
 	if err != nil {
+		observability.Log(observability.OOSCompleted, "strategy", strategyID, "status", "error", "reason", err.Error())
 		return domain.BacktestResult{}, err
 	}
 
@@ -91,5 +94,12 @@ func ValidateAndPromote(ctx context.Context, store LearnerStore, strategyID, sym
 		return domain.BacktestResult{}, fmt.Errorf("oos: actualizando estado de estrategia: %w", err)
 	}
 
+	if wf.Passed {
+		observability.Log(observability.StrategyActivated, "strategy", strategyID, "symbol", symbol, "timeframe", timeframe, "trades", wf.TotalTrades, "profit_factor", wf.ProfitFactor, "return_pct", wf.TotalReturn*100)
+		observability.Log(observability.OOSCompleted, "strategy", strategyID, "status", "passed", "folds", len(wf.Folds))
+	} else {
+		observability.Log(observability.StrategyRejected, "strategy", strategyID, "symbol", symbol, "timeframe", timeframe, "reason", wf.Reason)
+		observability.Log(observability.OOSCompleted, "strategy", strategyID, "status", "rejected", "reason", wf.Reason)
+	}
 	return bt, nil
 }

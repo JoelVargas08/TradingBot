@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/observability"
 )
 
 // LearnerStore is the persistence boundary used by the learning workflow.
@@ -28,6 +29,7 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 	if limit <= 0 {
 		limit = 5000
 	}
+	observability.Log(observability.LearnStarted, "symbol", symbol, "timeframe", timeframe, "bars", limit)
 
 	ks, err := store.RecentCandles(ctx, symbol, timeframe, limit)
 	if err != nil {
@@ -35,6 +37,7 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 	}
 	ks = closedCandles(ks)
 	if len(ks) < 100 {
+		observability.Log(observability.LearnCompleted, "symbol", symbol, "timeframe", timeframe, "status", "rejected", "reason", "histórico insuficiente")
 		return domain.Strategy{}, LearnResult{}, fmt.Errorf("learn: histórico cerrado insuficiente: %d velas", len(ks))
 	}
 
@@ -42,9 +45,11 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 	cfg.Timeframe = timeframe
 	result, err := Learn(ks, cfg)
 	if err != nil {
+		observability.Log(observability.LearnCompleted, "symbol", symbol, "timeframe", timeframe, "status", "error", "reason", err.Error())
 		return domain.Strategy{}, result, err
 	}
 	if result.SpecJSON == "" {
+		observability.Log(observability.LearnCompleted, "symbol", symbol, "timeframe", timeframe, "status", "no_candidate", "reason", result.Reason)
 		return domain.Strategy{}, result, fmt.Errorf("learn: no se generó candidato: %s", result.Reason)
 	}
 
@@ -70,8 +75,14 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 		Trades: result.Model.Trades,
 		WinRate: result.Model.WinRate,
 		ProfitFactor: result.Model.ProfitFactor,
+		Sharpe: result.Model.Sharpe,
+		Sortino: result.Model.Sortino,
 		MaxDrawdown: result.Model.MaxDrawdown,
 		TotalReturn: result.Model.TotalReturn,
+		AverageWin: result.Model.AverageWin,
+		AverageLoss: result.Model.AverageLoss,
+		Expectancy: result.Model.Expectancy,
+		FeesPaid: result.Model.FeesPaid,
 		TestBars: len(ks),
 		Passed: result.Accepted,
 		Folds: 0,
@@ -83,6 +94,7 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 		return domain.Strategy{}, result, fmt.Errorf("learn: guardando métricas: %w", err)
 	}
 
+	observability.Log(observability.LearnCompleted, "strategy", strategy.ID, "symbol", symbol, "timeframe", timeframe, "trades", result.Model.Trades, "win_rate", result.Model.WinRate, "profit_factor", result.Model.ProfitFactor, "sharpe", result.Model.Sharpe, "return_pct", result.Model.TotalReturn*100)
 	return strategy, result, nil
 }
 

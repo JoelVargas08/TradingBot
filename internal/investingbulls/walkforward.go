@@ -57,6 +57,9 @@ func WalkForward(ks []domain.Kline, cfg LearnConfig, wcfg WalkForwardConfig) (Wa
 	if len(ks) < 100 {
 		return WalkForwardResult{}, fmt.Errorf("walk-forward: se necesitan al menos 100 velas, hay %d", len(ks))
 	}
+	if err := ValidateKlines(ks, cfg.Symbol, cfg.Timeframe); err != nil {
+		return WalkForwardResult{}, fmt.Errorf("walk-forward: datos inválidos: %w", err)
+	}
 	if wcfg.TrainPct+wcfg.OOSPct+(float64(wcfg.Folds-1)*wcfg.StepPct) > 1.000001 {
 		return WalkForwardResult{}, fmt.Errorf("walk-forward: ventanas exceden el histórico disponible")
 	}
@@ -102,6 +105,8 @@ func WalkForward(ks []domain.Kline, cfg LearnConfig, wcfg WalkForwardConfig) (Wa
 			Trades: m.trades,
 			WinRate: m.winRate,
 			ProfitFactor: m.profitFactor,
+			Sharpe: m.sharpe,
+			Sortino: m.sortino,
 			MaxDrawdown: m.maxDrawdown,
 			TotalReturn: m.totalReturn,
 			Bars: oosEnd-trainEnd,

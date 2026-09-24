@@ -17,7 +17,7 @@ func TestNormalizeWalkForwardConfig(t *testing.T) {
 func TestWalkForwardRejectsShortHistory(t *testing.T) {
 	ks := make([]domain.Kline, 99)
 	for i := range ks {
-		ks[i] = domain.Kline{Start: time.Unix(int64(i), 0), Open: 100, High: 101, Low: 99, Close: 100}
+		ks[i] = domain.Kline{Start: time.Unix(int64(i), 0), Open: 100, High: 101, Low: 99, Close: 100, Closed: true}
 	}
 	_, err := WalkForward(ks, DefaultLearnConfig(), DefaultWalkForwardConfig())
 	if err == nil {
@@ -28,7 +28,7 @@ func TestWalkForwardRejectsShortHistory(t *testing.T) {
 func TestWalkForwardWindowValidation(t *testing.T) {
 	ks := make([]domain.Kline, 200)
 	for i := range ks {
-		ks[i] = domain.Kline{Start: time.Unix(int64(i), 0), Open: 100, High: 101, Low: 99, Close: 100}
+		ks[i] = domain.Kline{Start: time.Unix(int64(i), 0), Open: 100, High: 101, Low: 99, Close: 100, Closed: true}
 	}
 	cfg := DefaultWalkForwardConfig()
 	cfg.TrainPct = 0.80

@@ -1,6 +1,8 @@
 package investingbulls
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -8,6 +10,10 @@ import (
 
 	"tradingview-bot/internal/domain"
 )
+
+// CodeVersion identifica la versión del código que produjo un modelo.
+// Se persiste junto al modelo para reproducibilidad (sec 16).
+const CodeVersion = "investing-bulls/1.0.0"
 
 type LearnConfig struct {
 	Symbol string
@@ -44,11 +50,27 @@ type LearnedModel struct {
 	Fib FibConfig `json:"fib"`
 	Confluence ConfluenceConfig `json:"confluence"`
 	TradePlan TradePlanConfig `json:"trade_plan"`
+	InitialBalance float64 `json:"initial_balance"`
+	FeePct float64 `json:"fee_pct"`
+	SlippagePct float64 `json:"slippage_pct"`
+	MinTrades int `json:"min_trades"`
+	FinalBalance float64 `json:"final_balance"`
 	Trades int `json:"trades"`
 	WinRate float64 `json:"win_rate"`
 	ProfitFactor float64 `json:"profit_factor"`
+	Sharpe float64 `json:"sharpe"`
+	Sortino float64 `json:"sortino"`
 	TotalReturn float64 `json:"total_return"`
 	MaxDrawdown float64 `json:"max_drawdown"`
+	AverageWin float64 `json:"average_win"`
+	AverageLoss float64 `json:"average_loss"`
+	Expectancy float64 `json:"expectancy"`
+	FeesPaid float64 `json:"fees_paid"`
+	DatasetHash string `json:"dataset_hash"`
+	DatasetStart time.Time `json:"dataset_start"`
+	DatasetEnd time.Time `json:"dataset_end"`
+	DatasetBars int `json:"dataset_bars"`
+	CodeVersion string `json:"code_version"`
 	LearnedAt time.Time `json:"learned_at"`
 }
 
@@ -68,6 +90,7 @@ type LearnedTrade struct {
 	ExitBar int
 	ExitPrice float64
 	PnL float64
+	FeePct float64
 	Reason string
 	Setup SetupType
 }
@@ -80,6 +103,10 @@ func Learn(ks []domain.Kline, cfg LearnConfig) (LearnResult, error) {
 	if len(ks) < 100 {
 		return LearnResult{}, fmt.Errorf("learn: se necesitan al menos 100 velas, hay %d", len(ks))
 	}
+	if err := ValidateKlines(ks, cfg.Symbol, cfg.Timeframe); err != nil {
+		return LearnResult{}, fmt.Errorf("learn: datos inválidos: %w", err)
+	}
+	digest := datasetDigest(ks)
 
 	distances := []float64{cfg.Confluence.MaxZoneDistancePct * 0.5, cfg.Confluence.MaxZoneDistancePct, cfg.Confluence.MaxZoneDistancePct * 1.5}
 	stops := []float64{0.015, cfg.TradePlan.MaxStopPct}
@@ -114,10 +141,19 @@ func Learn(ks []domain.Kline, cfg LearnConfig) (LearnResult, error) {
 					SwingLeft: cfg.SwingLeft, SwingRight: cfg.SwingRight,
 					Fib: cfg.Fib, Confluence: testCfg.Confluence,
 					TradePlan: testCfg.TradePlan,
+					InitialBalance: cfg.InitialBalance, FeePct: cfg.FeePct,
+					SlippagePct: cfg.SlippagePct, MinTrades: cfg.MinTrades,
+					FinalBalance: metrics.finalBalance,
 					Trades: metrics.trades, WinRate: metrics.winRate,
 					ProfitFactor: metrics.profitFactor,
+					Sharpe: metrics.sharpe, Sortino: metrics.sortino,
 					TotalReturn: metrics.totalReturn,
 					MaxDrawdown: metrics.maxDrawdown,
+					AverageWin: metrics.averageWin, AverageLoss: metrics.averageLoss,
+					Expectancy: metrics.expectancy, FeesPaid: metrics.feesPaid,
+					DatasetHash: digest,
+					DatasetStart: ks[0].Start, DatasetEnd: ks[len(ks)-1].Start,
+					DatasetBars: len(ks), CodeVersion: CodeVersion,
 					LearnedAt: time.Now().UTC(),
 				}
 			}
@@ -184,8 +220,9 @@ func generateAndSimulateFrom(ks []domain.Kline, cfg LearnConfig, evaluationStart
 			if hitStop || hitTarget {
 				exit, reason := stop, "stop"
 				if hitTarget && !hitStop { exit, reason = target, "take" }
+				exit = applyExitSlippage(exit, open.Direction, cfg.SlippagePct)
 				open.ExitBar, open.ExitPrice, open.Reason = i, exit, reason
-				open.PnL = tradePnL(open.Direction, open.EntryPrice, exit) - 2*cfg.FeePct - 2*cfg.SlippagePct
+				open.PnL = tradePnL(open.Direction, open.EntryPrice, exit) - 2*cfg.FeePct
 				out = append(out, open)
 				inTrade = false
 			}
@@ -220,6 +257,7 @@ func generateAndSimulateFrom(ks []domain.Kline, cfg LearnConfig, evaluationStart
 			Direction: setup.Direction,
 			EntryBar: entryBar,
 			EntryPrice: entry * entryMultiplier(setup.Direction, cfg.SlippagePct),
+			FeePct: cfg.FeePct,
 			Setup: inferSetupType(structure, i, setup.Direction),
 		}
 		stop, target = plan.StopLoss, plan.TakeProfit
@@ -228,8 +266,9 @@ func generateAndSimulateFrom(ks []domain.Kline, cfg LearnConfig, evaluationStart
 
 	if inTrade {
 		last := ks[len(ks)-1]
-		open.ExitBar, open.ExitPrice, open.Reason = len(ks)-1, last.Close, "end"
-		open.PnL = tradePnL(open.Direction, open.EntryPrice, last.Close) - 2*cfg.FeePct - 2*cfg.SlippagePct
+		exit := applyExitSlippage(last.Close, open.Direction, cfg.SlippagePct)
+		open.ExitBar, open.ExitPrice, open.Reason = len(ks)-1, exit, "end"
+		open.PnL = tradePnL(open.Direction, open.EntryPrice, exit) - 2*cfg.FeePct
 		out = append(out, open)
 	}
 	return out
@@ -238,12 +277,12 @@ func generateAndSimulateFrom(ks []domain.Kline, cfg LearnConfig, evaluationStart
 func fibonacciFromLatestImpulse(s Structure, cfg FibConfig) (Fibonacci, bool) {
 	if len(s.Swings) < 2 { return Fibonacci{}, false }
 	for i := len(s.Swings)-1; i > 0; i-- {
-		a, b := s.Swings[i-1], s.Swings[i]
-		if s.Trend == TrendBullish && !a.High && b.High && a.Price < b.Price {
-			return NewFibonacci(a.Price, b.Price, TrendBullish, cfg)
+		origin, destination := s.Swings[i-1], s.Swings[i]
+		if s.Trend == TrendBullish && !origin.High && destination.High {
+			return NewFibonacciFromSwings(origin, destination, cfg)
 		}
-		if s.Trend == TrendBearish && a.High && !b.High && a.Price > b.Price {
-			return NewFibonacci(a.Price, b.Price, TrendBearish, cfg)
+		if s.Trend == TrendBearish && origin.High && !destination.High {
+			return NewFibonacciFromSwings(origin, destination, cfg)
 		}
 	}
 	return Fibonacci{}, false
@@ -274,9 +313,61 @@ func buildLearningPlan(setup Setup, fib Fibonacci, entry float64, structure Stru
 	return TradePlan{}, false
 }
 
+// ValidateKlines valida la integridad del histórico antes de aprender (sec 43).
+// Datos corruptos provocan error (rechazo), no aprendizaje silencioso.
+func ValidateKlines(ks []domain.Kline, symbol, timeframe string) error {
+	for i, k := range ks {
+		if symbol != "" && k.Symbol != "" && k.Symbol != symbol {
+			return fmt.Errorf("vela %d con symbol %q, esperado %q", i, k.Symbol, symbol)
+		}
+		if timeframe != "" && k.Timeframe != "" && k.Timeframe != timeframe {
+			return fmt.Errorf("vela %d con timeframe %q, esperado %q", i, k.Timeframe, timeframe)
+		}
+		if !k.Closed {
+			return fmt.Errorf("vela %d (%s) en formación: el aprendizaje usa solo velas cerradas", i, k.Start.Format(time.RFC3339))
+		}
+		if k.High < k.Low {
+			return fmt.Errorf("vela %d con high < low (high=%v low=%v)", i, k.High, k.Low)
+		}
+		if k.Open < k.Low || k.Open > k.High {
+			return fmt.Errorf("vela %d con open fuera de rango [low,high]: open=%v", i, k.Open)
+		}
+		if k.Close < k.Low || k.Close > k.High {
+			return fmt.Errorf("vela %d con close fuera de rango [low,high]: close=%v", i, k.Close)
+		}
+		if k.Volume < 0 {
+			return fmt.Errorf("vela %d con volume negativo: %v", i, k.Volume)
+		}
+		if i > 0 && !ks[i-1].Start.Before(k.Start) {
+			return fmt.Errorf("timestamps desordenados o duplicados en la vela %d (%v)", i, k.Start.Format(time.RFC3339))
+		}
+	}
+	return nil
+}
+
+// datasetDigest crea un hash determinista del histórico exacto utilizado,
+// de modo que un modelo quede ligado a los datos con los que fue entrenado.
+func datasetDigest(ks []domain.Kline) string {
+	h := sha256.New()
+	for _, k := range ks {
+		fmt.Fprintf(h, "%d|%s|%s|%.12f|%.12f|%.12f|%.12f|%.12f|%v\n",
+			k.Start.UnixNano(), k.Timeframe, k.Symbol, k.Open, k.High, k.Low, k.Close, k.Volume, k.Closed)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// entryMultiplier ajusta el precio de entrada por slippage UNA sola vez:
+// los compradores pagan más caro, los vendedores reciben menos.
 func entryMultiplier(direction domain.Direction, slippage float64) float64 {
 	if direction == domain.DirectionBuy { return 1 + slippage }
 	return 1 - slippage
+}
+
+// applyExitSlippage ajusta el precio de salida por slippage UNA sola vez:
+// salir de un long es vender (menos), salir de un short es comprar (más).
+func applyExitSlippage(exit float64, direction domain.Direction, slippage float64) float64 {
+	if direction == domain.DirectionBuy { return exit * (1 - slippage) }
+	return exit * (1 + slippage)
 }
 
 func tradePnL(direction domain.Direction, entry, exit float64) float64 {
@@ -289,27 +380,75 @@ type learnMetrics struct {
 	trades int
 	winRate float64
 	profitFactor float64
+	sharpe float64
+	sortino float64
 	totalReturn float64
 	maxDrawdown float64
 	finalBalance float64
+	averageWin float64
+	averageLoss float64
+	expectancy float64
+	grossProfit float64
+	grossLoss float64
+	feesPaid float64
+	wins int
+	losses int
 }
 
 func tradeMetrics(trades []LearnedTrade, initial float64) learnMetrics {
 	equity, peak := initial, initial
 	maxDD := 0.0
-	wins := 0
-	var gains, losses float64
+	wins, losses := 0, 0
+	var gains, lossSum float64
+	pnls := make([]float64, 0, len(trades))
+	feesPaid := 0.0
 	for _, t := range trades {
+		pnls = append(pnls, t.PnL)
+		if t.FeePct > 0 { feesPaid += 2 * t.FeePct * equity }
 		equity *= 1 + t.PnL
-		if t.PnL > 0 { wins++; gains += t.PnL } else { losses -= t.PnL }
+		if t.PnL > 0 { wins++; gains += t.PnL } else { losses++; lossSum -= t.PnL }
 		if equity > peak { peak = equity }
 		if dd := (peak-equity)/peak; dd > maxDD { maxDD = dd }
 	}
 	wr := 0.0
 	if len(trades) > 0 { wr = float64(wins)/float64(len(trades)) }
 	pf := 0.0
-	if losses > 0 { pf = gains/losses } else if gains > 0 { pf = math.Inf(1) }
-	return learnMetrics{trades: len(trades), winRate: wr, profitFactor: pf, totalReturn: equity/initial-1, maxDrawdown: maxDD, finalBalance: equity}
+	if lossSum > 0 { pf = gains/lossSum } else if gains > 0 { pf = math.Inf(1) }
+
+	metrics := learnMetrics{
+		trades: len(trades), winRate: wr, profitFactor: pf,
+		totalReturn: equity/initial-1, maxDrawdown: maxDD,
+		finalBalance: equity, wins: wins, losses: losses,
+		grossProfit: gains, grossLoss: lossSum, feesPaid: feesPaid,
+	}
+	if wins > 0 { metrics.averageWin = gains / float64(wins) }
+	if losses > 0 { metrics.averageLoss = lossSum / float64(losses) }
+	metrics.expectancy = wr*metrics.averageWin - (1-wr)*metrics.averageLoss
+	metrics.sharpe, metrics.sortino = returnsStats(pnls)
+	return metrics
+}
+
+// returnsStats calcula Sharpe y Sortino por operación (media / desviación,
+// y media / desviación de las pérdidas respectivamente), sin anualizar.
+func returnsStats(pnls []float64) (sharpe, sortino float64) {
+	n := len(pnls)
+	if n == 0 { return 0, 0 }
+	mean, sd := 0.0, 0.0
+	for _, p := range pnls { mean += p }
+	mean /= float64(n)
+	for _, p := range pnls { d := p - mean; sd += d * d }
+	sd = math.Sqrt(sd / float64(n))
+	if sd > 0 { sharpe = mean / sd }
+
+	down, count := 0.0, 0
+	for _, p := range pnls {
+		if p < 0 { down += p * p; count++ }
+	}
+	if count > 0 {
+		down = math.Sqrt(down / float64(count))
+		if down > 0 { sortino = mean / down }
+	}
+	return sharpe, sortino
 }
 
 func inferSetupType(s Structure, index int, dir domain.Direction) SetupType {
