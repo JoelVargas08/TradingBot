@@ -304,6 +304,8 @@ type Decision struct {
 	RiskAmount float64
 	Drawdown   float64
 	OpenCount  int
+	DailyLoss  float64 // pérdida realizada hoy (negativa); 0 si no hay
+	Killed     bool    // true si el kill-switch está activo
 }
 
 // RiskDecider decide si una señal puede ejecutarse y con qué parámetros.
@@ -338,6 +340,7 @@ type Broker interface {
 // Order es una orden enviada a un broker externo.
 type Order struct {
 	Symbol     string
+	Timeframe  string
 	Side       Direction
 	Quantity   float64
 	Price      float64 // límite; 0 = mercado
