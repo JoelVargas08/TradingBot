@@ -407,20 +407,20 @@ func main() {
 		}
 		marketDataService = ingest.NewMarketDataService(weexProvider, sqliteStore, weexSink, cfg.WeexPriceType, cfg.WeexBackfillBars)
 		marketCommands = handlers.NewMarketCommands(telegram, marketDataService)
-		// Mantener en vivo los timeframes MTF de Investing Bulls (15m/5m)
-		// además del timeframe primario, para el pipeline 1H→15m→5m.
-		if investingBullsLive != nil {
-			var extras []string
-			for _, tf := range []string{cfg.IBEntryTimeframe, cfg.IBConfirmTimeframe} {
-				tf = strings.TrimSpace(tf)
-				if tf != "" && !strings.EqualFold(tf, cfg.TradingTimeframe) {
-					extras = append(extras, tf)
-				}
+		// Mantener siempre disponibles los timeframes MTF de Investing Bulls
+		// (15m/5m) además del timeframe primario. El aprendizaje (/learnibmtf)
+		// puede ejecutarse antes de activar una estrategia LIVE, por lo que el
+		// backfill MTF no debe depender de investingBullsLive != nil.
+		var extras []string
+		for _, tf := range []string{cfg.IBEntryTimeframe, cfg.IBConfirmTimeframe} {
+			tf = strings.TrimSpace(tf)
+			if tf != "" && !strings.EqualFold(tf, cfg.TradingTimeframe) {
+				extras = append(extras, tf)
 			}
-			if len(extras) > 0 {
-				if err := marketDataService.SetTimeframes(extras); err != nil {
-					log.Fatalf("timeframes MTF inválidos (%v): %v", extras, err)
-				}
+		}
+		if len(extras) > 0 {
+			if err := marketDataService.SetTimeframes(extras); err != nil {
+				log.Fatalf("timeframes MTF inválidos (%v): %v", extras, err)
 			}
 		}
 		if err := marketDataService.SetSelection("chandelier", cfg.TradingSymbol, cfg.TradingTimeframe); err != nil {
