@@ -817,7 +817,7 @@ func runInvestingBullsLearn(ctx context.Context, store investingbulls.LearnerSto
 		telegram.SendMessage(chatID, "❌ Learn: "+err.Error())
 		return
 	}
-	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato guardado: %s\nTrades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nEstado: candidate. Usa /validateib %s %s %s", strategy.ID, result.Model.Trades, result.Model.WinRate*100, result.Model.ProfitFactor, result.Model.TotalReturn*100, result.Model.MaxDrawdown*100, strategy.ID, symbol, timeframe))
+	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato guardado: %s\nTrades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nConfluencia: %s | componentes: %s | zona: %.2f%% | stop: %.2f%%\nConfigs evaluadas: %d | Estado: candidate. Usa /validateib %s %s %s", strategy.ID, result.Model.Trades, result.Model.WinRate*100, result.Model.ProfitFactor, result.Model.TotalReturn*100, result.Model.MaxDrawdown*100, result.Model.Confluence.Mode, result.Model.ConfluenceComponents, result.Model.Confluence.MaxZoneDistancePct*100, result.Model.TradePlan.MaxStopPct*100, result.Model.ConfigsEvaluated, strategy.ID, symbol, timeframe))
 }
 
 // runInvestingBullsValidate runs walk-forward OOS and changes the strategy
@@ -914,7 +914,13 @@ func runInvestingBullsLearnMTF(ctx context.Context, store investingbulls.Learner
 		telegram.SendMessage(chatID, "❌ Learn MTF: "+err.Error())
 		return
 	}
-	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nSetups: %v\nUsa /validateibmtf %s %s", st.ID, len(learned.Trades), learned.Model.Base.ProfitFactor, learned.Model.Base.TotalReturn*100, learned.Model.Base.MaxDrawdown*100, learned.Model.AllowedSetups, st.ID, symbol))
+	// El motivo de omisión de 5m debe verse en Telegram: si el modelo se aprendió
+	// sin confirmación es un hecho relevante para interpretar el backtest.
+	confirmNote := ""
+	if learned.Model.ConfirmSkipReason != "" {
+		confirmNote = "\n⚠️ " + learned.Model.ConfirmSkipReason
+	}
+	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nConfluencia: %s | componentes: %s | zona: %.2f%% | stop: %.2f%%\nSetups: %v%s\nUsa /validateibmtf %s %s", st.ID, len(learned.Trades), learned.Model.Base.ProfitFactor, learned.Model.Base.TotalReturn*100, learned.Model.Base.MaxDrawdown*100, learned.Model.Base.Confluence.Mode, learned.Model.Base.ConfluenceComponents, learned.Model.Base.Confluence.MaxZoneDistancePct*100, learned.Model.Base.TradePlan.MaxStopPct*100, learned.Model.AllowedSetups, confirmNote, st.ID, symbol))
 }
 
 func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string, appCfg *config.Config) {

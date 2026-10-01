@@ -92,11 +92,18 @@ func (m *Monitor) Check(s Snapshot) Report {
 		reasons = append(reasons, fmt.Sprintf("feed atrasado (última actualización hace %s)", s.LastUpdate.Round(time.Millisecond).UTC().Format("15:04:05.000")))
 	}
 
+	// Recent ya viene en orden cronológico ascendente; LastCandle sólo se
+	// anexa si es estrictamente posterior a la última vela de Recent. Si no,
+	// insertarla al principio generaría un retroceso temporal artificial
+	// ("timestamps no monótonos") y duplicaría la última vela.
 	all := make([]Candle, 0, len(s.Recent)+1)
-	if !s.LastCandle.Start.IsZero() {
-		all = append(all, s.LastCandle)
-	}
 	all = append(all, s.Recent...)
+
+	if !s.LastCandle.Start.IsZero() {
+		if len(all) == 0 || s.LastCandle.Start.After(all[len(all)-1].Start) {
+			all = append(all, s.LastCandle)
+		}
+	}
 
 	var newest time.Time
 	prev := time.Time{}

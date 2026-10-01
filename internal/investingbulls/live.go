@@ -93,17 +93,8 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 	imbs := UpdateImbalances(DetectImbalances(ep, ic), ep, ic)
 	bc := DefaultOrderBlockConfig()
 	blocks := UpdateOrderBlocks(DetectOrderBlocks(ep, es.Breaks, bc), ep, bc)
-	setups := EvaluateConfluence(ep, es, fib, imbs, blocks, model.Base.Confluence)
-	valid := false
-	var matched Setup
-	for _, s := range setups {
-		if s.Index == len(ep)-1 && s.Direction == candidate.Direction && s.Valid {
-			matched = s
-			valid = true
-			break
-		}
-	}
-	if !valid {
+	matched, valid := EvaluateConfluenceAt(ep, len(ep)-1, es, fib, imbs, blocks, model.Base.Confluence)
+	if !valid || !matched.Valid || matched.Direction != candidate.Direction {
 		return domain.SignalEvent{}, false, nil
 	}
 	plan, ok := buildLearningPlan(matched, fib, k.Close, es, blocks, model.Base.TradePlan)

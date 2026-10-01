@@ -65,18 +65,18 @@ func ValidateAndPromote(ctx context.Context, store LearnerStore, strategyID, sym
 
 	now := time.Now().UTC()
 	bt := domain.BacktestResult{
-		StrategyID: strategyID,
-		Trades: wf.TotalTrades,
-		WinRate: wf.WinRate,
+		StrategyID:   strategyID,
+		Trades:       wf.TotalTrades,
+		WinRate:      wf.WinRate,
 		ProfitFactor: wf.ProfitFactor,
-		MaxDrawdown: wf.MaxDrawdown,
-		TotalReturn: wf.TotalReturn,
-		TestBars: wf.EvaluatedBars,
-		Passed: wf.Passed,
-		Folds: len(wf.Folds),
-		OOSFolds: wf.Folds,
-		Status: "oos_validated",
-		MetricsAt: now,
+		MaxDrawdown:  wf.MaxDrawdown,
+		TotalReturn:  wf.TotalReturn,
+		TestBars:     wf.EvaluatedBars,
+		Passed:       wf.Passed,
+		Folds:        len(wf.Folds),
+		OOSFolds:     wf.Folds,
+		Status:       "oos_validated",
+		MetricsAt:    now,
 	}
 	if err := store.SaveBacktest(ctx, bt); err != nil {
 		return domain.BacktestResult{}, fmt.Errorf("oos: guardando métricas: %w", err)

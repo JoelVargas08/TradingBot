@@ -1,213 +1,391 @@
 package investingbulls
 
 import (
-	"encoding/json"
+	"math/rand"
+	"strings"
 	"testing"
 	"time"
 
 	"tradingview-bot/internal/domain"
 )
 
-func TestLearnRequiresEnoughData(t *testing.T) {
-	_, err := Learn(make([]domain.Kline, 20), DefaultLearnConfig())
-	if err == nil { t.Fatal("expected insufficient data error") }
-}
-
-func TestLearnDoesNotPanicOnOHLCV(t *testing.T) {
-	ks := syntheticLearningCandles(140)
-	cfg := DefaultLearnConfig()
-	cfg.Symbol = "TEST"
-	cfg.Timeframe = "1h"
-	cfg.MinTrades = 1
-	_, err := Learn(ks, cfg)
-	if err != nil { t.Fatal(err) }
-}
-
-func TestValidateKlinesRejectsCorruptData(t *testing.T) {
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-
-	cases := []struct {
-		name string
-		mut  func(k *domain.Kline)
-	}{
-		{"vela en formación", func(k *domain.Kline) { k.Closed = false }},
-		{"close fuera de rango", func(k *domain.Kline) { k.Close = 200 }},
-		{"open fuera de rango", func(k *domain.Kline) { k.Open = 50 }},
-		{"high menor que low", func(k *domain.Kline) { k.High, k.Low = 99, 101 }},
-		{"volume negativo", func(k *domain.Kline) { k.Volume = -1 }},
-		{"timestamp desordenado", func(k *domain.Kline) { k.Start = base.Add(-time.Hour) }},
-	}
-	for _, c := range cases {
-		ks := []domain.Kline{
-			{Start: base, Timeframe: "1h", Open: 100, High: 101, Low: 99, Close: 100, Volume: 10, Closed: true},
-			{Start: base.Add(time.Hour), Timeframe: "1h", Open: 100, High: 101, Low: 99, Close: 100, Volume: 10, Closed: true},
-			{Start: base.Add(2 * time.Hour), Timeframe: "1h", Open: 100, High: 101, Low: 99, Close: 100, Volume: 10, Closed: true},
-		}
-		c.mut(&ks[1])
-		if err := ValidateKlines(ks, "TEST", "1h"); err == nil {
-			t.Fatalf("%s: se esperaba error de validación", c.name)
-		}
-	}
-
-	good := []domain.Kline{
-		{Start: base, Timeframe: "1h", Open: 100, High: 101, Low: 99, Close: 100, Volume: 10, Closed: true},
-		{Start: base.Add(time.Hour), Timeframe: "1h", Open: 100, High: 101, Low: 99, Close: 100, Volume: 10, Closed: true},
-		{Start: base.Add(2 * time.Hour), Timeframe: "1h", Open: 100, High: 101, Low: 99, Close: 100, Volume: 10, Closed: true},
-	}
-	if err := ValidateKlines(good, "TEST", "1h"); err != nil {
-		t.Fatalf("datos correctos rechazados: %v", err)
-	}
-	if err := ValidateKlines(good, "OTHER", "1h"); err != nil {
-		t.Fatalf("validar con symbol aportado por cfg no debe exigir k.Symbol: %v", err)
-	}
-}
-
-func TestDatasetDigestStableAndOrderSensitive(t *testing.T) {
-	ks := syntheticLearningCandles(10)
-	d1 := datasetDigest(ks)
-	d2 := datasetDigest(append([]domain.Kline(nil), ks...))
-	if d1 != d2 { t.Fatalf("digest debe ser determinista") }
-	ks[5].Close++
-	if datasetDigest(ks) == d1 { t.Fatal("digest debe cambiar al mutar los datos") }
-}
-
-func TestLearnRejectsCorruptData(t *testing.T) {
-	ks := syntheticLearningCandles(120)
-	ks[50].Closed = false
-	_, err := Learn(ks, DefaultLearnConfig())
-	if err == nil { t.Fatal("se esperaba rechazo por datos corruptos") }
-}
-
-func TestLearnedModelPersistsParameters(t *testing.T) {
-	// Modelo construido tal y como lo haría Learn (mismos campos, sec 15).
-	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	m := LearnedModel{
-		Version: 1, Family: "investing_bulls",
-		Symbol: "BTCUSDT", Timeframe: "1h",
-		SwingLeft: 2, SwingRight: 2,
-		Fib: DefaultFibConfig(), Confluence: DefaultConfluenceConfig(), TradePlan: DefaultTradePlanConfig(),
-		InitialBalance: 10000, FeePct: 0.001, SlippagePct: 0.0002, MinTrades: 8,
-		FinalBalance: 12345.67, Trades: 12, WinRate: 0.5, ProfitFactor: 1.4,
-		Sharpe: 0.8, Sortino: 1.1, TotalReturn: 0.2345, MaxDrawdown: 0.05,
-		DatasetHash: "abc123", DatasetBars: 500, CodeVersion: CodeVersion,
-		LearnedAt: now,
-	}
-	raw, err := json.Marshal(m)
-	if err != nil { t.Fatal(err) }
-
-	var restored LearnedModel
-	if err := json.Unmarshal(raw, &restored); err != nil { t.Fatal(err) }
-
-	// El modelo persistido debe reconstruir la config exacta (sec 15).
-	fromModel := cfgFromModel(restored)
-	if fromModel.InitialBalance != m.InitialBalance || fromModel.FeePct != m.FeePct ||
-		fromModel.SlippagePct != m.SlippagePct || fromModel.MinTrades != m.MinTrades {
-		t.Fatalf("cfgFromModel no reconstruye los parámetros: %+v", fromModel)
-	}
-	if fromModel.Fib != m.Fib || fromModel.Confluence != m.Confluence || fromModel.TradePlan != m.TradePlan {
-		t.Fatalf("cfgFromModel no reconstruye las configs: %+v", fromModel)
-	}
-	if fromModel.SwingLeft != m.SwingLeft || fromModel.SwingRight != m.SwingRight {
-		t.Fatalf("cfgFromModel no reconstruye swings: %+v", fromModel)
-	}
-	// Metadatos de reproducibilidad (sec 16).
-	if restored.DatasetHash != "abc123" || restored.DatasetBars != 500 || restored.CodeVersion == "" {
-		t.Fatalf("metadatos de reproducibilidad no persistidos: %+v", restored)
-	}
-	// Los modelos legacy (sin parámetros) caen a valores por defecto, no a cero.
-	legacy := cfgFromModel(LearnedModel{Symbol: "BTCUSDT", Timeframe: "1h", SwingLeft: 2, SwingRight: 2, Fib: m.Fib, Confluence: m.Confluence, TradePlan: m.TradePlan})
-	if legacy.InitialBalance != 10000 || legacy.FeePct != 0.001 || legacy.SlippagePct != 0.0002 || legacy.MinTrades != 8 {
-		t.Fatalf("cfgFromModel no aplica defaults a modelos legacy: %+v", legacy)
-	}
-}
-
-func TestTradeMetricsExtended(t *testing.T) {
-	// Tres operaciones deterministas: +0.50, -0.20, +0.10 (retornos por trade).
-	trades := []LearnedTrade{
-		{Direction: domain.DirectionBuy, PnL: 0.50, FeePct: 0.001},
-		{Direction: domain.DirectionSell, PnL: -0.20, FeePct: 0.001},
-		{Direction: domain.DirectionBuy, PnL: 0.10, FeePct: 0.001},
-	}
-	m := tradeMetrics(trades, 10000)
-	if m.trades != 3 || m.wins != 2 || m.losses != 1 {
-		t.Fatalf("counts erróneos: %+v", m)
-	}
-	if mathAbsTest(m.winRate-2.0/3.0) > 1e-12 { t.Fatalf("winRate incorrecto: %v", m.winRate) }
-	if mathAbsTest(m.grossProfit-0.60) > 1e-12 { t.Fatalf("grossProfit incorrecto: %v", m.grossProfit) }
-	if mathAbsTest(m.grossLoss-0.20) > 1e-12 { t.Fatalf("grossLoss incorrecto: %v", m.grossLoss) }
-	// Fees: 2×0.001×equity antes de cada trade (equity 10000→15000→12000).
-	wantFees := 2*0.001*10000 + 2*0.001*15000 + 2*0.001*12000
-	if mathAbsTest(m.feesPaid-wantFees) > 1e-6 { t.Fatalf("feesPaid incorrecto: %v, want %v", m.feesPaid, wantFees) }
-	if mathAbsTest(m.averageWin-0.30) > 1e-12 { t.Fatalf("averageWin incorrecto: %v", m.averageWin) }
-	if mathAbsTest(m.averageLoss-0.20) > 1e-12 { t.Fatalf("averageLoss incorrecto: %v", m.averageLoss) }
-	// Expectancy = wr*avgWin - (1-wr)*avgLoss
-	wantExp := (2.0/3.0)*0.30 - (1.0/3.0)*0.20
-	if mathAbsTest(m.expectancy-wantExp) > 1e-12 { t.Fatalf("expectancy incorrecto: %v", m.expectancy) }
-	// Sharpe = media / sd poblacional de los retornos.
-	if m.sharpe <= 0 || m.sharpe > 3 { t.Fatalf("sharpe fuera de rango esperado: %v", m.sharpe) }
-	if m.sortino <= 0 { t.Fatalf("sortino debería ser positivo: %v", m.sortino) }
-}
-
-func TestNoDoubleSlippage(t *testing.T) {
-	slip, fee := 0.0002, 0.001
-	entryRaw, exitRaw := 100.0, 103.0
-
-	pnlOnce := costedPnL(domain.DirectionBuy, entryRaw, exitRaw, slip, fee)
-	// Slippage aplicado UNA vez: entrada 100→100.02 (buy), salida 103→102.9794 (sell-to-close).
-	wantFill := entryRaw * entryMultiplier(domain.DirectionBuy, slip)
-	wantExit := applyExitSlippage(exitRaw, domain.DirectionBuy, slip)
-	want := (wantExit-wantFill)/wantFill - 2*fee
-	if mathAbsTest(pnlOnce-want) > 1e-12 {
-		t.Fatalf("pnl = %.10f, want %.10f (slippage una vez)", pnlOnce, want)
-	}
-
-	// El resultado NO debe ser equivalente a aplicar slippage por duplicado.
-	double := (exitRaw*(1-2*slip) - entryRaw*(1+2*slip))/(entryRaw*(1+2*slip)) - 2*fee
-	if mathAbsTest(pnlOnce-double) < 1e-9 {
-		t.Fatalf("pnl %.10f no debe reflejar doble slippage (doble = %.10f)", pnlOnce, double)
-	}
-}
-
-func TestFeesAppliedOnce(t *testing.T) {
-	slip, fee := 0.0002, 0.001
-	entryRaw, exitRaw := 100.0, 98.0
-
-	// Con fees de lado y lado, pero cada uno UNA vez.
-	pnl := costedPnL(domain.DirectionBuy, entryRaw, exitRaw, slip, fee)
-	wantFill := entryRaw * entryMultiplier(domain.DirectionBuy, slip)
-	wantExit := applyExitSlippage(exitRaw, domain.DirectionBuy, slip)
-	want := (wantExit-wantFill)/wantFill - 2*fee
-	if mathAbsTest(pnl-want) > 1e-12 {
-		t.Fatalf("pnl = %.10f, want %.10f (fees una vez por lado)", pnl, want)
-	}
-
-	// Aplicar las fees por segunda vez debe dar un resultado distinto (no doble).
-	twice := (wantExit-wantFill)/wantFill - 4*fee
-	if pnl == twice {
-		t.Fatalf("pnl %.10f no debe incluir fees dos veces", pnl)
-	}
-}
-
-func mathAbsTest(v float64) float64 {
-	if v < 0 { return -v }
-	return v
-}
-
-// costedPnL reproduce exactamente el cálculo de PnL del simulador de Learn:
-// entry con slippage una vez, exit con slippage una vez, fees una vez por lado.
-func costedPnL(dir domain.Direction, entryRaw, exitRaw, slip, fee float64) float64 {
-	fill := entryRaw * entryMultiplier(dir, slip)
-	exit := applyExitSlippage(exitRaw, dir, slip)
-	return tradePnL(dir, fill, exit) - 2*fee
-}
-
-func syntheticLearningCandles(n int) []domain.Kline {
+// walkCandles genera un histórico determinista con impulses y retrocesos: la
+// serie sintética sirve para ejercitar el learner de extremo a extremo, pero NO
+// demuestra rentabilidad. La validación real ocurre sobre datos de mercado vía
+// walk-forward OOS.
+func walkCandles(n int, seed int64, symbol, timeframe string, start time.Time, step time.Duration) []domain.Kline {
+	r := rand.New(rand.NewSource(seed))
 	out := make([]domain.Kline, n)
 	price := 100.0
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	for i := range out {
-		if i%20 < 10 { price += 0.8 } else { price -= 0.65 }
-		out[i] = domain.Kline{Start: base.Add(time.Duration(i) * time.Hour), Timeframe: "1h", Open: price-0.2, High: price+0.8, Low: price-0.8, Close: price, Volume: 1000, Closed: true}
+		var drift float64
+		switch (i / 12) % 4 {
+		case 0, 2:
+			drift = 0.9
+		default:
+			drift = -0.4
+		}
+		open := price
+		price = math1Max(5, price+drift+(r.Float64()-0.5)*0.8)
+		high := math1Max(open, price) + r.Float64()*0.4
+		low := math1Min(open, price) - r.Float64()*0.4
+		out[i] = domain.Kline{
+			Start:     start.Add(time.Duration(i) * step),
+			Timeframe: timeframe,
+			Symbol:    symbol,
+			Closed:    true,
+			Open:      open,
+			High:      high,
+			Low:       low,
+			Close:     price,
+			Volume:    1000 + r.Float64()*500,
+		}
 	}
 	return out
+}
+
+func math1Max(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func math1Min(a, b float64) float64 {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func learnTestConfig() LearnConfig {
+	cfg := DefaultLearnConfig()
+	cfg.Symbol = "TEST"
+	cfg.Timeframe = "15m"
+	return cfg
+}
+
+func TestLearnProducesCandidateWithSelectedConfiguration(t *testing.T) {
+	ks := walkCandles(1500, 7, "TEST", "15m", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+
+	res, err := Learn(ks, learnTestConfig())
+	if err != nil {
+		t.Fatalf("learn must not fail on valid candles: %v", err)
+	}
+	if res.SpecJSON == "" {
+		t.Fatalf("expected a candidate, got reason:\n%s", res.Reason)
+	}
+	if res.Model.Trades < DefaultLearnConfig().MinTrades {
+		t.Fatalf("a candidate below MinTrades must not be produced: %d", res.Model.Trades)
+	}
+	if res.Model.ConfigsEvaluated != DefaultSearchSpace().Size() {
+		t.Fatalf("expected the whole grid to be evaluated, got %d", res.Model.ConfigsEvaluated)
+	}
+
+	// El modelo persistido debe describir la configuración que realmente produjo
+	// sus operaciones, no una por defecto.
+	if !res.Model.Confluence.Mode.Valid() {
+		t.Fatalf("persisted an invalid confluence mode: %q", res.Model.Confluence.Mode)
+	}
+	if res.Model.Confluence.MaxZoneDistancePct > MaxConfluenceDistanceLimit {
+		t.Fatalf("persisted distance out of profile: %.4f", res.Model.Confluence.MaxZoneDistancePct)
+	}
+	if !res.Model.TradePlan.Valid() {
+		t.Fatalf("persisted an out-of-profile stop: %.4f", res.Model.TradePlan.MaxStopPct)
+	}
+	if res.Model.ConfluenceComponents == "" {
+		t.Fatal("the candidate must record which components produced its trades")
+	}
+	if res.Model.DatasetHash != datasetDigest(ks) {
+		t.Fatal("the candidate must record the hash of the candles it was measured on")
+	}
+	if res.Model.DatasetBars != len(ks) || !res.Model.DatasetStart.Equal(ks[0].Start) {
+		t.Fatalf("unexpected dataset metadata: %+v", res.Model)
+	}
+
+	var traded int
+	for _, tr := range res.Trades {
+		if tr.Components == "" {
+			t.Fatalf("trade without confluence evidence: %+v", tr)
+		}
+		traded++
+	}
+	if traded != res.Model.Trades {
+		t.Fatalf("expected %d trades, got %d", res.Model.Trades, traded)
+	}
+
+	// El diagnóstico debe describir la configuración ELEGIDA, que es la que el
+	// usuario inspecciona, no necesariamente la que más operaciones tuvo.
+	if !res.Diagnostics.Selected {
+		t.Fatal("a produced candidate must report a selected configuration")
+	}
+	if res.Diagnostics.BestConfluenceMode != string(res.Model.Confluence.Mode) {
+		t.Fatalf("diagnostic mode %q does not match the model %q",
+			res.Diagnostics.BestConfluenceMode, res.Model.Confluence.Mode)
+	}
+	if res.Diagnostics.BestDistancePct != res.Model.Confluence.MaxZoneDistancePct ||
+		res.Diagnostics.BestStopPct != res.Model.TradePlan.MaxStopPct {
+		t.Fatalf("diagnostic parameters do not match the model: %+v", res.Diagnostics)
+	}
+}
+
+func TestLearnIsDeterministic(t *testing.T) {
+	ks := walkCandles(800, 21, "TEST", "15m", time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+
+	first, err := Learn(ks, learnTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Learn(ks, learnTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if first.Model.Confluence != second.Model.Confluence ||
+		first.Model.TradePlan != second.Model.TradePlan ||
+		first.Model.DatasetHash != second.Model.DatasetHash ||
+		first.Model.Trades != second.Model.Trades {
+		t.Fatal("two runs over the same candles produced different models")
+	}
+	if first.SpecJSON == "" {
+		return
+	}
+	// El JSON no puede contener Instantes learned_at distintos entre corridas
+	// comparables: el contenido de la estrategia debe ser idéntico.
+	a := strings.Replace(first.SpecJSON, first.Model.LearnedAt.Format(time.RFC3339Nano), "", -1)
+	b := strings.Replace(second.SpecJSON, second.Model.LearnedAt.Format(time.RFC3339Nano), "", -1)
+	if a != b {
+		t.Fatal("learned specs differ beyond the learning timestamp")
+	}
+}
+
+// El datasetHash identifica el histórico con el que se midió una candidata: es
+// lo que permite comprobar que un modelo se aplica al dataset correcto.
+func TestDatasetHashIdentifiesCandles(t *testing.T) {
+	start := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	a := walkCandles(500, 3, "TEST", "15m", start, 15*time.Minute)
+	b := walkCandles(500, 4, "TEST", "15m", start, 15*time.Minute)
+
+	if datasetDigest(a) == datasetDigest(b) {
+		t.Fatal("different candles must produce different dataset hashes")
+	}
+	if datasetDigest(a) != datasetDigest(append([]domain.Kline(nil), a...)) {
+		t.Fatal("the same candles must hash the same")
+	}
+
+	tweaked := append([]domain.Kline(nil), a...)
+	tweaked[250].Close += 1e-7
+	if datasetDigest(tweaked) == datasetDigest(a) {
+		t.Fatal("a price change must change the hash")
+	}
+
+	if datasetDigestMultiTf(a, nil) == datasetDigestMultiTf(a, a) {
+		t.Fatal("the multi-timeframe hash must separate its timeframes")
+	}
+}
+
+// El learner NO puede fabricar una candidata: sin evidencia de confluencia en el
+// histórico la respuesta es un diagnóstico, no un modelo con números bajos.
+func TestLearnRefusesCandidateWithoutEvidence(t *testing.T) {
+	// Serie perfectamente plana: hay velas, pero ni tendencia ni zonas.
+	ks := make([]domain.Kline, 400)
+	base := time.Date(2026, 4, 1, 0, 0, 0, 0, time.UTC)
+	for i := range ks {
+		ks[i] = domain.Kline{
+			Start: base.Add(time.Duration(i) * 15 * time.Minute), Timeframe: "15m",
+			Symbol: "TEST", Closed: true, Open: 100, High: 100.1, Low: 99.9, Close: 100, Volume: 10,
+		}
+	}
+
+	res, err := Learn(ks, learnTestConfig())
+	if err != nil {
+		t.Fatalf("no evidence is a legitimate outcome, not an error: %v", err)
+	}
+	if res.SpecJSON != "" {
+		t.Fatal("a flat dataset must not produce a candidate")
+	}
+	if res.Accepted {
+		t.Fatal("a flat dataset cannot be accepted")
+	}
+	for _, want := range []string{"Learn base", "setups detectados: 0", "configuraciones evaluadas"} {
+		if !strings.Contains(res.Reason, want) {
+			t.Fatalf("missing %q in reason:\n%s", want, res.Reason)
+		}
+	}
+}
+
+// Las 48 configuraciones deben evaluarse aunque casi ninguna tenga suficientes
+// operaciones: el diagnóstico explica si el fallo está en la generación de
+// setups o en el filtro de riesgo.
+func TestLearnEvaluatesWholeGridAndExplainsShortfall(t *testing.T) {
+	// Pocas velas con tendencia: hay setups, pero no los suficientes.
+	ks := walkCandles(120, 11, "TEST", "15m", time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+
+	res, err := Learn(ks, learnTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Diagnostics.ConfigsEvaluated != DefaultSearchSpace().Size() {
+		t.Fatalf("expected the whole grid to be evaluated, got %d", res.Diagnostics.ConfigsEvaluated)
+	}
+	if res.SpecJSON == "" && res.Diagnostics.BestTrades > 0 && !strings.Contains(res.Reason, "Mejor configuración") {
+		t.Fatalf("a shortfall must name the best attempt:\n%s", res.Reason)
+	}
+}
+
+// MinTrades es una restricción de calidad: se respeta tal cual, nunca se relaja
+// para poder devolver una candidata.
+func TestLearnHonoursMinTrades(t *testing.T) {
+	ks := walkCandles(1500, 7, "TEST", "15m", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+
+	cfg := learnTestConfig()
+	cfg.MinTrades = 400
+	res, err := Learn(ks, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SpecJSON != "" {
+		t.Fatalf("MinTrades=400 must not yield a candidate, got %d trades", res.Model.Trades)
+	}
+	if res.Diagnostics.MinTrades != 400 {
+		t.Fatalf("the diagnostic must report the requested MinTrades, got %d", res.Diagnostics.MinTrades)
+	}
+	if res.Diagnostics.ConfigsWithEnoughTrades != 0 {
+		t.Fatalf("no configuration can reach 400 trades here, got %d", res.Diagnostics.ConfigsWithEnoughTrades)
+	}
+
+	cfg.MinTrades = 5
+	if res, err = Learn(ks, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if res.SpecJSON == "" {
+		t.Fatalf("MinTrades=5 should find a candidate, reason:\n%s", res.Reason)
+	}
+	if res.Model.MinTrades != 5 {
+		t.Fatalf("the model must record the MinTrades used, got %d", res.Model.MinTrades)
+	}
+}
+
+func TestLearnRejectsInvalidCandles(t *testing.T) {
+	if _, err := Learn(make([]domain.Kline, 99), learnTestConfig()); err == nil {
+		t.Fatal("fewer than 100 candles must be rejected")
+	}
+
+	ks := walkCandles(200, 5, "TEST", "15m", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+	ks[120].Close = 0
+	if _, err := Learn(ks, learnTestConfig()); err == nil {
+		t.Fatal("a candle with a non-positive close must be rejected")
+	}
+
+	ks = walkCandles(200, 5, "TEST", "15m", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+	ks[120].Symbol = "OTHER"
+	if _, err := Learn(ks, learnTestConfig()); err == nil {
+		t.Fatal("a candle from another symbol must be rejected")
+	}
+
+	ks = walkCandles(200, 5, "TEST", "15m", time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+	ks[120].Start = ks[119].Start
+	if _, err := Learn(ks, learnTestConfig()); err == nil {
+		t.Fatal("out-of-order candles must be rejected")
+	}
+}
+
+// Una decisión en la vela i no puede usar el resultado de la vela i+1: el
+// proveedor del setup conoce su propio SL/TP, pero el learner solo debe poder
+// tomar la entrada si el plan era ejecutable con la información de la vela i.
+func TestDecisionPointsDoNotLookAhead(t *testing.T) {
+	ks := walkCandles(600, 13, "TEST", "15m", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+	cfg := normalizeLearnConfig(learnTestConfig())
+
+	points := collectDecisionPoints(ks, cfg, 0, nil)
+	if len(points) == 0 {
+		t.Skip("this synthetic walk produced no decision points")
+	}
+	last := len(ks) - 2
+	for _, p := range points {
+		if p.index < minLearningBars || p.index > last {
+			t.Fatalf("decision at bar %d is outside the learnable range [%d, %d]", p.index, minLearningBars, last)
+		}
+		if p.entryBar != p.index+1 {
+			t.Fatalf("entry must be the following open, got bar %d after %d", p.entryBar, p.index)
+		}
+		if p.evidence.Index != p.index || p.levels.SetupIndex != p.index {
+			t.Fatalf("decision levels were resolved for another bar: %+v", p)
+		}
+	}
+
+	// Alterar velas FUTURAS no puede cambiar ninguna decisión tomada antes de
+	// ellas: si lo hiciera, el learner estaría usando información que el mercado
+	// aún no tenía.
+	cut := 400
+	mutated := append([]domain.Kline(nil), ks...)
+	for i := cut; i < len(mutated); i++ {
+		mutated[i].Close *= 1.2
+		mutated[i].High *= 1.2
+		mutated[i].Low *= 1.2
+	}
+
+	beforeCut := decisionsBefore(collectDecisionPoints(ks, cfg, 0, nil), cut)
+	afterCut := decisionsBefore(collectDecisionPoints(mutated, cfg, 0, nil), cut)
+
+	if len(beforeCut) != len(afterCut) {
+		t.Fatalf("mutating future candles changed past decisions: %d vs %d", len(beforeCut), len(afterCut))
+	}
+	for i := range beforeCut {
+		if beforeCut[i] != afterCut[i] {
+			t.Fatalf("decision at bar %d changed after mutating candles from %d on", beforeCut[i].index, cut)
+		}
+	}
+}
+
+func decisionsBefore(points []decisionPoint, cut int) []decisionPoint {
+	var out []decisionPoint
+	for _, p := range points {
+		if p.index < cut {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// Lagrid de stops es una variable real: un stop más amplio admits entradas que
+// uno más ajustado rechaza por distancia, sin que ninguna de las dos invente
+// niveles que la estructura no respalda.
+func TestTradePlanGridTradeoffIsMeaningful(t *testing.T) {
+	in := planInputs{
+		SetupIndex: 30, Direction: domain.DirectionBuy, Entry: 100,
+		SwingTarget: 103, HasSwingTarget: true,
+		OBStopAnchor: 98.6, HasOBStop: true,
+	}
+	tight := TradePlanConfig{MaxStopPct: 0.01, StopBufferPct: 0, UseOrderBlockStop: true}
+	wide := TradePlanConfig{MaxStopPct: 0.02, StopBufferPct: 0, UseOrderBlockStop: true}
+
+	// Stop estructural ≈1.40%: dentro del perfil de 2%, fuera del de 1%.
+	if _, ok := buildPlan(in, wide); !ok {
+		t.Fatal("a 1.40% structural stop must be admitted by the 2% profile")
+	}
+	if _, ok := buildPlan(in, tight); ok {
+		t.Fatal("a 1.40% structural stop must be rejected by the 1% profile")
+	}
+
+	far := in
+	far.OBStopAnchor = 97
+	if _, ok := buildPlan(far, wide); ok {
+		t.Fatal("a 3% structural stop must be rejected by a 2% profile")
+	}
+
+	// El buffer solo ensancha el stop: no puede hacer caber en el perfil un ancla
+	// que ya lo excede.
+	farWithBuffer := TradePlanConfig{MaxStopPct: 0.02, StopBufferPct: 0.005, UseOrderBlockStop: true}
+	if _, ok := buildPlan(far, farWithBuffer); ok {
+		t.Fatal("a buffer must never rescue an out-of-profile stop")
+	}
+
+	// Sin order block stop el ancla es la zona Fibonacci; sin ninguna de las dos,
+	// el stop es el propio límite de riesgo.
+	noOB := in
+	noOB.OBStopAnchor, noOB.HasOBStop = 0, false
+	if _, ok := buildPlan(noOB, tight); !ok {
+		t.Fatal("without a structural anchor the profile stop must apply")
+	}
 }

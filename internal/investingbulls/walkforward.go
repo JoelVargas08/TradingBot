@@ -11,42 +11,42 @@ import (
 // WalkForwardConfig controls chronological train/OOS validation.
 // These are validation-engineering choices, not claims from the source PDF.
 type WalkForwardConfig struct {
-	Folds           int
-	TrainPct        float64
-	OOSPct          float64
-	StepPct         float64
-	MinOOSTrades    int
+	Folds              int
+	TrainPct           float64
+	OOSPct             float64
+	StepPct            float64
+	MinOOSTrades       int
 	MinOOSProfitFactor float64
-	MaxOOSDrawdown  float64
-	MinPositiveFolds int
+	MaxOOSDrawdown     float64
+	MinPositiveFolds   int
 }
 
 // DefaultWalkForwardConfig uses an expanding-window walk-forward:
 // 60% initial training, then four 10% OOS windows advancing by 10%.
 func DefaultWalkForwardConfig() WalkForwardConfig {
 	return WalkForwardConfig{
-		Folds: 4,
-		TrainPct: 0.60,
-		OOSPct: 0.10,
-		StepPct: 0.10,
-		MinOOSTrades: 3,
+		Folds:              4,
+		TrainPct:           0.60,
+		OOSPct:             0.10,
+		StepPct:            0.10,
+		MinOOSTrades:       3,
 		MinOOSProfitFactor: 1.0,
-		MaxOOSDrawdown: 0.08,
-		MinPositiveFolds: 3,
+		MaxOOSDrawdown:     0.08,
+		MinPositiveFolds:   3,
 	}
 }
 
 type WalkForwardResult struct {
-	Folds  []domain.OOSFold
-	Passed bool
-	Reason string
+	Folds         []domain.OOSFold
+	Passed        bool
+	Reason        string
 	EvaluatedBars int
-	TotalTrades int
-	WinRate float64
-	ProfitFactor float64
-	TotalReturn float64
-	MaxDrawdown float64
-	ValidatedAt time.Time
+	TotalTrades   int
+	WinRate       float64
+	ProfitFactor  float64
+	TotalReturn   float64
+	MaxDrawdown   float64
+	ValidatedAt   time.Time
 }
 
 // WalkForward learns parameters only from each training window, then freezes
@@ -102,14 +102,14 @@ func WalkForward(ks []domain.Kline, cfg LearnConfig, wcfg WalkForwardConfig) (Wa
 		trades := generateAndSimulateFrom(ks[:oosEnd], fixedCfg, trainEnd)
 		m := tradeMetrics(trades, fixedCfg.InitialBalance)
 		fold := domain.OOSFold{
-			Trades: m.trades,
-			WinRate: m.winRate,
+			Trades:       m.trades,
+			WinRate:      m.winRate,
 			ProfitFactor: m.profitFactor,
-			Sharpe: m.sharpe,
-			Sortino: m.sortino,
-			MaxDrawdown: m.maxDrawdown,
-			TotalReturn: m.totalReturn,
-			Bars: oosEnd-trainEnd,
+			Sharpe:       m.sharpe,
+			Sortino:      m.sortino,
+			MaxDrawdown:  m.maxDrawdown,
+			TotalReturn:  m.totalReturn,
+			Bars:         oosEnd - trainEnd,
 		}
 		folds = append(folds, fold)
 		allTrades = append(allTrades, trades...)
@@ -134,29 +134,47 @@ func WalkForward(ks []domain.Kline, cfg LearnConfig, wcfg WalkForwardConfig) (Wa
 	}
 
 	return WalkForwardResult{
-		Folds: folds,
-		Passed: passed,
-		Reason: reason,
-		EvaluatedBars: lastOOS-int(math.Floor(float64(len(ks))*wcfg.TrainPct)),
-		TotalTrades: agg.trades,
-		WinRate: agg.winRate,
-		ProfitFactor: agg.profitFactor,
-		TotalReturn: agg.totalReturn,
-		MaxDrawdown: agg.maxDrawdown,
-		ValidatedAt: time.Now().UTC(),
+		Folds:         folds,
+		Passed:        passed,
+		Reason:        reason,
+		EvaluatedBars: lastOOS - int(math.Floor(float64(len(ks))*wcfg.TrainPct)),
+		TotalTrades:   agg.trades,
+		WinRate:       agg.winRate,
+		ProfitFactor:  agg.profitFactor,
+		TotalReturn:   agg.totalReturn,
+		MaxDrawdown:   agg.maxDrawdown,
+		ValidatedAt:   time.Now().UTC(),
 	}, nil
 }
 
 func normalizeWalkForwardConfig(cfg WalkForwardConfig) WalkForwardConfig {
 	defaults := DefaultWalkForwardConfig()
-	if cfg.Folds <= 0 { cfg.Folds = defaults.Folds }
-	if cfg.TrainPct <= 0 { cfg.TrainPct = defaults.TrainPct }
-	if cfg.OOSPct <= 0 { cfg.OOSPct = defaults.OOSPct }
-	if cfg.StepPct <= 0 { cfg.StepPct = defaults.StepPct }
-	if cfg.MinOOSTrades <= 0 { cfg.MinOOSTrades = defaults.MinOOSTrades }
-	if cfg.MinOOSProfitFactor <= 0 { cfg.MinOOSProfitFactor = defaults.MinOOSProfitFactor }
-	if cfg.MaxOOSDrawdown <= 0 { cfg.MaxOOSDrawdown = defaults.MaxOOSDrawdown }
-	if cfg.MinPositiveFolds <= 0 { cfg.MinPositiveFolds = defaults.MinPositiveFolds }
-	if cfg.MinPositiveFolds > cfg.Folds { cfg.MinPositiveFolds = cfg.Folds }
+	if cfg.Folds <= 0 {
+		cfg.Folds = defaults.Folds
+	}
+	if cfg.TrainPct <= 0 {
+		cfg.TrainPct = defaults.TrainPct
+	}
+	if cfg.OOSPct <= 0 {
+		cfg.OOSPct = defaults.OOSPct
+	}
+	if cfg.StepPct <= 0 {
+		cfg.StepPct = defaults.StepPct
+	}
+	if cfg.MinOOSTrades <= 0 {
+		cfg.MinOOSTrades = defaults.MinOOSTrades
+	}
+	if cfg.MinOOSProfitFactor <= 0 {
+		cfg.MinOOSProfitFactor = defaults.MinOOSProfitFactor
+	}
+	if cfg.MaxOOSDrawdown <= 0 {
+		cfg.MaxOOSDrawdown = defaults.MaxOOSDrawdown
+	}
+	if cfg.MinPositiveFolds <= 0 {
+		cfg.MinPositiveFolds = defaults.MinPositiveFolds
+	}
+	if cfg.MinPositiveFolds > cfg.Folds {
+		cfg.MinPositiveFolds = cfg.Folds
+	}
 	return cfg
 }

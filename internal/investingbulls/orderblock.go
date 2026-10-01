@@ -14,13 +14,13 @@ const (
 // before a structural expansion. This is an operational definition used by
 // the learner; the source material itself describes the concept qualitatively.
 type OrderBlock struct {
-	Index     int
-	High      float64
-	Low       float64
-	Direction OrderBlockDirection
-	CreatedAt int64
-	Tested    bool
-	Valid     bool
+	Index       int
+	High        float64
+	Low         float64
+	Direction   OrderBlockDirection
+	CreatedAt   int64
+	Tested      bool
+	Valid       bool
 	Invalidated bool
 }
 

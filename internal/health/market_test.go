@@ -124,6 +124,58 @@ func TestCheckNonMonotonicTimestamps(t *testing.T) {
 	}
 }
 
+func TestCheckLastCandleAlreadyInRecent(t *testing.T) {
+	m := NewMonitor(DefaultConfig())
+	now := time.Now().UTC().Truncate(time.Second)
+	rep := m.Check(Snapshot{
+		Connected:  true,
+		LastUpdate: now,
+		LastCandle: Candle{Start: now, Open: 98, High: 102, Low: 97, Close: 101, Volume: 1},
+		Recent: []Candle{
+			{Start: now.Add(-20 * time.Minute), Open: 95, High: 100, Low: 90, Close: 98, Volume: 1},
+			{Start: now.Add(-10 * time.Minute), Open: 98, High: 102, Low: 97, Close: 101, Volume: 1},
+			{Start: now, Open: 98, High: 102, Low: 97, Close: 101, Volume: 1},
+		},
+	})
+	if !rep.Healthy || rep.Stale {
+		t.Fatalf("LastCandle ya presente en Recent no debe marcar el feed como stale: %+v", rep)
+	}
+}
+
+func TestCheckLastCandleNewerThanRecent(t *testing.T) {
+	m := NewMonitor(DefaultConfig())
+	now := time.Now().UTC().Truncate(time.Second)
+	rep := m.Check(Snapshot{
+		Connected:  true,
+		LastUpdate: now,
+		LastCandle: Candle{Start: now, Open: 98, High: 102, Low: 97, Close: 101, Volume: 1},
+		Recent: []Candle{
+			{Start: now.Add(-20 * time.Minute), Open: 95, High: 100, Low: 90, Close: 98, Volume: 1},
+			{Start: now.Add(-10 * time.Minute), Open: 98, High: 102, Low: 97, Close: 101, Volume: 1},
+		},
+	})
+	if !rep.Healthy || rep.Stale {
+		t.Fatalf("LastCandle posterior debe conservarse sin reportar stale: %+v", rep)
+	}
+}
+
+func TestCheckWithoutLastCandle(t *testing.T) {
+	m := NewMonitor(DefaultConfig())
+	now := time.Now().UTC().Truncate(time.Second)
+	rep := m.Check(Snapshot{
+		Connected:  true,
+		LastUpdate: now,
+		Recent: []Candle{
+			{Start: now.Add(-20 * time.Minute), Open: 95, High: 100, Low: 90, Close: 98, Volume: 1},
+			{Start: now.Add(-10 * time.Minute), Open: 98, High: 102, Low: 97, Close: 101, Volume: 1},
+			{Start: now, Open: 98, High: 102, Low: 97, Close: 101, Volume: 1},
+		},
+	})
+	if !rep.Healthy || rep.Stale {
+		t.Fatalf("feed sin LastCandle pero con Recent sano: %+v", rep)
+	}
+}
+
 func TestMonitorGate(t *testing.T) {
 	m := NewMonitor(DefaultConfig())
 	if !m.Healthy() {

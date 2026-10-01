@@ -56,14 +56,14 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 	now := time.Now().UTC()
 	id := fmt.Sprintf("investing-bulls-%s-%s-%d", symbol, timeframe, now.Unix())
 	strategy := domain.Strategy{
-		ID: id,
-		Name: fmt.Sprintf("Investing Bulls %s %s", symbol, timeframe),
+		ID:          id,
+		Name:        fmt.Sprintf("Investing Bulls %s %s", symbol, timeframe),
 		Description: "Estrategia aprendida por búsqueda de parámetros sobre estructura, CHOCH/BOS, Fibonacci, imbalance y order block.",
-		Status: domain.StrategyCandidate,
-		Source: "investing_bulls_learn",
-		Spec: result.SpecJSON,
-		CreatedAt: now,
-		UpdatedAt: now,
+		Status:      domain.StrategyCandidate,
+		Source:      "investing_bulls_learn",
+		Spec:        result.SpecJSON,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 
 	if err := store.UpsertStrategy(ctx, strategy); err != nil {
@@ -71,24 +71,24 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 	}
 
 	bt := domain.BacktestResult{
-		StrategyID: strategy.ID,
-		Trades: result.Model.Trades,
-		WinRate: result.Model.WinRate,
+		StrategyID:   strategy.ID,
+		Trades:       result.Model.Trades,
+		WinRate:      result.Model.WinRate,
 		ProfitFactor: result.Model.ProfitFactor,
-		Sharpe: result.Model.Sharpe,
-		Sortino: result.Model.Sortino,
-		MaxDrawdown: result.Model.MaxDrawdown,
-		TotalReturn: result.Model.TotalReturn,
-		AverageWin: result.Model.AverageWin,
-		AverageLoss: result.Model.AverageLoss,
-		Expectancy: result.Model.Expectancy,
-		FeesPaid: result.Model.FeesPaid,
-		TestBars: len(ks),
-		Passed: result.Accepted,
-		Folds: 0,
-		OOSFolds: nil,
-		Status: "in_sample_candidate",
-		MetricsAt: now,
+		Sharpe:       result.Model.Sharpe,
+		Sortino:      result.Model.Sortino,
+		MaxDrawdown:  result.Model.MaxDrawdown,
+		TotalReturn:  result.Model.TotalReturn,
+		AverageWin:   result.Model.AverageWin,
+		AverageLoss:  result.Model.AverageLoss,
+		Expectancy:   result.Model.Expectancy,
+		FeesPaid:     result.Model.FeesPaid,
+		TestBars:     len(ks),
+		Passed:       result.Accepted,
+		Folds:        0,
+		OOSFolds:     nil,
+		Status:       "in_sample_candidate",
+		MetricsAt:    now,
 	}
 	if err := store.SaveBacktest(ctx, bt); err != nil {
 		return domain.Strategy{}, result, fmt.Errorf("learn: guardando métricas: %w", err)
@@ -100,6 +100,10 @@ func LearnAndPersist(ctx context.Context, store LearnerStore, symbol, timeframe 
 
 func closedCandles(ks []domain.Kline) []domain.Kline {
 	out := make([]domain.Kline, 0, len(ks))
-	for _, k := range ks { if k.Closed { out = append(out, k) } }
+	for _, k := range ks {
+		if k.Closed {
+			out = append(out, k)
+		}
+	}
 	return out
 }
