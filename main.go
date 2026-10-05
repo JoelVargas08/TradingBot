@@ -224,6 +224,9 @@ func main() {
 		if err := paperEngine.Recover(ctx); err != nil {
 			log.Fatalf("recuperación segura de paper trading: %v", err)
 		}
+		if err := paperEngine.ReconcileOpenPositions(ctx); err != nil {
+			log.Fatalf("reconciliación de posiciones paper: %v", err)
+		}
 		log.Printf("Paper trading activo: fees %.3f%%, slippage %.3f%% por operación (Simulado)",
 			paper.Config{}.FeeRate*100, paper.Config{}.SlippageRate*100)
 	}
