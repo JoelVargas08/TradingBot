@@ -65,6 +65,12 @@ func main() {
 		log.Fatalf("Error abriendo base de datos: %v", err)
 	}
 	defer sqliteStore.Close()
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := sqliteStore.IntegrityCheck(startupCtx); err != nil {
+		startupCancel()
+		log.Fatalf("Base de datos SQLite no íntegra: %v", err)
+	}
+	startupCancel()
 
 	// Bot de Telegram y servicio de envío
 	bot, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
@@ -215,6 +221,9 @@ func main() {
 		}
 		log.Printf("Gestión de riesgo activa: %d posiciones máx, R/R %v:1, kill-switch %.0f%%",
 			cfg.MaxOpenPositions, cfg.MinRR, cfg.KillSwitchPct*100)
+		if err := paperEngine.Recover(ctx); err != nil {
+			log.Fatalf("recuperación segura de paper trading: %v", err)
+		}
 		log.Printf("Paper trading activo: fees %.3f%%, slippage %.3f%% por operación (Simulado)",
 			paper.Config{}.FeeRate*100, paper.Config{}.SlippageRate*100)
 	}
@@ -764,15 +773,33 @@ func main() {
 		}
 	}()
 
-	// Manejar señal de apagado
+	// Manejar señal de apagado o final de una ventana programada.
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	sessionDone := make(chan struct{})
+	if tradingSession != nil && cfg.TradingSessionScheduleEnabled && cfg.TradingSessionExitAfterWindow {
+		go func() {
+			defer close(sessionDone)
+			if tradingSession.IsActive() {
+				if tradingSession.WaitUntilEnd(ctx) {
+					log.Println("Ventana de trading finalizada; iniciando apagado limpio")
+					cancel()
+				}
+				return
+			}
+			log.Println("Runner iniciado fuera de la ventana programada; apagado limpio")
+			cancel()
+		}()
+	}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("Error en servidor HTTP: %v", err)
 		}
 	}()
-	<-stop
+	select {
+	case <-stop:
+	case <-sessionDone:
+	}
 	log.Println("Apagando bot...")
 	cancel()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
