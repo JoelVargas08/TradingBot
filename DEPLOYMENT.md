@@ -108,6 +108,8 @@ El workflow usa una programación con zona horaria de Nueva York y evita ejecuci
 
 Como el runner se destruye al terminar, `data/bot.db` y `data/users.json` se empaquetan como el artefacto `tradingbot-state` y se restauran en la siguiente ejecución. GitHub permite descargar artefactos de ejecuciones anteriores mediante un token y el identificador de ejecución; los artefactos tienen retención configurable.
 
+Al arrancar, el Paper Engine reconstruye el equity y reconcilia las posiciones abiertas contra las velas persistidas para recuperar SL/TP que pudieron ocurrir mientras el runner estaba detenido.
+
 Esto sirve para la fase de PAPER, pero **no debe considerarse una base de datos de producción**. Si el objetivo es LIVE con dinero real, el servidor persistente con SQLite local sigue siendo la opción preferida.
 
 ### Preparación
