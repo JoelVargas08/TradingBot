@@ -102,11 +102,11 @@ shutdown limpio + checkpoint WAL
 sube tradingbot-state
 ```
 
-El workflow usa una programación con zona horaria de Nueva York y evita ejecuciones simultáneas mediante `concurrency`. GitHub permite horarios con zona IANA; los runners hospedados tienen un límite de 6 horas por job. citeturn1search0turn2search0
+El workflow usa una programación con zona horaria de Nueva York y evita ejecuciones simultáneas mediante `concurrency`. GitHub permite horarios con zona IANA; los runners hospedados tienen un límite de 6 horas por job.
 
 ### Estado persistente
 
-Como el runner se destruye al terminar, `data/bot.db` y `data/users.json` se empaquetan como el artefacto `tradingbot-state` y se restauran en la siguiente ejecución. GitHub permite descargar artefactos de ejecuciones anteriores mediante un token y el identificador de ejecución; los artefactos tienen retención configurable. citeturn0search1turn0search9
+Como el runner se destruye al terminar, `data/bot.db` y `data/users.json` se empaquetan como el artefacto `tradingbot-state` y se restauran en la siguiente ejecución. GitHub permite descargar artefactos de ejecuciones anteriores mediante un token y el identificador de ejecución; los artefactos tienen retención configurable.
 
 Esto sirve para la fase de PAPER, pero **no debe considerarse una base de datos de producción**. Si el objetivo es LIVE con dinero real, el servidor persistente con SQLite local sigue siendo la opción preferida.
 
@@ -115,7 +115,7 @@ Esto sirve para la fase de PAPER, pero **no debe considerarse una base de datos 
 1. En **Settings → Secrets and variables → Actions**, crear el secret `TELEGRAM_BOT_TOKEN`.
 2. Crear la variable de repositorio `INVESTING_BULLS_STRATEGY_ID` con el ID de la estrategia MTF validada/promovida a ACTIVE.
 3. Mantener PAPER: `TRADING_MODE=paper`.
-4. Ejecutar primero el workflow manualmente desde **Actions → TradingBot - Paper Session → Run workflow** para comprobar restauración, WEEX, sesión y persistencia. Los workflows con `workflow_dispatch` pueden lanzarse manualmente desde Actions. citeturn0search8
+4. Ejecutar primero el workflow manualmente desde **Actions → TradingBot - Paper Session → Run workflow** para comprobar restauración, WEEX, sesión y persistencia. Los workflows con `workflow_dispatch` pueden lanzarse manualmente desde Actions.
 
 **Importante:** 08:00–14:00 es una configuración operativa inicial para esta prueba de 6 horas; no es un horario que el PDF de Investing Bulls establezca como regla. Debemos medir los resultados antes de fijarlo como horario definitivo.
 
