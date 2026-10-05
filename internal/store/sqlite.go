@@ -53,6 +53,17 @@ func Open(dsn string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+func (s *Store) Checkpoint(ctx context.Context) error {
+	var busy, logPages, checkpointed int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logPages, &checkpointed); err != nil {
+		return fmt.Errorf("wal checkpoint: %w", err)
+	}
+	if busy != 0 {
+		return fmt.Errorf("wal checkpoint ocupado: busy=%d log_pages=%d checkpointed=%d", busy, logPages, checkpointed)
+	}
+	return nil
+}
+
 func (s *Store) IntegrityCheck(ctx context.Context) error {
 	var result string
 	if err := s.db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&result); err != nil {
