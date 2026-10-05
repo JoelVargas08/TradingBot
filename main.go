@@ -808,6 +808,11 @@ func main() {
 		log.Printf("Error en shutdown: %v", err)
 	}
 	saveUsers()
+	checkpointCtx, checkpointCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := sqliteStore.Checkpoint(checkpointCtx); err != nil {
+		log.Printf("checkpoint SQLite: %v", err)
+	}
+	checkpointCancel()
 	bot.StopReceivingUpdates()
 }
 
