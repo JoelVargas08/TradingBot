@@ -53,6 +53,17 @@ func Open(dsn string) (*Store, error) {
 	return &Store{db: db}, nil
 }
 
+func (s *Store) IntegrityCheck(ctx context.Context) error {
+	var result string
+	if err := s.db.QueryRowContext(ctx, "PRAGMA integrity_check").Scan(&result); err != nil {
+		return fmt.Errorf("integrity_check: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("integrity_check: %s", result)
+	}
+	return nil
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }
