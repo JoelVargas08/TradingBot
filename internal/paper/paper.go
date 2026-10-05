@@ -100,6 +100,62 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	return nil
 }
 
+// Recover reconstruye el equity al arrancar a partir del estado persistido.
+func (e *Engine) Recover(ctx context.Context) error {
+	acc, err := e.store.GetAccount(ctx)
+	if errors.Is(err, domain.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("recover: leyendo cuenta: %w", err)
+	}
+	open, err := e.store.OpenPositions(ctx)
+	if err != nil {
+		return fmt.Errorf("recover: leyendo posiciones abiertas: %w", err)
+	}
+	prices := make(map[string]float64)
+	if e.marks != nil {
+		marks, err := e.marks.Marks(ctx)
+		if err != nil {
+			return fmt.Errorf("recover: leyendo marks: %w", err)
+		}
+		for _, mk := range marks {
+			if mk.Price > 0 {
+				prices[markKey(mk.Symbol, mk.Timeframe)] = mk.Price
+			}
+		}
+	}
+	unrealized := 0.0
+	for _, p := range open {
+		price, ok := prices[markKey(p.Symbol, p.Timeframe)]
+		if !ok {
+			continue
+		}
+		if p.Side == domain.DirectionBuy {
+			unrealized += (price - p.EntryPrice) * p.Quantity
+		} else {
+			unrealized += (p.EntryPrice - price) * p.Quantity
+		}
+	}
+	acc.UnrealizedPnL = unrealized
+	acc.Equity = acc.Balance + unrealized
+	if acc.PeakEquity < acc.Equity {
+		acc.PeakEquity = acc.Equity
+	}
+	if acc.PeakEquity > 0 {
+		dd := (acc.PeakEquity - acc.Equity) / acc.PeakEquity
+		if dd > acc.MaxDrawdown {
+			acc.MaxDrawdown = dd
+		}
+	}
+	acc.UpdatedAt = time.Now()
+	if err := e.store.UpdateAccount(ctx, acc); err != nil {
+		return fmt.Errorf("recover: actualizando cuenta: %w", err)
+	}
+	log.Printf("paper recovery: %d posiciones abiertas, balance=%.2f equity=%.2f unrealized=%.2f", len(open), acc.Balance, acc.Equity, acc.UnrealizedPnL)
+	return nil
+}
+
 // Close cierra una posición abierta aplicando fees, slippage, PnL bruto/neto,
 // R múltiple y duración. El balance solo se actualiza al cerrar.
 func (e *Engine) Close(ctx context.Context, id int64, exitPrice float64, exitTS time.Time, reason string) error {
