@@ -219,6 +219,39 @@ func (m *Manager) Run(ctx context.Context) {
 	}
 }
 
+// WaitUntilEnd espera hasta el final de la ventana automática actual.
+// No cambia overrides manuales ni cierra posiciones: permite que un runner
+// efímero termine limpiamente al acabar la sesión.
+// Si arranca fuera de la ventana devuelve false inmediatamente.
+func (m *Manager) WaitUntilEnd(ctx context.Context) bool {
+	m.mu.RLock()
+	s := m.schedule
+	o := m.override
+	m.mu.RUnlock()
+	if !s.Enabled || o != OverrideNone || !m.ActiveInWindow(time.Now()) {
+		return false
+	}
+	loc := s.Location
+	if loc == nil {
+		loc = time.Local
+	}
+	now := time.Now().In(loc)
+	endMinutes := minutesOf(s.End)
+	end := time.Date(now.Year(), now.Month(), now.Day(), endMinutes/60, endMinutes%60, 0, 0, loc)
+	if !end.After(now) {
+		end = end.Add(24 * time.Hour)
+	}
+	timer := time.NewTimer(time.Until(end))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		m.Tick(end)
+		return true
+	}
+}
+
 // ActiveInWindow evalúa la ventana horaria para un instante dado (sin
 // considerar overrides ni el estado manual).
 func (m *Manager) ActiveInWindow(now time.Time) bool {
