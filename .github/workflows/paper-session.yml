@@ -74,11 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p data restore
-          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100"             --jq '.artifacts
-              | map(select(.name == "tradingbot-state" and .expired == false))
-              | sort_by(.created_at)
-              | reverse
-              | .[0].workflow_run.id // empty')"
+          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.name == "tradingbot-state" and .expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
 
           if [[ -z "${artifact_run_id}" ]]; then
             echo "No hay estado persistido anterior; se inicia una base nueva."
@@ -86,7 +82,7 @@ jobs:
           fi
 
           echo "Restaurando estado desde la ejecución ${artifact_run_id}..."
-          gh run download "${artifact_run_id}"             --repo "${GITHUB_REPOSITORY}"             --name tradingbot-state             --dir restore
+          gh run download "${artifact_run_id}" --repo "${GITHUB_REPOSITORY}" --name tradingbot-state --dir restore
 
           if [[ -f restore/tradingbot-state.tgz ]]; then
             tar -xzf restore/tradingbot-state.tgz
@@ -113,11 +109,7 @@ jobs:
           set -euo pipefail
           mkdir -p data
           if [[ -f data/bot.db ]]; then
-            tar -czf tradingbot-state.tgz \
-              data/bot.db \
-              data/bot.db-wal \
-              data/bot.db-shm \
-              data/users.json 2>/dev/null || true
+            tar -czf tradingbot-state.tgz data/bot.db* data/users.json 2>/dev/null || true
             ls -lh tradingbot-state.tgz
           else
             echo "No existe data/bot.db; no se sube estado."
