@@ -156,6 +156,48 @@ func (e *Engine) Recover(ctx context.Context) error {
 	return nil
 }
 
+// ReconcileOpenPositions reevalúa las posiciones que quedaron abiertas
+// durante una interrupción usando las velas ya persistidas. Esto evita perder
+// un SL/TP ocurrido mientras un runner efímero estaba apagado.
+func (e *Engine) ReconcileOpenPositions(ctx context.Context) error {
+	open, err := e.store.OpenPositions(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile: leyendo posiciones: %w", err)
+	}
+	for _, p := range open {
+		candles, err := e.store.RecentCandles(ctx, p.Symbol, p.Timeframe, 5000)
+		if err != nil {
+			return fmt.Errorf("reconcile %d: leyendo velas: %w", p.ID, err)
+		}
+		for _, k := range candles {
+			if k.Start.Before(p.EntryTS) {
+				continue
+			}
+			// CheckStops vuelve a consultar las posiciones abiertas, por lo que
+			// después de cerrar esta posición no se vuelve a procesar.
+			e.checkPosition(ctx, p, k)
+			stillOpen, err := e.store.OpenPositions(ctx)
+			if err != nil {
+				return fmt.Errorf("reconcile %d: verificando posición: %w", p.ID, err)
+			}
+			found := false
+			for _, current := range stillOpen {
+				if current.ID == p.ID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				break
+			}
+		}
+	}
+	if len(open) > 0 {
+		log.Printf("paper recovery: reconciliadas %d posiciones abiertas contra velas persistidas", len(open))
+	}
+	return nil
+}
+
 // Close cierra una posición abierta aplicando fees, slippage, PnL bruto/neto,
 // R múltiple y duración. El balance solo se actualiza al cerrar.
 func (e *Engine) Close(ctx context.Context, id int64, exitPrice float64, exitTS time.Time, reason string) error {
