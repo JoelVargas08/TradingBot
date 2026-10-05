@@ -20,6 +20,7 @@ ml/.venv/
 # Entorno y secretos
 .env
 .env.*
+!.env.example
 
 # Tests / cobertura
 *.test
