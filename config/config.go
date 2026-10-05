@@ -68,6 +68,9 @@ type Config struct {
 	TradingSessionStart           string
 	TradingSessionEnd             string
 	TradingSessionTimezone        string
+	// ExitAfterWindow hace que un runner efímero termine al cerrar la ventana.
+	// Las posiciones abiertas no se cierran automáticamente.
+	TradingSessionExitAfterWindow bool
 
 	// Fuente de mercado WEEX (Fase 2): provee velas REST+WS a LiveEngine.
 	// Vacío = comportamiento legado (TradingView + adaptador Binance opcional).
@@ -164,6 +167,7 @@ func Load() (*Config, error) {
 		TradingSessionStart:           getEnv("TRADING_SESSION_START", "09:00"),
 		TradingSessionEnd:             getEnv("TRADING_SESSION_END", "17:00"),
 		TradingSessionTimezone:        getEnv("TRADING_SESSION_TIMEZONE", "America/New_York"),
+		TradingSessionExitAfterWindow: getEnvBool("TRADING_SESSION_EXIT_AFTER_WINDOW", false),
 
 		// Fuente de mercado WEEX (Fase 2)
 		MarketDataProvider: getEnv("MARKET_DATA_PROVIDER", ""),
