@@ -1,0 +1,23 @@
+[Unit]
+Description=TradingBot - WEEX / Investing Bulls
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tradingbot
+Group=tradingbot
+WorkingDirectory=/opt/tradingbot
+EnvironmentFile=/opt/tradingbot/.env
+ExecStart=/opt/tradingbot/bot
+Restart=on-failure
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/tradingbot/data
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
