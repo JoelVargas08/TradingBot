@@ -33,6 +33,7 @@ func (c Config) withDefaults() Config {
 // SL/TP con velas cerradas, actualiza equity intratrade y calcula métricas.
 type Engine struct {
 	store    domain.PositionStore
+	candles  domain.CandleStore
 	riskCtrl domain.RiskDecider
 	cfg      Config
 	marks    domain.MarkStore
@@ -40,7 +41,16 @@ type Engine struct {
 
 // New crea un Engine que persiste en store y delega la decisión en riskCtrl.
 func New(store domain.PositionStore, riskCtrl domain.RiskDecider, cfg Config) *Engine {
-	return &Engine{store: store, riskCtrl: riskCtrl, cfg: cfg.withDefaults()}
+	var candles domain.CandleStore
+	if cs, ok := store.(domain.CandleStore); ok {
+		candles = cs
+	}
+	return &Engine{
+		store:    store,
+		candles:  candles,
+		riskCtrl: riskCtrl,
+		cfg:      cfg.withDefaults(),
+	}
 }
 
 // SetMarkStore enlaza la persistencia de últimos precios (marks) para poder
@@ -165,7 +175,10 @@ func (e *Engine) ReconcileOpenPositions(ctx context.Context) error {
 		return fmt.Errorf("reconcile: leyendo posiciones: %w", err)
 	}
 	for _, p := range open {
-		candles, err := e.store.RecentCandles(ctx, p.Symbol, p.Timeframe, 5000)
+		if e.candles == nil {
+			return fmt.Errorf("reconcile %d: store no implementa CandleStore", p.ID)
+		}
+		candles, err := e.candles.RecentCandles(ctx, p.Symbol, p.Timeframe, 5000)
 		if err != nil {
 			return fmt.Errorf("reconcile %d: leyendo velas: %w", p.ID, err)
 		}
