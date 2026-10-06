@@ -970,7 +970,7 @@ func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.Lear
 			limit = n
 		}
 	}
-	telegram.SendMessage(chatID, "🔬 Validando candidato MTF con OOS fijo...")
+	telegram.SendMessage(chatID, "🔬 Validando candidato MTF con walk-forward OOS (reentrenando cada fold)...")
 	wcfg := investingbulls.DefaultWalkForwardConfig()
 	if appCfg != nil {
 		if appCfg.IBWFFolds > 0 {
