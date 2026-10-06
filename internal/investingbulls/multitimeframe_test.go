@@ -222,8 +222,8 @@ func TestSimulateMTFRespectsMainTrendDirection(t *testing.T) {
 		case ms.Trend == TrendBearish && tr.Direction != domain.DirectionSell:
 			t.Fatalf("a short against a bearish 1h trend: %+v", tr)
 		}
-		// La entrada se produce en la apertura posterior a la vela de decisión.
-		if tr.EntryBar <= minLearningBars || tr.EntryBar >= len(entry)-1 {
+		// La entrada MTF se produce al cierre de la vela de decisión, igual que LIVE.
+		if tr.EntryBar < minLearningBars || tr.EntryBar >= len(entry)-1 {
 			t.Fatalf("unexpected entry bar %d", tr.EntryBar)
 		}
 		if tr.Components == "" {
