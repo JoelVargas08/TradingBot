@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -49,6 +50,17 @@ func (ts *TelegramService) SendMessage(chatID int64, text string) error {
 	_, err := ts.bot.Send(msg)
 	if err == nil {
 		return nil
+	}
+
+	// Algunos mensajes contienen texto dinámico que puede incluir "<...>".
+	// Si Telegram rechaza el HTML, reintentamos el mismo contenido como texto
+	// plano para no perder el resultado de aprendizaje/OOS.
+	if strings.Contains(err.Error(), "can't parse entities") {
+		plain := tgbotapi.NewMessage(chatID, truncate(text))
+		if _, plainErr := ts.bot.Send(plain); plainErr == nil {
+			log.Printf("Telegram: HTML inválido; mensaje reenviado como texto plano: chat_id=%d", chatID)
+			return nil
+		}
 	}
 
 	var apiErr *tgbotapi.Error
