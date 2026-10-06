@@ -7,9 +7,9 @@
 3. 15m clasifica `CHOCH_LONG`, `CHOCH_SHORT`, `CONTINUATION_LONG` o `CONTINUATION_SHORT`.
 4. Se exige la confluencia configurada de Fibonacci, imbalance y order block.
 5. 5m es opcional y, cuando se activa, debe confirmar la misma dirección.
-6. Los cuatro setups se miden por separado y los que no alcanzan el filtro mínimo no se conservan.
-7. El candidato queda en `candidate` y se valida con OOS fijo y ventanas walk-forward.
-8. Solo un candidato que pasa la validación pasa a `active`.
+6. El learner MTF evalúa las configuraciones sobre el mismo pipeline que ejecutará Live; los cuatro setups se conservan como familias operativas y sus estadísticas se registran por separado.
+7. El candidato queda en `candidate` y se valida con walk-forward OOS: cada fold aprende solo con su ventana de entrenamiento y congela esos parámetros antes de evaluar la ventana siguiente.
+8. Solo un candidato cuyo proceso de aprendizaje supera la validación OOS pasa a `active`.
 9. El `LiveEngine` puede evaluar una estrategia activa de Investing Bulls en velas cerradas.
 
 ## Comandos Telegram
@@ -24,7 +24,7 @@ Aprende usando confirmación 5m.
 
 `/validateibmtf <strategy_id> BTCUSDT 5000`
 
-Valida el modelo persistido sin volver a optimizar sus parámetros. Si pasa los criterios OOS, se marca `active`; si no, `rejected`.
+Valida el proceso MTF mediante walk-forward: reentrena la misma grid en cada ventana de entrenamiento y evalúa los parámetros congelados en la ventana OOS siguiente. Si pasa los criterios OOS, se marca `active`; si no, `rejected`.
 
 ## Live
 
