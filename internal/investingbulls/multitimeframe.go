@@ -139,7 +139,14 @@ func LearnMultiTimeframe(main, entry, confirm []domain.Kline, cfg LearnConfig, m
 		observability.Log(observability.LearnStarted, "mode", "mtf", "symbol", cfg.Symbol, "status", "confirm_skipped", "reason", confirmSkipReason)
 	}
 	cfg.Timeframe = mtf.EntryTimeframe
-	return learnMultiTimeframeWindow(main, entry, confirm, cfg, mtf, 0, confirmSkipReason)
+	result, err := learnMultiTimeframeWindow(main, entry, confirm, cfg, mtf, 0, confirmSkipReason)
+	if err != nil {
+		return MultiTimeframeLearnResult{}, err
+	}
+	if result.SpecJSON == "" {
+		return result, fmt.Errorf("learn mtf: el aprendizaje MTF exacto no produjo un candidato\\n%s", result.Reason)
+	}
+	return result, nil
 }
 
 // learnMultiTimeframeWindow entrena una candidata MTF sobre UN ÚNICO histórico.
