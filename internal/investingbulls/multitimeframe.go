@@ -144,7 +144,7 @@ func LearnMultiTimeframe(main, entry, confirm []domain.Kline, cfg LearnConfig, m
 		return MultiTimeframeLearnResult{}, err
 	}
 	if result.SpecJSON == "" {
-		return result, fmt.Errorf("learn mtf: el aprendizaje MTF exacto no produjo un candidato\\n%s", result.Reason)
+		return result, fmt.Errorf("learn mtf: el aprendizaje MTF exacto no produjo un candidato\n%s", result.Reason)
 	}
 	return result, nil
 }
