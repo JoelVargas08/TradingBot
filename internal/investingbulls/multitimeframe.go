@@ -523,7 +523,7 @@ func statsBySetup(trades []LearnedTrade, initial float64) map[SetupType]SetupSta
 	out := map[SetupType]SetupStats{}
 	for s, ts := range groups {
 		m := tradeMetrics(ts, initial)
-		out[s] = SetupStats{Trades: m.trades, WinRate: m.winRate, ProfitFactor: m.profitFactor, TotalReturn: m.totalReturn, MaxDrawdown: m.maxDrawdown}
+		out[s] = SetupStats{Trades: m.trades, WinRate: m.winRate, ProfitFactor: recordedProfitFactor(m.profitFactor), TotalReturn: recordedMetric(m.totalReturn), MaxDrawdown: recordedMetric(m.maxDrawdown)}
 	}
 	return out
 }
