@@ -311,7 +311,7 @@ func collectMTFDecisionPoints(
 		var candidate *ClassifiedSetup
 		for j := len(setups) - 1; j >= 0; j-- {
 			c := setups[j]
-			if c.Index >= i || !allow[c.SetupType] {
+			if c.Index > i || !allow[c.SetupType] {
 				continue
 			}
 			if c.Direction == domain.DirectionBuy && ms.Trend != TrendBullish {
@@ -345,10 +345,10 @@ func collectMTFDecisionPoints(
 			continue
 		}
 
-		entryPrice := entry[i+1].Open
-		if entryPrice <= 0 {
-			entryPrice = entry[i+1].Close
-		}
+		// LIVE recibe la señal al cierre de la vela 15m. El learner MTF usa
+		// exactamente ese mismo precio de decisión; la siguiente vela solo
+		// resuelve el resultado de la operación.
+		entryPrice := entry[i].Close
 		if entryPrice <= 0 {
 			continue
 		}
@@ -372,7 +372,7 @@ func collectMTFDecisionPoints(
 		}
 
 		out = append(out, mtfDecisionPoint{
-			index: i, entryBar: i + 1,
+			index: i, entryBar: i,
 			direction: candidate.Direction, setupType: candidate.SetupType,
 			evidence: evidence, levels: levels,
 		})
