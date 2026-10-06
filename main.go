@@ -169,8 +169,14 @@ func main() {
 	// Investing Bulls live evaluator: activation is explicit through environment.
 	var investingBullsLive *strategymanager.LiveEngine
 	if sid := strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID")); sid != "" {
-		investingBullsLive = strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
-		liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL"))
+		st, err := sqliteStore.GetStrategy(ctx, sid)
+		if err != nil {
+			log.Printf("Investing Bulls live: deshabilitado: strategy=%s no encontrada: %v", sid, err)
+		} else if st.Status != domain.StrategyActive {
+			log.Printf("Investing Bulls live: bloqueado: strategy=%s status=%s reason=%s", sid, st.Status, st.Error)
+		} else {
+			investingBullsLive = strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
+			liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL"))
 		if liveSymbol == "" {
 			liveSymbol = "BTCUSDT"
 		}
@@ -178,10 +184,11 @@ func main() {
 		if liveTF == "" {
 			liveTF = "15m"
 		}
-		if err := investingBullsLive.SetSelection(sid, liveSymbol, liveTF); err != nil {
-			log.Printf("Investing Bulls live: %v", err)
-		} else {
-			log.Printf("Investing Bulls live activo: %s %s %s", sid, liveSymbol, liveTF)
+			if err := investingBullsLive.SetSelection(sid, liveSymbol, liveTF); err != nil {
+				log.Printf("Investing Bulls live: %v", err)
+			} else {
+				log.Printf("Investing Bulls live activo: %s %s %s", sid, liveSymbol, liveTF)
+			}
 		}
 	} else {
 		log.Println("Investing Bulls live: deshabilitado (INVESTING_BULLS_STRATEGY_ID vacío)")
