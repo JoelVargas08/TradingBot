@@ -80,6 +80,9 @@ func TestLearnMTFContinuesWithoutConfirmCandles(t *testing.T) {
 	main := hourlyCandles(600)
 	entry := walkCandles(1500, 7, "TEST", "15m", main[0].Start, 15*time.Minute)
 	cfg := learnTestConfig()
+	// Este test valida el mecanismo de salto de 5m, no el umbral de calidad
+	// de producción. El umbral productivo sigue siendo MinTrades=8.
+	cfg.MinTrades = 1
 	mtf := DefaultMultiTimeframeConfig()
 	mtf.RequireConfirm = true
 
@@ -145,6 +148,45 @@ func TestLearnMTFRequiresMainAndEntryCandles(t *testing.T) {
 // El pipeline MTF solo debe operar sobre la dirección que permite el timeframe
 // mayor: una señal contraria a la tendencia de 1H no se descarta después, no se
 // genera.
+func TestLearnMTFUsesExactExecutionPipeline(t *testing.T) {
+	main := hourlyCandles(600)
+	entry := walkCandles(1500, 7, "TEST", "15m", main[0].Start, 15*time.Minute)
+	cfg := learnTestConfig()
+	cfg.MinTrades = 1 // prueba de arquitectura; producción mantiene MinTrades=8
+	mtf := DefaultMultiTimeframeConfig()
+
+	res, err := LearnMultiTimeframe(main, entry, nil, cfg, mtf)
+	if err != nil {
+		t.Fatalf("exact MTF learn failed: %v", err)
+	}
+	if res.SpecJSON == "" {
+		t.Skipf("synthetic series produced no exact MTF candidate: %s", res.Reason)
+	}
+	if res.Model.Base.Trades != len(res.Trades) {
+		t.Fatalf("persisted MTF base reports %d trades but learner returned %d", res.Model.Base.Trades, len(res.Trades))
+	}
+	if res.Model.Base.ConfigsEvaluated != DefaultSearchSpace().Size() {
+		t.Fatalf("expected exact MTF learner to evaluate the full grid, got %d", res.Model.Base.ConfigsEvaluated)
+	}
+	if len(res.Model.AllowedSetups) != 4 {
+		t.Fatalf("expected all four Investing Bulls setup families, got %v", res.Model.AllowedSetups)
+	}
+
+	// La candidata aprendida debe reproducir exactamente sus propias señales
+	// cuando se ejecuta con el mismo modelo y pipeline MTF.
+	replayed := simulateMultiTimeframe(main, entry, nil, cfg, mtf, res.Model.Base, res.Model.AllowedSetups)
+	if len(replayed) != len(res.Trades) {
+		t.Fatalf("replaying the persisted MTF model changed trade count: learned=%d replay=%d", len(res.Trades), len(replayed))
+	}
+	for i := range res.Trades {
+		if res.Trades[i].EntryBar != replayed[i].EntryBar ||
+			res.Trades[i].Direction != replayed[i].Direction ||
+			res.Trades[i].Setup != replayed[i].Setup {
+			t.Fatalf("trade %d differs between learn and execution: learned=%+v replay=%+v", i, res.Trades[i], replayed[i])
+		}
+	}
+}
+
 func TestSimulateMTFRespectsMainTrendDirection(t *testing.T) {
 	main := hourlyCandles(600)
 	entry := walkCandles(1500, 7, "TEST", "15m", main[0].Start, 15*time.Minute)
