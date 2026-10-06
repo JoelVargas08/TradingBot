@@ -15,7 +15,7 @@ import (
 
 // CodeVersion identifica la versión del código que produjo un modelo.
 // Se persiste junto al modelo para reproducibilidad (sec 18).
-const CodeVersion = "investing-bulls/1.1.0"
+const CodeVersion = "investing-bulls/1.2.0"
 
 // minLearningBars es la primera vela evaluable: por debajo no hay estructura
 // confirmada (los swings exigen barras a izquierda y derecha).
