@@ -666,6 +666,7 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 		if len(trainMain) < 100 {
 			folds = append(folds, domain.OOSFold{Bars: oosEnd - trainEnd})
 			lastOOS = oosEnd
+			observability.Log(observability.OOSCompleted, "mode", "mtf_walk_forward_fold", "strategy", strategyID, "symbol", symbol, "fold", n+1, "train_bars", trainEnd, "oos_bars", oosEnd-trainEnd, "trades", 0, "win_rate_pct", 0, "profit_factor", 0, "return_pct", 0, "max_drawdown_pct", 0, "positive", false, "reason", "train_main_insufficient")
 			continue
 		}
 
@@ -679,6 +680,7 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 			// MinTrades ni para reciclar la configuración del histórico completo.
 			folds = append(folds, domain.OOSFold{Bars: oosEnd - trainEnd})
 			lastOOS = oosEnd
+			observability.Log(observability.OOSCompleted, "mode", "mtf_walk_forward_fold", "strategy", strategyID, "symbol", symbol, "fold", n+1, "train_bars", trainEnd, "oos_bars", oosEnd-trainEnd, "trades", 0, "win_rate_pct", 0, "profit_factor", 0, "return_pct", 0, "max_drawdown_pct", 0, "positive", false, "reason", "no_train_candidate")
 			continue
 		}
 
@@ -701,9 +703,11 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 		all = append(all, trades...)
 		lastOOS = oosEnd
 
-		if m.trades >= wcfg.MinOOSTrades && m.profitFactor >= wcfg.MinOOSProfitFactor && m.maxDrawdown <= wcfg.MaxOOSDrawdown {
+		foldPositive := m.trades >= wcfg.MinOOSTrades && m.profitFactor >= wcfg.MinOOSProfitFactor && m.maxDrawdown <= wcfg.MaxOOSDrawdown
+		if foldPositive {
 			positive++
 		}
+		observability.Log(observability.OOSCompleted, "mode", "mtf_walk_forward_fold", "strategy", strategyID, "symbol", symbol, "fold", n+1, "train_bars", trainEnd, "oos_bars", oosEnd-trainEnd, "trades", m.trades, "win_rate_pct", m.winRate*100, "profit_factor", m.profitFactor, "return_pct", m.totalReturn*100, "max_drawdown_pct", m.maxDrawdown*100, "positive", foldPositive)
 	}
 
 	if len(folds) == 0 {
