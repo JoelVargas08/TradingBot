@@ -428,7 +428,7 @@ func TestPendingLimitDoesNotFillOnSignalBar(t *testing.T) {
 	e.SetEntryGate(func() bool { return gate })
 	ev := signal(domain.DirectionBuy, 105)
 	ev.BarTS = time.UnixMilli(2000)
-	ev.Meta = map[string]any{"entry_pending": true, "pending_entry": 100.0, domain.MetaKeyStopLoss: 98.0, domain.MetaKeyTakeProfit: 106.0, domain.MetaKeySetup: "fib_ob"}
+	ev.Meta = map[string]any{"entry_zone_low":100.0, "entry_zone_high":102.0}
 	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("arm: %v", err) }
 	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(2000), Low:99, High:106, Close:103, Closed:true})
 	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatalf("signal candle must not retroactively fill: %d", len(open)) }
@@ -455,6 +455,7 @@ func TestPendingLimitRespectsSessionGate(t *testing.T) {
 func TestOnSignalArmsTwoLimitsAndFillsOnLaterCandle(t *testing.T) {
 	e, st := newTestEngine()
 	ev := signal(domain.DirectionBuy, 110)
+	ev.Meta = map[string]any{}
 	ev.BarTS = time.UnixMilli(1000)
 	ev.Meta["entry_zone_low"] = float64(100)
 	ev.Meta["entry_zone_high"] = float64(105)
