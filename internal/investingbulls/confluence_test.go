@@ -395,10 +395,7 @@ func TestConfluenceTwoOfThreeRejectsOrderBlockImbalanceWithoutFibonacci(t *testi
 	imbs := []Imbalance{{Index: 0, Low: 99.5, High: 100.5, Direction: ImbalanceBullish}}
 	blocks := []OrderBlock{{Index: 0, Low: 99.5, High: 100.5, Direction: OrderBlockBullish, Valid: true}}
 	setup, ok := EvaluateConfluenceAt(ks, 0, Structure{Trend: TrendBullish}, fib, imbs, blocks, cfg)
-	if !ok {
-		t.Fatal("evidence collection should still succeed")
-	}
-	if setup.Valid {
+	if ok || setup.Valid {
 		t.Fatalf("OB+Imbalance without Fibonacci must be rejected: %+v", setup)
 	}
 }
