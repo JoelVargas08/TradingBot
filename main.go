@@ -168,7 +168,9 @@ func main() {
 	eventBus := bus.New(512)
 	// Investing Bulls live evaluator: activation is explicit through environment.
 	var investingBullsLive *strategymanager.LiveEngine
-	if sid := strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID")); sid != "" {
+	investingBullsStrategyID := strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID"))
+	if investingBullsStrategyID != "" {
+		sid := investingBullsStrategyID
 		st, err := sqliteStore.GetStrategy(ctx, sid)
 		if err != nil {
 			log.Printf("Investing Bulls live: deshabilitado: strategy=%s no encontrada: %v", sid, err)
@@ -250,6 +252,12 @@ func main() {
 	}
 	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, processorPositionController, tradingSession, 10000)
 	processorSvc.Start(ctx)
+
+	// Validador PAPER de Investing Bulls: la decisión definitiva se toma
+	// únicamente al cerrar la muestra mínima configurada (100 por defecto).
+	if investingBullsStrategyID != "" && tradingSession != nil && paperEngine != nil {
+		go monitorInvestingBullsPaperValidation(ctx, sqliteStore, tradingSession, investingBullsStrategyID, userManager.ActiveUserIDs(), telegram, cfg)
+	}
 
 	// Motor de estrategia en vivo compartido: TradingView (webhook) y WEEX
 	// (MarketDataService) alimentan el mismo motor; las señales se publican en
@@ -829,6 +837,82 @@ func main() {
 	}
 	checkpointCancel()
 	bot.StopReceivingUpdates()
+}
+
+
+func monitorInvestingBullsPaperValidation(
+	ctx context.Context,
+	store domain.PositionStore,
+	session *session.Manager,
+	strategyID string,
+	userIDs []int64,
+	telegram *services.TelegramService,
+	cfg *config.Config,
+) {
+	minTrades := 100
+	minWinRate := 0.75
+	if cfg != nil {
+		if cfg.IBValidationMinTrades > 0 {
+			minTrades = cfg.IBValidationMinTrades
+		}
+		if cfg.IBValidationMinWinRate > 0 {
+			minWinRate = cfg.IBValidationMinWinRate
+		}
+	}
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	reportedPass := false
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			positions, err := store.ClosedPositions(ctx)
+			if err != nil {
+				log.Printf("IB paper validation: error leyendo operaciones cerradas: %v", err)
+				continue
+			}
+			trades, wins := 0, 0
+			for _, p := range positions {
+				if p.StrategyID != strategyID {
+					continue
+				}
+				trades++
+				if p.NetPnL > 0 {
+					wins++
+				}
+			}
+			if trades < minTrades {
+				continue
+			}
+			winRate := float64(wins) / float64(trades)
+			if winRate < minWinRate {
+				if session != nil && session.IsActive() {
+					session.Stop()
+				}
+				st, err := store.GetStrategy(ctx, strategyID)
+				if err == nil {
+					st.Status = domain.StrategyRejected
+					st.Error = fmt.Sprintf("PAPER rechazado tras %d operaciones: win rate %.2f%% < %.2f%%", trades, winRate*100, minWinRate*100)
+					st.UpdatedAt = time.Now().UTC()
+					if err := store.UpsertStrategy(ctx, st); err != nil {
+						log.Printf("IB paper validation: error rechazando %s: %v", strategyID, err)
+					}
+				}
+				msg := fmt.Sprintf("🛑 <b>Investing Bulls rechazado</b>\n\nEstrategia: <code>%s</code>\nOperaciones: %d/%d\nWin rate: %.2f%%\nMínimo requerido: %.2f%%\n\nLa sesión PAPER fue detenida y no se abrirán nuevas operaciones.", strategyID, trades, minTrades, winRate*100, minWinRate*100)
+				for _, id := range userIDs {
+					telegram.SendMessage(id, msg)
+				}
+				log.Printf("IB paper validation: REJECTED strategy=%s trades=%d winrate=%.2f%%", strategyID, trades, winRate*100)
+				return
+			}
+			if !reportedPass {
+				reportedPass = true
+				log.Printf("IB paper validation: muestra mínima superada strategy=%s trades=%d winrate=%.2f%%", strategyID, trades, winRate*100)
+			}
+		}
+	}
 }
 
 // downloadFile descarga una URL a un archivo local con límite de tamaño y
