@@ -32,10 +32,7 @@ const (
 	// Variante B: Fibonacci + Order Block.
 	ConfluenceFibonacciOrderBlock ConfluenceMode = "fibonacci_order_block"
 	// Variante C: Fibonacci + Imbalance.
-	ConfluenceFibonacciImbalance ConfluenceMode = "fibonacci_imbalance"
-	// Variante D: Order Block + Imbalance.
-	ConfluenceOrderBlockImbalance ConfluenceMode = "order_block_imbalance"
-)
+	ConfluenceFibonacciImbalance ConfluenceMode = "fibonacci_imbalance")
 
 // MaxConfluenceDistanceLimit acota la tolerancia de zona: el learner puede
 // explorar varias distancias, nunca arbitrariamente grandes (sec 5 del plan).
@@ -49,7 +46,6 @@ func SearchConfluenceModes() []ConfluenceMode {
 		ConfluenceAll,
 		ConfluenceFibonacciOrderBlock,
 		ConfluenceFibonacciImbalance,
-		ConfluenceOrderBlockImbalance,
 	}
 }
 
@@ -57,7 +53,7 @@ func SearchConfluenceModes() []ConfluenceMode {
 func (m ConfluenceMode) Valid() bool {
 	switch m {
 	case ConfluenceAll, ConfluenceTwoOfThree,
-		ConfluenceFibonacciOrderBlock, ConfluenceFibonacciImbalance, ConfluenceOrderBlockImbalance:
+		ConfluenceFibonacciOrderBlock, ConfluenceFibonacciImbalance:
 		return true
 	}
 	return false
@@ -82,8 +78,6 @@ func (m ConfluenceMode) RequiredComponents() []ConfluenceComponent {
 		return []ConfluenceComponent{ComponentFibonacci, ComponentOrderBlock}
 	case ConfluenceFibonacciImbalance:
 		return []ConfluenceComponent{ComponentFibonacci, ComponentImbalance}
-	case ConfluenceOrderBlockImbalance:
-		return []ConfluenceComponent{ComponentOrderBlock, ComponentImbalance}
 	case ConfluenceTwoOfThree:
 		return []ConfluenceComponent{ComponentFibonacci, ComponentOrderBlock, ComponentImbalance}
 	}
