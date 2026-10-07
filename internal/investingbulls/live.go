@@ -97,10 +97,45 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 	if !valid || !matched.Valid || matched.Direction != candidate.Direction {
 		return domain.SignalEvent{}, false, nil
 	}
-	plan, ok := buildLearningPlan(matched, fib, k.Close, es, blocks, model.Base.TradePlan)
+	zoneLow, zoneHigh, ok := fibonacciZoneBounds(fib, matched.FibZone)
 	if !ok {
 		return domain.SignalEvent{}, false, nil
 	}
-	ev := domain.SignalEvent{StrategyID: strategy.ID, Symbol: k.Symbol, Timeframe: k.Timeframe, Direction: candidate.Direction, Price: k.Close, BarTS: k.Start, Meta: map[string]any{"source": "investing_bulls", "setup": string(candidate.SetupType), "main_trend": string(ms.Trend), "stop_loss": plan.StopLoss, "take_profit": plan.TakeProfit}}
+	// La señal arma la zona; NO representa una ejecución al cierre de 15m.
+	// Se usan dos límites en los extremos de la zona, siguiendo el patrón de
+	// entradas escalonadas del material fuente.
+	firstEntry := zoneHigh
+	if candidate.Direction == domain.DirectionSell {
+		firstEntry = zoneLow
+	}
+	plan, ok := buildLearningPlan(matched, fib, firstEntry, es, blocks, model.Base.TradePlan)
+	if !ok {
+		return domain.SignalEvent{}, false, nil
+	}
+	ev := domain.SignalEvent{
+		StrategyID: strategy.ID, Symbol: k.Symbol, Timeframe: k.Timeframe,
+		Direction: candidate.Direction, Price: firstEntry, BarTS: k.Start,
+		Meta: map[string]any{
+			"source": "investing_bulls", "setup": string(candidate.SetupType),
+			"main_trend": string(ms.Trend), "stop_loss": plan.StopLoss,
+			"take_profit": plan.TakeProfit, "entry_zone_low": zoneLow,
+			"entry_zone_high": zoneHigh, "entry_mode": "two_limit_orders",
+		},
+	}
 	return ev, true, nil
+}
+
+
+func fibonacciZoneBounds(f Fibonacci, zone int) (float64, float64, bool) {
+	switch zone {
+	case 1:
+		if f.Zone1Low > 0 && f.Zone1High > f.Zone1Low {
+			return f.Zone1Low, f.Zone1High, true
+		}
+	case 2:
+		if f.Zone2Low > 0 && f.Zone2High > f.Zone2Low {
+			return f.Zone2Low, f.Zone2High, true
+		}
+	}
+	return 0, 0, false
 }
