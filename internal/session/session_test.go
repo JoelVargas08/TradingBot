@@ -290,3 +290,38 @@ func TestDisablingScheduleClearsOverride(t *testing.T) {
 		t.Fatalf("override = %v, want OverrideNone tras deshabilitar horario", m.Override())
 	}
 }
+
+func TestStartForExpiresAndDisablesNewEntries(t *testing.T) {
+	m := New(false)
+	m.StartFor(25 * time.Millisecond)
+	if !m.IsActive() {
+		t.Fatal("StartFor debe activar inmediatamente")
+	}
+	started := m.StartedAt()
+	if started.IsZero() {
+		t.Fatal("StartFor debe registrar StartedAt")
+	}
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for m.IsActive() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if m.IsActive() {
+		t.Fatal("la sesión debe detenerse al vencer la duración")
+	}
+	if m.Override() != OverrideNone {
+		t.Fatalf("sin horario, la expiración debe dejar OverrideNone; got %v", m.Override())
+	}
+}
+
+func TestStopCancelsTimedSession(t *testing.T) {
+	m := New(false)
+	m.StartFor(100 * time.Millisecond)
+	m.Stop()
+	if m.IsActive() {
+		t.Fatal("Stop debe detener una sesión temporizada")
+	}
+	time.Sleep(150 * time.Millisecond)
+	if m.IsActive() {
+		t.Fatal("el temporizador cancelado no debe reactivar la sesión")
+	}
+}
