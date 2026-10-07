@@ -118,15 +118,16 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 		return nil
 	}
 
-	first, second := zoneLow, zoneHigh
+	first, second := zoneHigh, zoneLow
+	if ev.Direction == domain.DirectionSell { first, second = zoneLow, zoneHigh }
 	halfQty, halfRisk := decision.Quantity/2, decision.RiskAmount/2
 	entries := []pendingEntry{
 		{Key:key+"|1",StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:ev.Direction,Price:first,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:halfQty,RiskAmount:halfRisk,BarTS:ev.BarTS},
 		{Key:key+"|2",StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:ev.Direction,Price:second,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:halfQty,RiskAmount:halfRisk,BarTS:ev.BarTS},
 	}
-	// For shorts the first touch is the lower boundary; for longs it is also
-	// the lower boundary when price retraces into the zone from above. Both
-	// entries remain armed and are filled independently.
+	// Both entries remain armed and are filled independently. The first level
+	// follows the natural approach into the zone: high boundary for longs,
+	// low boundary for shorts.
 	e.mu.Lock()
 	e.pending[key] = entries
 	e.mu.Unlock()
