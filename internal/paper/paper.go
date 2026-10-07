@@ -98,6 +98,34 @@ func (e *Engine) openAtPrice(ctx context.Context, ev domain.SignalEvent) error {
 	if err != nil { return fmt.Errorf("abriendo posición: %w", err) }; return nil
 }
 
+func (e *Engine) SetEntryGate(gate func() bool) *Engine {
+	e.pendingMu.Lock(); defer e.pendingMu.Unlock(); e.entryGate = gate; return e
+}
+
+func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
+	if !k.Closed { return }
+	e.pendingMu.Lock(); gate := e.entryGate
+	orders := make([]pendingLimit, 0, len(e.pending))
+	for key, p := range e.pending {
+		if !p.expiresAt.IsZero() && k.Start.After(p.expiresAt) { delete(e.pending, key); continue }
+		if p.event.Symbol != k.Symbol || p.event.Timeframe != k.Timeframe || !k.Start.After(p.event.BarTS) { continue }
+		orders = append(orders, p)
+	}
+	e.pendingMu.Unlock()
+	if gate != nil && !gate() { return }
+	for _, p := range orders {
+		if !limitTouched(p.event.Direction, p.limit, k) { continue }
+		ev := p.event; ev.Price = p.limit; delete(ev.Meta, "entry_pending")
+		if err := e.openAtPrice(ctx, ev); err != nil { log.Printf("paper: ejecución limit IB %s %.2f: %v", ev.Key(), p.limit, err); continue }
+		e.pendingMu.Lock(); delete(e.pending, ev.IdempotencyKey()); e.pendingMu.Unlock()
+		log.Printf("paper: limit IB ejecutada %s %s %.2f", ev.Symbol, ev.Direction, p.limit)
+	}
+}
+
+func limitTouched(side domain.Direction, price float64, k domain.Kline) bool {
+	if price <= 0 { return false }; if side == domain.DirectionBuy { return k.Low <= price }; return k.High >= price
+}
+
 // Recover reconstruye el equity al arrancar a partir del estado persistido.
 func (e *Engine) Recover(ctx context.Context) error {
 	acc, err := e.store.GetAccount(ctx)
