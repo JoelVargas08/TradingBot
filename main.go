@@ -842,7 +842,7 @@ func main() {
 
 func monitorInvestingBullsPaperValidation(
 	ctx context.Context,
-	store domain.PositionStore,
+	store *store.Store,
 	session *session.Manager,
 	strategyID string,
 	userIDs []int64,
