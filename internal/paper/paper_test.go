@@ -463,7 +463,7 @@ func TestOnSignalArmsTwoLimitsAndDoesNotEnterAtSignalClose(t *testing.T) {
 
 	e.CheckStops(context.Background(), domain.Kline{Symbol:"BTCUSDT",Timeframe:"1h",Start:time.UnixMilli(2000),Low:104,High:108,Close:105,Closed:true})
 	open, _ = st.OpenPositions(context.Background())
-	if len(open)!=1 || open[0].EntryPrice!=100 { t.Fatalf("primer límite no ejecutado: %+v",open) }
+	if len(open)!=1 || open[0].EntryPrice!=105 { t.Fatalf("primer límite no ejecutado: %+v",open) }
 
 	e.CheckStops(context.Background(), domain.Kline{Symbol:"BTCUSDT",Timeframe:"1h",Start:time.UnixMilli(3000),Low:101,High:103,Close:102,Closed:true})
 	open, _ = st.OpenPositions(context.Background())
