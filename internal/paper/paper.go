@@ -90,8 +90,8 @@ func (e *Engine) SetSessionGate(g interface{ IsActive() bool }) *Engine {
 func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
 	if e.session != nil && !e.session.IsActive() { return nil }
-	zoneLow, hasLow := metaFloat(ev.Meta, "entry_zone_low")
-	zoneHigh, hasHigh := metaFloat(ev.Meta, "entry_zone_high")
+	zoneLow, hasLow := paperMetaFloat(ev.Meta, "entry_zone_low")
+	zoneHigh, hasHigh := paperMetaFloat(ev.Meta, "entry_zone_high")
 	twoLimits := hasLow && hasHigh && zoneLow > 0 && zoneHigh > zoneLow
 	open, err := e.store.OpenPositions(ctx); if err != nil { return fmt.Errorf("listando posiciones abiertas: %w", err) }
 	for _, p := range open {
@@ -540,4 +540,21 @@ func (e *Engine) GetAccount(ctx context.Context) (domain.Account, error) {
 // UpdateAccount implementa domain.PositionStore.
 func (e *Engine) UpdateAccount(ctx context.Context, a domain.Account) error {
 	return e.store.UpdateAccount(ctx, a)
+}
+
+func paperMetaFloat(meta map[string]any, key string) (float64, bool) {
+	v, ok := meta[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
+	}
 }
