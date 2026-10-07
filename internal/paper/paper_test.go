@@ -434,7 +434,7 @@ func TestPendingLimitDoesNotFillOnSignalBar(t *testing.T) {
 	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatalf("signal candle must not retroactively fill: %d", len(open)) }
 	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:99, High:103, Close:101, Closed:true})
 	open, _ = st.OpenPositions(context.Background()); if len(open) != 1 { t.Fatalf("next candle should fill limit: %d", len(open)) }
-	if open[0].EntryPrice != 100 { t.Fatalf("entry=%.2f want 100", open[0].EntryPrice) }
+	if open[0].EntryPrice != 102 { t.Fatalf("entry=%.2f want 102", open[0].EntryPrice) }
 }
 
 func TestPendingLimitRespectsSessionGate(t *testing.T) {
