@@ -16,6 +16,7 @@ import (
 // SessionController expone el control de sesión de trading al handler.
 type SessionController interface {
 	Start()
+	StartFor(time.Duration)
 	Stop()
 	IsActive() bool
 	StartedAt() time.Time
@@ -128,12 +129,19 @@ func (ch *CommandsHandler) HandleSessionStart(chatID int64) {
 		)
 		return
 	}
-	ch.session.Start()
+	duration := 6 * time.Hour
+	ch.session.StartFor(duration)
+	end := ch.session.StartedAt().Add(duration)
 	ch.telegram.SendMessage(
 		chatID,
-		"🟢 <b>Sesión de trading INICIADA</b>\n\n"+
+		fmt.Sprintf("🟢 <b>Sesión de trading INICIADA</b>\n\n"+
+			"Iniciada: %s\n"+
+			"Finaliza: %s\n"+
+			"Duración: 6 horas\n"+
 			"Nuevas operaciones: habilitadas\n"+
 			"Modo de ejecución: PAPER",
+			ch.session.StartedAt().Format("2006-01-02 15:04:05"),
+			end.Format("2006-01-02 15:04:05")),
 	)
 }
 func (ch *CommandsHandler) HandleSessionStop(chatID int64) {
