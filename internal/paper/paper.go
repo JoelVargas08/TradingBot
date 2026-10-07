@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sync"
 	"time"
 
 	"tradingview-bot/internal/domain"
@@ -37,6 +38,23 @@ type Engine struct {
 	riskCtrl domain.RiskDecider
 	cfg      Config
 	marks    domain.MarkStore
+	mu       sync.Mutex
+	pending  map[string][]pendingEntry
+	session  interface{ IsActive() bool }
+}
+
+type pendingEntry struct {
+	Key string
+	StrategyID string
+	Symbol string
+	Timeframe string
+	Side domain.Direction
+	Price float64
+	StopLoss float64
+	TakeProfit float64
+	Quantity float64
+	RiskAmount float64
+	BarTS time.Time
 }
 
 // New crea un Engine que persiste en store y delega la decisión en riskCtrl.
@@ -50,6 +68,7 @@ func New(store domain.PositionStore, riskCtrl domain.RiskDecider, cfg Config) *E
 		candles:  candles,
 		riskCtrl: riskCtrl,
 		cfg:      cfg.withDefaults(),
+		pending:  make(map[string][]pendingEntry),
 	}
 }
 
@@ -60,56 +79,44 @@ func (e *Engine) SetMarkStore(ms domain.MarkStore) *Engine {
 	return e
 }
 
+func (e *Engine) SetSessionGate(g interface{ IsActive() bool }) *Engine {
+	e.session = g
+	return e
+}
+
 // OnSignal aplica el flujo de ejecución paper sobre una señal:
 // cierra posiciones contrarias con costes, ignora mismas direcciones,
 // evalúa riesgo y abre posición si está permitido.
 func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
-	if e.riskCtrl == nil {
-		return fmt.Errorf("controlador de riesgo no configurado")
-	}
-	open, err := e.store.OpenPositions(ctx)
-	if err != nil {
-		return fmt.Errorf("listando posiciones abiertas: %w", err)
-	}
+	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
+	if e.session != nil && !e.session.IsActive() { return nil }
+	zoneLow, hasLow := metaFloat(ev.Meta, "entry_zone_low")
+	zoneHigh, hasHigh := metaFloat(ev.Meta, "entry_zone_high")
+	twoLimits := hasLow && hasHigh && zoneLow > 0 && zoneHigh > zoneLow
+	open, err := e.store.OpenPositions(ctx); if err != nil { return fmt.Errorf("listando posiciones abiertas: %w", err) }
 	for _, p := range open {
-		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe {
-			continue
-		}
-		if p.Side == ev.Direction {
-			return nil
-		}
-		if err := e.closePosition(ctx, p.ID, ev.Price, time.Now(), domain.CloseOptions{Reason: "signal-contrary"}); err != nil {
-			return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err)
-		}
+		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe { continue }
+		if p.Side == ev.Direction { return nil }
+		if err := e.closePosition(ctx, p.ID, ev.Price, time.Now(), domain.CloseOptions{Reason:"signal-contrary"}); err != nil { return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err) }
 	}
-
-	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev)
-	if err != nil {
-		return err
+	key := ev.IdempotencyKey()
+	e.mu.Lock()
+	if len(e.pending[key]) > 0 { e.mu.Unlock(); return nil }
+	for k, entries := range e.pending { if len(entries)>0 && entries[0].StrategyID==ev.StrategyID && entries[0].Symbol==ev.Symbol && entries[0].Timeframe==ev.Timeframe && entries[0].Side!=ev.Direction { delete(e.pending,k) } }
+	e.mu.Unlock()
+	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev); if err != nil { return err }
+	if !decision.Allowed { return fmt.Errorf("señal rechazada: %s", decision.Reason) }
+	if !twoLimits {
+		_, err = e.store.OpenPosition(ctx, domain.Position{StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:decision.Side,EntryTS:time.Now(),EntryPrice:decision.EntryPrice,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:decision.Quantity,RiskAmount:decision.RiskAmount,Status:domain.PositionOpen})
+		if err != nil { return fmt.Errorf("abriendo posición: %w",err) }; return nil
 	}
-	if !decision.Allowed {
-		return fmt.Errorf("señal rechazada: %s", decision.Reason)
-	}
-
-	_, err = e.store.OpenPosition(ctx, domain.Position{
-		StrategyID: ev.StrategyID,
-		Symbol:     ev.Symbol,
-		Timeframe:  ev.Timeframe,
-		Side:       decision.Side,
-		EntryTS:    time.Now(),
-		EntryPrice: decision.EntryPrice,
-		StopLoss:   decision.StopLoss,
-		TakeProfit: decision.TakeProfit,
-		Quantity:   decision.Quantity,
-		RiskAmount: decision.RiskAmount,
-		Status:     domain.PositionOpen,
-	})
-	if err != nil {
-		return fmt.Errorf("abriendo posición: %w", err)
-	}
+	first, second := zoneHigh, zoneLow; if ev.Direction==domain.DirectionSell { first, second=zoneLow,zoneHigh }
+	halfQty, halfRisk := decision.Quantity/2, decision.RiskAmount/2
+	entries := []pendingEntry{{Key:key+"|1",StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:ev.Direction,Price:first,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:halfQty,RiskAmount:halfRisk,BarTS:ev.BarTS},{Key:key+"|2",StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:ev.Direction,Price:second,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:halfQty,RiskAmount:halfRisk,BarTS:ev.BarTS}}
+	e.mu.Lock(); e.pending[key]=entries; e.mu.Unlock()
+	log.Printf("paper: zona armada %s %s %.8f-%.8f con 2 límites",ev.Symbol,ev.Direction,zoneLow,zoneHigh)
 	return nil
 }
-
 // Recover reconstruye el equity al arrancar a partir del estado persistido.
 func (e *Engine) Recover(ctx context.Context) error {
 	acc, err := e.store.GetAccount(ctx)
@@ -233,21 +240,27 @@ func (e *Engine) closePosition(ctx context.Context, id int64, exitPrice float64,
 
 // CheckStops revisa una vela cerrada y cierra posiciones cuyo SL/TP se tocó.
 func (e *Engine) CheckStops(ctx context.Context, k domain.Kline) {
-	if !k.Closed {
-		return
-	}
-	open, err := e.store.OpenPositions(ctx)
-	if err != nil {
-		log.Printf("paper: leyendo posiciones abiertas: %v", err)
-		return
-	}
-	for _, p := range open {
-		if p.Symbol != k.Symbol || p.Timeframe != k.Timeframe {
-			continue
+	if !k.Closed { return }
+	if e.session == nil || e.session.IsActive() { e.fillPending(ctx,k) }
+	open, err := e.store.OpenPositions(ctx); if err != nil { log.Printf("paper: leyendo posiciones abiertas: %v",err); return }
+	for _, p := range open { if p.Symbol==k.Symbol && p.Timeframe==k.Timeframe { e.checkPosition(ctx,p,k) } }
+}
+
+func (e *Engine) fillPending(ctx context.Context,k domain.Kline) {
+	e.mu.Lock(); defer e.mu.Unlock()
+	for key, entries := range e.pending {
+		remaining := entries[:0]
+		for _, pe := range entries {
+			if pe.Symbol!=k.Symbol || pe.Timeframe!=k.Timeframe || k.Low>pe.Price || pe.Price>k.High { remaining=append(remaining,pe); continue }
+			_, err := e.store.OpenPosition(ctx,domain.Position{StrategyID:pe.StrategyID,Symbol:pe.Symbol,Timeframe:pe.Timeframe,Side:pe.Side,EntryTS:k.Start,EntryPrice:pe.Price,StopLoss:pe.StopLoss,TakeProfit:pe.TakeProfit,Quantity:pe.Quantity,RiskAmount:pe.RiskAmount,Status:domain.PositionOpen})
+			if err!=nil { log.Printf("paper: ejecutando límite %.8f: %v",pe.Price,err); remaining=append(remaining,pe); continue }
+			log.Printf("paper: límite ejecutado %s %s price=%.8f qty=%.8f",pe.Symbol,pe.Side,pe.Price,pe.Quantity)
 		}
-		e.checkPosition(ctx, p, k)
+		if len(remaining)==0 { delete(e.pending,key) } else { e.pending[key]=remaining }
 	}
 }
+
+func (e *Engine) CancelPending() { e.mu.Lock(); defer e.mu.Unlock(); clear(e.pending) }
 
 func (e *Engine) checkPosition(ctx context.Context, p domain.Position, k domain.Kline) {
 	var hitStop, hitTarget bool
