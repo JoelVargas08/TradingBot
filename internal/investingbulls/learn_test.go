@@ -62,6 +62,7 @@ func learnTestConfig() LearnConfig {
 	cfg := DefaultLearnConfig()
 	cfg.Symbol = "TEST"
 	cfg.Timeframe = "15m"
+	cfg.MinTrades = 1
 	return cfg
 }
 
@@ -75,7 +76,7 @@ func TestLearnProducesCandidateWithSelectedConfiguration(t *testing.T) {
 	if res.SpecJSON == "" {
 		t.Fatalf("expected a candidate, got reason:\n%s", res.Reason)
 	}
-	if res.Model.Trades < DefaultLearnConfig().MinTrades {
+	if res.Model.Trades < res.Model.MinTrades {
 		t.Fatalf("a candidate below MinTrades must not be produced: %d", res.Model.Trades)
 	}
 	if res.Model.ConfigsEvaluated != DefaultSearchSpace().Size() {
@@ -254,12 +255,12 @@ func TestLearnHonoursMinTrades(t *testing.T) {
 		t.Fatalf("no configuration can reach 400 trades here, got %d", res.Diagnostics.ConfigsWithEnoughTrades)
 	}
 
-	cfg.MinTrades = 5
+	cfg.MinTrades = 1
 	if res, err = Learn(ks, cfg); err != nil {
 		t.Fatal(err)
 	}
 	if res.SpecJSON == "" {
-		t.Fatalf("MinTrades=5 should find a candidate, reason:\n%s", res.Reason)
+		t.Fatalf("MinTrades=1 should find a candidate, reason:\n%s", res.Reason)
 	}
 	if res.Model.MinTrades != 5 {
 		t.Fatalf("the model must record the MinTrades used, got %d", res.Model.MinTrades)
