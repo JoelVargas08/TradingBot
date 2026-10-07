@@ -256,7 +256,7 @@ func main() {
 	// Validador PAPER de Investing Bulls: la decisión definitiva se toma
 	// únicamente al cerrar la muestra mínima configurada (100 por defecto).
 	if investingBullsStrategyID != "" && tradingSession != nil && paperEngine != nil {
-		go monitorInvestingBullsPaperValidation(ctx, sqliteStore, tradingSession, investingBullsStrategyID, userManager.ActiveUserIDs(), telegram, cfg)
+		go monitorInvestingBullsPaperValidation(ctx, sqliteStore, tradingSession, investingBullsStrategyID, userManager, telegram, cfg)
 	}
 
 	// Motor de estrategia en vivo compartido: TradingView (webhook) y WEEX
@@ -845,7 +845,7 @@ func monitorInvestingBullsPaperValidation(
 	store *store.Store,
 	session *session.Manager,
 	strategyID string,
-	userIDs []int64,
+	userManager *models.UserManager,
 	telegram *services.TelegramService,
 	cfg *config.Config,
 ) {
@@ -901,8 +901,10 @@ func monitorInvestingBullsPaperValidation(
 					}
 				}
 				msg := fmt.Sprintf("🛑 <b>Investing Bulls rechazado</b>\n\nEstrategia: <code>%s</code>\nOperaciones: %d/%d\nWin rate: %.2f%%\nMínimo requerido: %.2f%%\n\nLa sesión PAPER fue detenida y no se abrirán nuevas operaciones.", strategyID, trades, minTrades, winRate*100, minWinRate*100)
-				for _, id := range userIDs {
-					telegram.SendMessage(id, msg)
+				if userManager != nil {
+					for _, id := range userManager.ActiveUserIDs() {
+						telegram.SendMessage(id, msg)
+					}
 				}
 				log.Printf("IB paper validation: REJECTED strategy=%s trades=%d winrate=%.2f%%", strategyID, trades, winRate*100)
 				return
