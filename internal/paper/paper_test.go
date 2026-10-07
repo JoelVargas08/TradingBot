@@ -469,3 +469,32 @@ func TestOnSignalArmsTwoLimitsAndDoesNotEnterAtSignalClose(t *testing.T) {
 	open, _ = st.OpenPositions(context.Background())
 	if len(open)!=2 { t.Fatalf("segundo límite debe ejecutarse: %d",len(open)) }
 }
+
+func TestPendingZoneFillsOnlyOnLaterCandle(t *testing.T) {
+	e, st := newTestEngine()
+	e.SetEntryGate(func() bool { return true })
+	ev := signal(domain.DirectionBuy, 105)
+	ev.BarTS = time.UnixMilli(2000)
+	ev.Meta = map[string]any{"entry_zone_low":100.0, "entry_zone_high":102.0, domain.MetaKeyStopLoss:98.0, domain.MetaKeyTakeProfit:106.0, domain.MetaKeySetup:"fib_ob"}
+	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("arm: %v", err) }
+	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(2000), Low:99, High:106, Close:103, Closed:true})
+	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatalf("signal candle must not fill: %d", len(open)) }
+	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:101, High:103, Close:102, Closed:true})
+	open, _ = st.OpenPositions(context.Background()); if len(open) != 1 { t.Fatalf("later candle should fill: %d", len(open)) }
+	if open[0].EntryPrice != 102 { t.Fatalf("entry=%.2f want 102", open[0].EntryPrice) }
+}
+
+func TestPendingZoneRespectsSessionGate(t *testing.T) {
+	e, st := newTestEngine()
+	gate := false
+	e.SetEntryGate(func() bool { return gate })
+	ev := signal(domain.DirectionBuy, 105)
+	ev.BarTS = time.UnixMilli(2000)
+	ev.Meta = map[string]any{"entry_zone_low":100.0, "entry_zone_high":102.0, domain.MetaKeyStopLoss:98.0, domain.MetaKeyTakeProfit:106.0, domain.MetaKeySetup:"fib_ob"}
+	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("inactive arm: %v", err) }
+	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatal("inactive session must not create position") }
+	gate = true
+	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("active arm: %v", err) }
+	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:101, High:103, Close:102, Closed:true})
+	open, _ = st.OpenPositions(context.Background()); if len(open) != 1 { t.Fatalf("active session should fill: %d", len(open)) }
+}
