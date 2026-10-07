@@ -117,7 +117,7 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 			"source":"investing_bulls", "setup":string(candidate.SetupType),
 			"main_trend":string(ms.Trend), "stop_loss":plan.StopLoss,
 			"take_profit":plan.TakeProfit, "entry_pending":true,
-			"pending_entry":pendingEntry, "entry_zone_low":zoneLow,
+			"pending_entry":pendingEntry, "signal_market_price":k.Close, "entry_zone_low":zoneLow,
 			"entry_zone_high":zoneHigh,
 		},
 	}
