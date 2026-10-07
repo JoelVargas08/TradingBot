@@ -211,7 +211,8 @@ func main() {
 		}
 		riskManager = risk.New(sqliteStore, riskCfg)
 		paperEngine = paper.New(sqliteStore, riskManager, paper.Config{}).
-			SetMarkStore(sqliteStore)
+			SetMarkStore(sqliteStore).
+			SetSessionGate(tradingSession)
 		// Inicializar la cuenta con Equity/PeakEquity en el primer arranque; no
 		// esperar al primer cierre de posición.
 		if _, err := sqliteStore.GetAccount(ctx); errors.Is(err, domain.ErrNotFound) {
