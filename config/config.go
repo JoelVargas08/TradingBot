@@ -95,6 +95,8 @@ type Config struct {
 	IBConfirmTimeframe string
 	IBConfirm5M        bool
 	IBMinTrades        int
+	IBValidationMinTrades int
+	IBValidationMinWinRate float64
 	IBMaxStopPct       float64
 	IBWFFolds          int
 	IBWFTrainPct       float64
@@ -189,6 +191,8 @@ func Load() (*Config, error) {
 		IBConfirmTimeframe: getEnv("INVESTING_BULLS_CONFIRM_TIMEFRAME", "5m"),
 		IBConfirm5M:        getEnvBool("INVESTING_BULLS_CONFIRM_5M", true),
 		IBMinTrades:        getEnvInt("INVESTING_BULLS_MIN_TRADES", 8),
+		IBValidationMinTrades: getEnvInt("INVESTING_BULLS_VALIDATION_MIN_TRADES", 100),
+		IBValidationMinWinRate: getEnvFloat("INVESTING_BULLS_VALIDATION_MIN_WIN_RATE", 0.75),
 		IBMaxStopPct:       getEnvFloat("INVESTING_BULLS_MAX_STOP", 0.02),
 		IBWFFolds:          getEnvInt("INVESTING_BULLS_WF_FOLDS", 4),
 		IBWFTrainPct:       getEnvFloat("INVESTING_BULLS_WF_TRAIN_PCT", 0.60),
