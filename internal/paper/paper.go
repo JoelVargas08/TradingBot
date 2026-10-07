@@ -32,11 +32,18 @@ func (c Config) withDefaults() Config {
 
 // Engine es el motor de paper trading: abre/cierra posiciones, vigila
 // SL/TP con velas cerradas, actualiza equity intratrade y calcula métricas.
-type pendingLimit struct {
-	event     domain.SignalEvent
-	limit     float64
-	createdAt time.Time
-	expiresAt time.Time
+type pendingEntry struct {
+	Key string
+	StrategyID string
+	Symbol string
+	Timeframe string
+	Side domain.Direction
+	Price float64
+	StopLoss float64
+	TakeProfit float64
+	Quantity float64
+	RiskAmount float64
+	BarTS time.Time
 }
 
 type Engine struct {
@@ -45,8 +52,8 @@ type Engine struct {
 	riskCtrl domain.RiskDecider
 	cfg      Config
 	marks    domain.MarkStore
-	pendingMu sync.Mutex
-	pending   map[string]pendingLimit
+	mu       sync.Mutex
+	pending  map[string][]pendingEntry
 	entryGate func() bool
 }
 
@@ -61,7 +68,7 @@ func New(store domain.PositionStore, riskCtrl domain.RiskDecider, cfg Config) *E
 		candles:  candles,
 		riskCtrl: riskCtrl,
 		cfg:      cfg.withDefaults(),
-		pending:  make(map[string]pendingLimit),
+		pending:  make(map[string][]pendingEntry),
 	}
 }
 
@@ -73,8 +80,55 @@ func (e *Engine) SetMarkStore(ms domain.MarkStore) *Engine {
 }
 
 func (e *Engine) SetSessionGate(g interface{ IsActive() bool }) *Engine {
-	e.session = g
+	if g == nil { e.entryGate = nil } else { e.entryGate = g.IsActive }
 	return e
+}
+
+func (e *Engine) SetEntryGate(g func() bool) *Engine {
+	e.entryGate = g
+	return e
+}
+
+func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
+	if !k.Closed { return }
+	if e.entryGate != nil && !e.entryGate() { return }
+	e.mu.Lock()
+	var fills []pendingEntry
+	for key, entries := range e.pending {
+		if len(entries) == 0 { delete(e.pending, key); continue }
+		remaining := entries[:0]
+		for _, p := range entries {
+			if p.Symbol != k.Symbol || p.Timeframe != k.Timeframe || !k.Start.After(p.BarTS) { remaining = append(remaining, p); continue }
+			touched := (p.Side == domain.DirectionBuy && k.Low <= p.Price) || (p.Side == domain.DirectionSell && k.High >= p.Price)
+			if touched { fills = append(fills, p) } else { remaining = append(remaining, p) }
+		}
+		if len(remaining) == 0 { delete(e.pending, key) } else { e.pending[key] = remaining }
+	}
+	e.mu.Unlock()
+	for _, p := range fills {
+		ev := domain.SignalEvent{StrategyID:p.StrategyID, Symbol:p.Symbol, Timeframe:p.Timeframe, Direction:p.Side, Price:p.Price, BarTS:k.Start, Meta:map[string]any{domain.MetaKeyStopLoss:p.StopLoss, domain.MetaKeyTakeProfit:p.TakeProfit, domain.MetaKeySetup:"investing_bulls_limit_fill"}}
+		if err := e.openPending(ctx, ev, p.Quantity, p.RiskAmount); err != nil { log.Printf("paper: limit IB %.8f no ejecutada: %v", p.Price, err); continue }
+		e.mu.Lock()
+		for key, entries := range e.pending {
+			filtered := entries[:0]
+			for _, other := range entries { if other.StrategyID != p.StrategyID || other.Symbol != p.Symbol || other.Timeframe != p.Timeframe || other.Side != p.Side { filtered = append(filtered, other) } }
+			if len(filtered)==0 { delete(e.pending,key) } else { e.pending[key]=filtered }
+		}
+		e.mu.Unlock()
+		log.Printf("paper: limit IB ejecutada %s %s %.8f", p.Symbol, p.Side, p.Price)
+	}
+}
+
+func (e *Engine) openPending(ctx context.Context, ev domain.SignalEvent, quantity, riskAmount float64) error {
+	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
+	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev)
+	if err != nil { return err }
+	if !decision.Allowed { return fmt.Errorf("señal rechazada: %s", decision.Reason) }
+	if quantity > 0 { decision.Quantity = quantity }
+	if riskAmount > 0 { decision.RiskAmount = riskAmount }
+	_, err = e.store.OpenPosition(ctx, domain.Position{StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:decision.Side,EntryTS:time.Now(),EntryPrice:decision.EntryPrice,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:decision.Quantity,RiskAmount:decision.RiskAmount,Status:domain.PositionOpen})
+	if err != nil { return fmt.Errorf("abriendo posición límite: %w",err) }
+	return nil
 }
 
 // OnSignal aplica el flujo de ejecución paper sobre una señal:
@@ -82,7 +136,7 @@ func (e *Engine) SetSessionGate(g interface{ IsActive() bool }) *Engine {
 // evalúa riesgo y abre posición si está permitido.
 func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
-	if e.session != nil && !e.session.IsActive() { return nil }
+	if e.entryGate != nil && !e.entryGate() { return nil }
 
 	zoneLow, hasLow := paperMetaFloat(ev.Meta, "entry_zone_low")
 	zoneHigh, hasHigh := paperMetaFloat(ev.Meta, "entry_zone_high")
@@ -93,7 +147,9 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	for _, p := range open {
 		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe { continue }
 		if p.Side == ev.Direction { return nil }
-		if err := e.closePosition(ctx, p.ID, ev.Price, time.Now(), domain.CloseOptions{Reason:"signal-contrary"}); err != nil {
+		exitPrice := ev.Price
+		if market, ok := paperMetaFloat(ev.Meta, "signal_market_price"); ok && market > 0 { exitPrice = market }
+		if err := e.closePosition(ctx, p.ID, exitPrice, time.Now(), domain.CloseOptions{Reason:"signal-contrary"}); err != nil {
 			return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err)
 		}
 	}
@@ -258,7 +314,7 @@ func (e *Engine) closePosition(ctx context.Context, id int64, exitPrice float64,
 // CheckStops revisa una vela cerrada y cierra posiciones cuyo SL/TP se tocó.
 func (e *Engine) CheckStops(ctx context.Context, k domain.Kline) {
 	if !k.Closed { return }
-	if e.session == nil || e.session.IsActive() { e.fillPending(ctx,k) }
+	if e.entryGate == nil || e.entryGate() { e.fillPending(ctx,k) }
 	open, err := e.store.OpenPositions(ctx)
 	if err != nil { log.Printf("paper: leyendo posiciones abiertas: %v",err); return }
 	for _, p := range open { if p.Symbol==k.Symbol && p.Timeframe==k.Timeframe { e.checkPosition(ctx,p,k) } }
