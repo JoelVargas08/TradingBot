@@ -81,6 +81,7 @@ type Manager struct {
 	started  time.Time
 	schedule Schedule
 	override Override
+	timer    *time.Timer
 }
 
 // New crea un Manager. Si startActive es true la sesión arranca activa.
@@ -119,19 +120,51 @@ func (m *Manager) Schedule() Schedule {
 	return m.schedule
 }
 
-// Start activa la sesión explícitamente. Si hay horario, queda como override
-// de inicio. Si ya estaba activa no cambia started (a menos que haya pasado
-// por una detención previa).
+// Start activa la sesión explícitamente sin límite temporal. Se conserva para
+// callers internos/compatibilidad; el comando /session_start usa StartFor.
 func (m *Manager) Start() {
+	m.start(0)
+}
+
+// StartFor activa la sesión explícitamente durante duration. Al vencer el
+// temporizador se deshabilitan nuevas entradas y el override pasa a STOP.
+// duration <= 0 equivale a Start sin temporizador.
+func (m *Manager) StartFor(duration time.Duration) {
+	m.start(duration)
+}
+
+func (m *Manager) start(duration time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if m.timer != nil {
+		m.timer.Stop()
+		m.timer = nil
+	}
 	if m.schedule.Enabled {
 		m.override = OverrideStart
 	}
 	if !m.active {
 		m.active = true
 		m.started = time.Now()
+	} else if duration > 0 {
+		m.started = time.Now()
 	}
+	if duration > 0 {
+		m.timer = time.AfterFunc(duration, m.expireManualSession)
+	}
+}
+
+func (m *Manager) expireManualSession() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.active = false
+	if m.schedule.Enabled {
+		m.override = OverrideStop
+	} else {
+		m.override = OverrideNone
+	}
+	m.timer = nil
 }
 
 // Stop desactiva la sesión. Si hay horario, queda como override de detención.
@@ -139,6 +172,10 @@ func (m *Manager) Start() {
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.timer != nil {
+		m.timer.Stop()
+		m.timer = nil
+	}
 	m.active = false
 	if m.schedule.Enabled {
 		m.override = OverrideStop

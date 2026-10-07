@@ -68,8 +68,8 @@ func TestEvaluateConfluenceOptionalFactors(t *testing.T) {
 
 func TestConfluenceModesCoverThreeOfThreeAndPairs(t *testing.T) {
 	modes := SearchConfluenceModes()
-	if len(modes) != 4 {
-		t.Fatalf("expected 3/3 plus three pair variants, got %d: %v", len(modes), modes)
+	if len(modes) != 3 {
+		t.Fatalf("expected 3/3 plus two Fibonacci-based pair variants, got %d: %v", len(modes), modes)
 	}
 	seen := map[ConfluenceMode]bool{}
 	for _, m := range modes {
@@ -78,7 +78,7 @@ func TestConfluenceModesCoverThreeOfThreeAndPairs(t *testing.T) {
 		}
 		seen[m] = true
 	}
-	for _, want := range []ConfluenceMode{ConfluenceAll, ConfluenceFibonacciOrderBlock, ConfluenceFibonacciImbalance, ConfluenceOrderBlockImbalance} {
+	for _, want := range []ConfluenceMode{ConfluenceAll, ConfluenceFibonacciOrderBlock, ConfluenceFibonacciImbalance} {
 		if !seen[want] {
 			t.Fatalf("missing mode %q in search space", want)
 		}
@@ -92,14 +92,14 @@ func TestConfluenceModesCoverThreeOfThreeAndPairs(t *testing.T) {
 	if got := ConfluenceTwoOfThree.RequiredScore(); got != 2 {
 		t.Fatalf("2/3 must require two components, got %d", got)
 	}
-	for _, m := range []ConfluenceMode{ConfluenceFibonacciOrderBlock, ConfluenceFibonacciImbalance, ConfluenceOrderBlockImbalance} {
+	for _, m := range []ConfluenceMode{ConfluenceFibonacciOrderBlock, ConfluenceFibonacciImbalance} {
 		if got := m.RequiredScore(); got != 2 {
 			t.Fatalf("%s must require two components, got %d", m, got)
 		}
 	}
 }
 
-func TestConfluenceTwoOfThreeAcceptsAnyPair(t *testing.T) {
+func TestConfluenceTwoOfThreeRequiresFibonacci(t *testing.T) {
 	ks := []domain.Kline{{Open: 100, High: 100.5, Low: 99.5, Close: 100, Start: time.Unix(1, 0)}}
 	fib, _ := NewFibonacci(90, 110, TrendBullish, DefaultFibConfig())
 	cfg := ConfluenceConfig{Mode: ConfluenceTwoOfThree, MaxZoneDistancePct: 0.01}
@@ -111,7 +111,6 @@ func TestConfluenceTwoOfThreeAcceptsAnyPair(t *testing.T) {
 	}{
 		{"fib+ob", nil, []OrderBlock{{Index: 0, Low: 99.5, High: 100.5, Direction: OrderBlockBullish, Valid: true}}},
 		{"fib+imbalance", []Imbalance{{Index: 0, Low: 99.5, High: 100.5, Direction: ImbalanceBullish, IsFilled: false}}, nil},
-		{"ob+imbalance", []Imbalance{{Index: 0, Low: 99.5, High: 100.5, Direction: ImbalanceBullish}}, []OrderBlock{{Index: 0, Low: 99.5, High: 100.5, Direction: OrderBlockBullish, Valid: true}}},
 	}
 	// La puntuación cuenta TODA la evidencia confluente, no solo la exigida: un
 	// setup con los tres componentes vale más que uno que cumple por la vía larga.
@@ -386,5 +385,17 @@ func TestRecordedProfitFactorIsSerializable(t *testing.T) {
 	}
 	if got := recordedMetric(math.Inf(-1)); got != 0 {
 		t.Fatalf("a non-finite metric must become 0, got %.2f", got)
+	}
+}
+
+func TestConfluenceTwoOfThreeRejectsOrderBlockImbalanceWithoutFibonacci(t *testing.T) {
+	ks := []domain.Kline{{Open: 100, High: 100.5, Low: 99.5, Close: 100, Start: time.Unix(1, 0)}}
+	fib, _ := NewFibonacci(50, 200, TrendBullish, DefaultFibConfig())
+	cfg := ConfluenceConfig{Mode: ConfluenceTwoOfThree, MaxZoneDistancePct: 0.01}
+	imbs := []Imbalance{{Index: 0, Low: 99.5, High: 100.5, Direction: ImbalanceBullish}}
+	blocks := []OrderBlock{{Index: 0, Low: 99.5, High: 100.5, Direction: OrderBlockBullish, Valid: true}}
+	setup, ok := EvaluateConfluenceAt(ks, 0, Structure{Trend: TrendBullish}, fib, imbs, blocks, cfg)
+	if ok || setup.Valid {
+		t.Fatalf("OB+Imbalance without Fibonacci must be rejected: %+v", setup)
 	}
 }
