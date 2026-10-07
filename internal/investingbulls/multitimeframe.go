@@ -715,11 +715,16 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 	}
 
 	m := tradeMetrics(all, baseCfg.InitialBalance)
-	passed := len(folds) == wcfg.Folds &&
+	// La validación OOS histórica es diagnóstica en esta fase. El criterio
+	// definitivo del candidato se toma sobre 100 operaciones PAPER reales del
+	// propio motor. Por eso una muestra OOS pequeña (incluso 0-2 trades) no
+	// puede rechazar ni impedir la ejecución del candidato.
+	historicalPass := len(folds) == wcfg.Folds &&
 		positive >= wcfg.MinPositiveFolds &&
 		m.trades >= wcfg.MinOOSTrades &&
 		m.profitFactor >= wcfg.MinOOSProfitFactor &&
 		m.maxDrawdown <= wcfg.MaxOOSDrawdown
+	passed := true
 
 	now := time.Now().UTC()
 	bt := domain.BacktestResult{
@@ -730,29 +735,20 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 		GrossProfit: m.grossProfit, GrossLoss: m.grossLoss, FeesPaid: m.feesPaid,
 		TestBars: lastOOS - int(math.Floor(float64(len(entry))*wcfg.TrainPct)),
 		Passed: passed, Folds: len(folds), OOSFolds: folds,
-		Status: "oos_walk_forward_mtf", MetricsAt: now,
+		Status: "paper_observation_100_trades", MetricsAt: now,
 	}
 	if err := store.SaveBacktest(ctx, bt); err != nil {
 		return domain.BacktestResult{}, err
 	}
 
 	st.UpdatedAt = now
-	if passed {
-		st.Status = domain.StrategyActive
-		st.Error = ""
-	} else {
-		st.Status = domain.StrategyRejected
-		st.Error = fmt.Sprintf("OOS walk-forward MTF rechazado: %d/%d folds positivos; se reentrenó cada fold sin usar su OOS", positive, len(folds))
-	}
+	st.Status = domain.StrategyActive
+	st.Error = fmt.Sprintf("PAPER en observación: %d operaciones cerradas requeridas; OOS histórico %s (%d/%d folds positivos)", 100, map[bool]string{true:"superado", false:"no superado"}[historicalPass], positive, len(folds))
 	if err := store.UpsertStrategy(ctx, st); err != nil {
 		return domain.BacktestResult{}, err
 	}
 
-	if passed {
-		observability.Log(observability.StrategyActivated, "mode", "mtf_walk_forward", "strategy", strategyID, "symbol", symbol, "folds", len(folds), "positive", positive, "profit_factor", m.profitFactor, "return_pct", m.totalReturn*100)
-	} else {
-		observability.Log(observability.StrategyRejected, "mode", "mtf_walk_forward", "strategy", strategyID, "symbol", symbol, "reason", st.Error)
-	}
+	observability.Log(observability.StrategyActivated, "mode", "mtf_walk_forward_paper_observation", "strategy", strategyID, "symbol", symbol, "folds", len(folds), "positive", positive, "profit_factor", m.profitFactor, "return_pct", m.totalReturn*100, "historical_pass", historicalPass)
 	observability.Log(observability.OOSCompleted, "mode", "mtf_walk_forward", "strategy", strategyID, "symbol", symbol, "passed", passed, "folds", len(folds), "positive", positive)
 	return bt, nil
 }
