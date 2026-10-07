@@ -241,6 +241,13 @@ func (e ConfluenceEvidence) Setup(cfg ConfluenceConfig) (Setup, bool) {
 	imbOK := e.ImbalanceIndex >= 0 && e.DistanceToImbalance <= c.MaxZoneDistancePct
 	obOK := e.OrderBlockIndex >= 0 && e.DistanceToOrderBlock <= c.MaxZoneDistancePct
 
+	// Incluso en el modo genérico 2/3, Fibonacci es el ancla de zona de la
+	// estrategia: se permite Fib+OB o Fib+Imbalance, pero nunca OB+Imbalance
+	// sin Fibonacci.
+	if c.Mode == ConfluenceTwoOfThree && !fibOK {
+		return Setup{}, false
+	}
+
 	if c.Mode.mandatory(ComponentFibonacci) && !fibOK {
 		return Setup{}, false
 	}
