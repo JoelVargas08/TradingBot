@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"sync"
 	"time"
 
 	"tradingview-bot/internal/domain"
@@ -31,12 +32,22 @@ func (c Config) withDefaults() Config {
 
 // Engine es el motor de paper trading: abre/cierra posiciones, vigila
 // SL/TP con velas cerradas, actualiza equity intratrade y calcula métricas.
+type pendingLimit struct {
+	event     domain.SignalEvent
+	limit     float64
+	createdAt time.Time
+	expiresAt time.Time
+}
+
 type Engine struct {
 	store    domain.PositionStore
 	candles  domain.CandleStore
 	riskCtrl domain.RiskDecider
 	cfg      Config
 	marks    domain.MarkStore
+	pendingMu sync.Mutex
+	pending   map[string]pendingLimit
+	entryGate func() bool
 }
 
 // New crea un Engine que persiste en store y delega la decisión en riskCtrl.
@@ -50,6 +61,7 @@ func New(store domain.PositionStore, riskCtrl domain.RiskDecider, cfg Config) *E
 		candles:  candles,
 		riskCtrl: riskCtrl,
 		cfg:      cfg.withDefaults(),
+		pending:  make(map[string]pendingLimit),
 	}
 }
 
@@ -64,50 +76,26 @@ func (e *Engine) SetMarkStore(ms domain.MarkStore) *Engine {
 // cierra posiciones contrarias con costes, ignora mismas direcciones,
 // evalúa riesgo y abre posición si está permitido.
 func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
-	if e.riskCtrl == nil {
-		return fmt.Errorf("controlador de riesgo no configurado")
+	if pending, _ := ev.Meta["entry_pending"].(bool); pending {
+		limit, ok := metaFloat(ev.Meta, "pending_entry"); if !ok || limit <= 0 { return fmt.Errorf("orden límite Investing Bulls sin pending_entry") }
+		expires := ev.BarTS.Add(6*time.Hour); if ev.BarTS.IsZero() { expires = time.Now().Add(6*time.Hour) }
+		e.pendingMu.Lock(); e.pending[ev.IdempotencyKey()] = pendingLimit{event:ev, limit:limit, createdAt:time.Now(), expiresAt:expires}; e.pendingMu.Unlock()
+		log.Printf("paper: limit IB armada %s %s %.2f (expira %s)", ev.Symbol, ev.Direction, limit, expires.Format(time.RFC3339)); return nil
 	}
-	open, err := e.store.OpenPositions(ctx)
-	if err != nil {
-		return fmt.Errorf("listando posiciones abiertas: %w", err)
-	}
+	return e.openAtPrice(ctx, ev)
+}
+
+func (e *Engine) openAtPrice(ctx context.Context, ev domain.SignalEvent) error {
+	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
+	open, err := e.store.OpenPositions(ctx); if err != nil { return fmt.Errorf("listando posiciones abiertas: %w", err) }
 	for _, p := range open {
-		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe {
-			continue
-		}
-		if p.Side == ev.Direction {
-			return nil
-		}
-		if err := e.closePosition(ctx, p.ID, ev.Price, time.Now(), domain.CloseOptions{Reason: "signal-contrary"}); err != nil {
-			return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err)
-		}
+		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe { continue }
+		if p.Side == ev.Direction { return nil }
+		if err := e.closePosition(ctx, p.ID, ev.Price, time.Now(), domain.CloseOptions{Reason:"signal-contrary"}); err != nil { return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err) }
 	}
-
-	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev)
-	if err != nil {
-		return err
-	}
-	if !decision.Allowed {
-		return fmt.Errorf("señal rechazada: %s", decision.Reason)
-	}
-
-	_, err = e.store.OpenPosition(ctx, domain.Position{
-		StrategyID: ev.StrategyID,
-		Symbol:     ev.Symbol,
-		Timeframe:  ev.Timeframe,
-		Side:       decision.Side,
-		EntryTS:    time.Now(),
-		EntryPrice: decision.EntryPrice,
-		StopLoss:   decision.StopLoss,
-		TakeProfit: decision.TakeProfit,
-		Quantity:   decision.Quantity,
-		RiskAmount: decision.RiskAmount,
-		Status:     domain.PositionOpen,
-	})
-	if err != nil {
-		return fmt.Errorf("abriendo posición: %w", err)
-	}
-	return nil
+	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev); if err != nil { return err }; if !decision.Allowed { return fmt.Errorf("señal rechazada: %s", decision.Reason) }
+	_, err = e.store.OpenPosition(ctx, domain.Position{StrategyID:ev.StrategyID, Symbol:ev.Symbol, Timeframe:ev.Timeframe, Side:decision.Side, EntryTS:time.Now(), EntryPrice:decision.EntryPrice, StopLoss:decision.StopLoss, TakeProfit:decision.TakeProfit, Quantity:decision.Quantity, RiskAmount:decision.RiskAmount, Status:domain.PositionOpen})
+	if err != nil { return fmt.Errorf("abriendo posición: %w", err) }; return nil
 }
 
 // Recover reconstruye el equity al arrancar a partir del estado persistido.
