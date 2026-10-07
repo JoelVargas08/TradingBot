@@ -578,3 +578,15 @@ func paperMetaFloat(meta map[string]any, key string) (float64, bool) {
 	default: return 0, false
 	}
 }
+
+
+func metaFloat(meta map[string]any, key string) (float64, bool) {
+	v, ok := meta[key]
+	if !ok { return 0, false }
+	switch n := v.(type) {
+	case float64: return n, true
+	case int: return float64(n), true
+	case int64: return float64(n), true
+	default: return 0, false
+	}
+}
