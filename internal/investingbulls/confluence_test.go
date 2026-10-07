@@ -247,7 +247,7 @@ func TestConfluenceEvidenceSeparatesCurrentPriceFromFibPrice(t *testing.T) {
 }
 
 func TestParseConfluenceMode(t *testing.T) {
-	for _, in := range []string{"all", "ALL", " order_block_imbalance "} {
+	for _, in := range []string{"all", "ALL", " fib_ob "} {
 		if _, ok := ParseConfluenceMode(in); !ok {
 			t.Fatalf("expected %q to parse", in)
 		}
@@ -261,11 +261,11 @@ func TestSearchSpaceBuildsExpectedConfigurations(t *testing.T) {
 	cfg := DefaultLearnConfig()
 	space := cfg.Search
 	all := space.Configs(cfg)
-	if len(all) != 48 {
-		t.Fatalf("expected 4 modes x 4 distances x 3 stops = 48 configurations, got %d", len(all))
+	if len(all) != 36 {
+		t.Fatalf("expected 3 modes x 4 distances x 3 stops = 36 configurations, got %d", len(all))
 	}
-	if space.Size() != 48 {
-		t.Fatalf("Size must report 48, got %d", space.Size())
+	if space.Size() != 36 {
+		t.Fatalf("Size must report 36, got %d", space.Size())
 	}
 
 	distances := map[float64]bool{}

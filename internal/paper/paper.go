@@ -89,6 +89,74 @@ func (e *Engine) SetEntryGate(g func() bool) *Engine {
 	return e
 }
 
+// OnCandle fills the first staged Investing Bulls limit touched by a later
+// closed candle. The signal candle is never used retroactively. The store
+// currently models one position per strategy/symbol/timeframe, so the first
+// filled staged entry represents the paper position and cancels the other.
+func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
+	if !k.Closed { return }
+	if e.entryGate != nil && !e.entryGate() { return }
+
+	e.mu.Lock()
+	var fills []pendingEntry
+	for key, entries := range e.pending {
+		if len(entries) == 0 { delete(e.pending, key); continue }
+		remaining := entries[:0]
+		for _, p := range entries {
+			if p.Symbol != k.Symbol || p.Timeframe != k.Timeframe || !k.Start.After(p.BarTS) {
+				remaining = append(remaining, p)
+				continue
+			}
+			touched := (p.Side == domain.DirectionBuy && k.Low <= p.Price) || (p.Side == domain.DirectionSell && k.High >= p.Price)
+			if touched { fills = append(fills, p) } else { remaining = append(remaining, p) }
+		}
+		if len(remaining) == 0 { delete(e.pending, key) } else { e.pending[key] = remaining }
+	}
+	e.mu.Unlock()
+
+	for _, p := range fills {
+		ev := domain.SignalEvent{
+			StrategyID: p.StrategyID, Symbol: p.Symbol, Timeframe: p.Timeframe,
+			Direction: p.Side, Price: p.Price, BarTS: k.Start,
+			Meta: map[string]any{domain.MetaKeyStopLoss:p.StopLoss, domain.MetaKeyTakeProfit:p.TakeProfit, domain.MetaKeySetup:"investing_bulls_limit_fill"},
+		}
+		if err := e.openPending(ctx, ev, p.Quantity, p.RiskAmount); err != nil {
+			log.Printf("paper: limit IB %.8f no ejecutada: %v", p.Price, err)
+			continue
+		}
+		e.mu.Lock()
+		for key, entries := range e.pending {
+			filtered := entries[:0]
+			for _, other := range entries {
+				if other.StrategyID != p.StrategyID || other.Symbol != p.Symbol || other.Timeframe != p.Timeframe || other.Side != p.Side {
+					filtered = append(filtered, other)
+				}
+			}
+			if len(filtered) == 0 { delete(e.pending,key) } else { e.pending[key] = filtered }
+		}
+		e.mu.Unlock()
+		log.Printf("paper: limit IB ejecutada %s %s %.8f", p.Symbol, p.Side, p.Price)
+		break
+	}
+}
+
+func (e *Engine) openPending(ctx context.Context, ev domain.SignalEvent, quantity, riskAmount float64) error {
+	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
+	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev)
+	if err != nil { return err }
+	if !decision.Allowed { return fmt.Errorf("señal rechazada: %s", decision.Reason) }
+	if quantity > 0 { decision.Quantity = quantity }
+	if riskAmount > 0 { decision.RiskAmount = riskAmount }
+	_, err = e.store.OpenPosition(ctx, domain.Position{
+		StrategyID:ev.StrategyID, Symbol:ev.Symbol, Timeframe:ev.Timeframe,
+		Side:decision.Side, EntryTS:time.Now(), EntryPrice:decision.EntryPrice,
+		StopLoss:decision.StopLoss, TakeProfit:decision.TakeProfit,
+		Quantity:decision.Quantity, RiskAmount:decision.RiskAmount, Status:domain.PositionOpen,
+	})
+	if err != nil { return fmt.Errorf("abriendo posición límite: %w", err) }
+	return nil
+}
+
 // OnSignal aplica el flujo de ejecución paper sobre una señal:
 // cierra posiciones contrarias con costes, ignora mismas direcciones,
 // evalúa riesgo y abre posición si está permitido.
