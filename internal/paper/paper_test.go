@@ -421,3 +421,35 @@ func mathAbs(v float64) float64 {
 	}
 	return v
 }
+
+func TestOnSignalArmsTwoLimitsAndDoesNotEnterAtSignalClose(t *testing.T) {
+	e, st := newTestEngine()
+	ev := signal(domain.DirectionBuy, 110)
+	ev.Meta["entry_zone_low"] = float64(100)
+	ev.Meta["entry_zone_high"] = float64(105)
+	if err := e.OnSignal(context.Background(), ev); err != nil {
+		t.Fatalf("OnSignal: %v", err)
+	}
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 0 {
+		t.Fatalf("la señal de zona no debe abrir inmediatamente: %d posiciones", len(open))
+	}
+
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000),
+		Low: 104, High: 108, Close: 105, Closed: true,
+	})
+	open, _ = st.OpenPositions(context.Background())
+	if len(open) != 1 || open[0].EntryPrice != 105 {
+		t.Fatalf("primer límite no ejecutado correctamente: %+v", open)
+	}
+
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(3000),
+		Low: 99, High: 103, Close: 100, Closed: true,
+	})
+	open, _ = st.OpenPositions(context.Background())
+	if len(open) != 2 {
+		t.Fatalf("segundo límite debe generar la segunda entrada: %d", len(open))
+	}
+}
