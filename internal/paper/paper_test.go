@@ -443,13 +443,14 @@ func TestPendingLimitRespectsSessionGate(t *testing.T) {
 	e.SetEntryGate(func() bool { return gate })
 	ev := signal(domain.DirectionBuy, 105)
 	ev.BarTS = time.UnixMilli(2000)
-	ev.Meta = map[string]any{"entry_pending": true, "pending_entry": 100.0, domain.MetaKeyStopLoss: 98.0, domain.MetaKeyTakeProfit: 106.0, domain.MetaKeySetup: "fib_ob"}
-	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("arm: %v", err) }
-	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:99, High:103, Close:101, Closed:true})
-	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatal("inactive session must not fill pending entry") }
+	ev.Meta = map[string]any{"entry_zone_low":100.0, "entry_zone_high":102.0}
+	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("inactive signal: %v", err) }
+	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatal("inactive session must not open") }
 	gate = true
-	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(4000), Low:99, High:103, Close:101, Closed:true})
-	open, _ = st.OpenPositions(context.Background()); if len(open) != 1 { t.Fatalf("active session should fill pending entry: %d", len(open)) }
+	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("active signal: %v", err) }
+	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:101, High:103, Close:102, Closed:true})
+	open, _ = st.OpenPositions(context.Background())
+	if len(open) != 1 || open[0].EntryPrice != 102 { t.Fatalf("active session should fill 102: %+v", open) }
 }
 
 func TestOnSignalArmsTwoLimitsAndFillsOnLaterCandle(t *testing.T) {
@@ -470,17 +471,3 @@ func TestOnSignalArmsTwoLimitsAndFillsOnLaterCandle(t *testing.T) {
 	if len(open) != 1 || open[0].EntryPrice != 105 { t.Fatalf("first limit should fill at 105: %+v", open) }
 }
 
-func TestPendingZoneRespectsSessionGate(t *testing.T) {
-	e, st := newTestEngine()
-	gate := false
-	e.SetEntryGate(func() bool { return gate })
-	ev := signal(domain.DirectionBuy, 105)
-	ev.BarTS = time.UnixMilli(2000)
-	ev.Meta["entry_zone_low"] = 100.0
-	ev.Meta["entry_zone_high"] = 102.0
-	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("inactive arm: %v", err) }
-	gate = true
-	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT",Timeframe:"1h",Start:time.UnixMilli(3000),Low:101,High:103,Close:102,Closed:true})
-	open, _ := st.OpenPositions(context.Background())
-	if len(open) != 0 { t.Fatal("inactive session must not have armed a new order") }
-}
