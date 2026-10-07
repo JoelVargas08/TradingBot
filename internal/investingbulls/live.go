@@ -97,9 +97,6 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 	if !valid || !matched.Valid || matched.Direction != candidate.Direction {
 		return domain.SignalEvent{}, false, nil
 	}
-	plan, ok := buildLearningPlan(matched, fib, k.Close, es, blocks, model.Base.TradePlan)
-	if !ok { return domain.SignalEvent{}, false, nil }
-
 	// La estrategia arma la zona y espera que el precio vuelva a tocarla.
 	zoneLow, zoneHigh := 0.0, 0.0
 	switch matched.FibZone {
@@ -110,6 +107,8 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 	pendingEntry := zoneLow
 	if candidate.Direction == domain.DirectionSell { pendingEntry = zoneHigh }
 	if pendingEntry <= 0 { return domain.SignalEvent{}, false, nil }
+	plan, ok := buildLearningPlan(matched, fib, pendingEntry, es, blocks, model.Base.TradePlan)
+	if !ok { return domain.SignalEvent{}, false, nil }
 
 	ev := domain.SignalEvent{
 		StrategyID: strategy.ID, Symbol: k.Symbol, Timeframe: k.Timeframe,
