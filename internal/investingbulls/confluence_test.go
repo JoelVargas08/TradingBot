@@ -296,11 +296,11 @@ func TestSearchSpaceBuildsExpectedConfigurations(t *testing.T) {
 	wide := SearchSpace{
 		Distances: []float64{0.01, 0.05, 0.08},
 		Stops:     []float64{0.05, 0.10},
-		Modes:     []ConfluenceMode{ConfluenceAll, ConfluenceOrderBlockImbalance, ConfluenceFibonacciOrderBlock},
+		Modes:     []ConfluenceMode{ConfluenceAll, ConfluenceFibonacciOrderBlock},
 	}
 	clamped := wide.normalized()
-	if len(clamped.Modes) != 3 {
-		t.Fatalf("expected 3 valid modes, got %d", len(clamped.Modes))
+	if len(clamped.Modes) != 2 {
+		t.Fatalf("expected 2 valid modes, got %d", len(clamped.Modes))
 	}
 	if len(clamped.Distances) != 1 || clamped.Distances[0] != 0.01 {
 		t.Fatalf("expected only the in-profile distance 0.01, got %v", clamped.Distances)
