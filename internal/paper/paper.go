@@ -32,11 +32,18 @@ func (c Config) withDefaults() Config {
 
 // Engine es el motor de paper trading: abre/cierra posiciones, vigila
 // SL/TP con velas cerradas, actualiza equity intratrade y calcula métricas.
-type pendingLimit struct {
-	event     domain.SignalEvent
-	limit     float64
-	createdAt time.Time
-	expiresAt time.Time
+type pendingEntry struct {
+	Key string
+	StrategyID string
+	Symbol string
+	Timeframe string
+	Side domain.Direction
+	Price float64
+	StopLoss float64
+	TakeProfit float64
+	Quantity float64
+	RiskAmount float64
+	BarTS time.Time
 }
 
 type Engine struct {
@@ -45,8 +52,8 @@ type Engine struct {
 	riskCtrl domain.RiskDecider
 	cfg      Config
 	marks    domain.MarkStore
-	pendingMu sync.Mutex
-	pending   map[string]pendingLimit
+	mu       sync.Mutex
+	pending  map[string][]pendingEntry
 	entryGate func() bool
 }
 
@@ -61,7 +68,7 @@ func New(store domain.PositionStore, riskCtrl domain.RiskDecider, cfg Config) *E
 		candles:  candles,
 		riskCtrl: riskCtrl,
 		cfg:      cfg.withDefaults(),
-		pending:  make(map[string]pendingLimit),
+		pending:  make(map[string][]pendingEntry),
 	}
 }
 
@@ -73,7 +80,12 @@ func (e *Engine) SetMarkStore(ms domain.MarkStore) *Engine {
 }
 
 func (e *Engine) SetSessionGate(g interface{ IsActive() bool }) *Engine {
-	e.session = g
+	if g == nil { e.entryGate = nil } else { e.entryGate = g.IsActive }
+	return e
+}
+
+func (e *Engine) SetEntryGate(g func() bool) *Engine {
+	e.entryGate = g
 	return e
 }
 
@@ -82,7 +94,7 @@ func (e *Engine) SetSessionGate(g interface{ IsActive() bool }) *Engine {
 // evalúa riesgo y abre posición si está permitido.
 func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
-	if e.session != nil && !e.session.IsActive() { return nil }
+	if e.entryGate != nil && !e.entryGate() { return nil }
 
 	zoneLow, hasLow := paperMetaFloat(ev.Meta, "entry_zone_low")
 	zoneHigh, hasHigh := paperMetaFloat(ev.Meta, "entry_zone_high")
@@ -258,7 +270,7 @@ func (e *Engine) closePosition(ctx context.Context, id int64, exitPrice float64,
 // CheckStops revisa una vela cerrada y cierra posiciones cuyo SL/TP se tocó.
 func (e *Engine) CheckStops(ctx context.Context, k domain.Kline) {
 	if !k.Closed { return }
-	if e.session == nil || e.session.IsActive() { e.fillPending(ctx,k) }
+	if e.entryGate == nil || e.entryGate() { e.fillPending(ctx,k) }
 	open, err := e.store.OpenPositions(ctx)
 	if err != nil { log.Printf("paper: leyendo posiciones abiertas: %v",err); return }
 	for _, p := range open { if p.Symbol==k.Symbol && p.Timeframe==k.Timeframe { e.checkPosition(ctx,p,k) } }
