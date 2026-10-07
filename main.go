@@ -1087,11 +1087,38 @@ func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.Lear
 		telegram.SendMessage(chatID, "❌ OOS MTF: "+err.Error())
 		return
 	}
-	state := "REJECTED"
-	if bt.Passed {
-		state = "ACTIVE"
+
+	paperTrades, paperWins := 0, 0
+	if ps, ok := store.(domain.PositionStore); ok {
+		if positions, err := ps.ClosedPositions(ctx); err == nil {
+			for _, p := range positions {
+				if p.StrategyID != parts[0] {
+					continue
+				}
+				paperTrades++
+				if p.NetPnL > 0 {
+					paperWins++
+				}
+			}
+		}
 	}
-	telegram.SendMessage(chatID, fmt.Sprintf("🔬 OOS MTF %s\nEstado: %s\nFolds: %d | Trades: %d | WinRate: %.1f%% | PF: %.2f | Return: %.2f%% | DD: %.2f%%", parts[0], state, bt.Folds, bt.Trades, bt.WinRate*100, bt.ProfitFactor, bt.TotalReturn*100, bt.MaxDrawdown*100))
+	paperWR := 0.0
+	if paperTrades > 0 {
+		paperWR = float64(paperWins) / float64(paperTrades) * 100
+	}
+	minTrades, minWR := 100, 75.0
+	if appCfg != nil {
+		if appCfg.IBValidationMinTrades > 0 { minTrades = appCfg.IBValidationMinTrades }
+		if appCfg.IBValidationMinWinRate > 0 { minWR = appCfg.IBValidationMinWinRate * 100 }
+	}
+	telegram.SendMessage(chatID, fmt.Sprintf("🔬 <b>Validación MTF</b> %s\n\n"+
+		"Estado: ACTIVE — PAPER en observación\n"+
+		"OOS histórico: %d trades | WinRate %.1f%% | PF %.2f | Return %.2f%% | DD %.2f%%\n\n"+
+		"📊 <b>Validación PAPER actual</b>\n"+
+		"Operaciones: %d/%d\nWin rate: %.2f%%\n\n"+
+		"⏳ La decisión definitiva se toma al cerrar %d operaciones. Si el win rate es menor de %.0f%%, la sesión se detiene y el candidato se rechaza.",
+		parts[0], bt.Trades, bt.WinRate*100, bt.ProfitFactor, bt.TotalReturn*100, bt.MaxDrawdown*100,
+		paperTrades, minTrades, paperWR, minTrades, minWR))
 }
 
 // candleFanout reenvía velas cerradas a los motores en vivo adicionales además
