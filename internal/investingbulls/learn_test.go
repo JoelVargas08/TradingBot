@@ -262,7 +262,7 @@ func TestLearnHonoursMinTrades(t *testing.T) {
 	if res.SpecJSON == "" {
 		t.Fatalf("MinTrades=1 should find a candidate, reason:\n%s", res.Reason)
 	}
-	if res.Model.MinTrades != 5 {
+	if res.Model.MinTrades != 1 {
 		t.Fatalf("the model must record the MinTrades used, got %d", res.Model.MinTrades)
 	}
 }
