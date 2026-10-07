@@ -421,3 +421,33 @@ func mathAbs(v float64) float64 {
 	}
 	return v
 }
+
+func TestPendingLimitDoesNotFillOnSignalBar(t *testing.T) {
+	e, st := newTestEngine()
+	var gate = true
+	e.SetEntryGate(func() bool { return gate })
+	ev := signal(domain.DirectionBuy, 105)
+	ev.BarTS = time.UnixMilli(2000)
+	ev.Meta = map[string]any{"entry_pending": true, "pending_entry": 100.0, domain.MetaKeyStopLoss: 98.0, domain.MetaKeyTakeProfit: 106.0, domain.MetaKeySetup: "fib_ob"}
+	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("arm: %v", err) }
+	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(2000), Low:99, High:106, Close:103, Closed:true})
+	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatalf("signal candle must not retroactively fill: %d", len(open)) }
+	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:99, High:103, Close:101, Closed:true})
+	open, _ = st.OpenPositions(context.Background()); if len(open) != 1 { t.Fatalf("next candle should fill limit: %d", len(open)) }
+	if open[0].EntryPrice != 100 { t.Fatalf("entry=%.2f want 100", open[0].EntryPrice) }
+}
+
+func TestPendingLimitRespectsSessionGate(t *testing.T) {
+	e, st := newTestEngine()
+	gate := false
+	e.SetEntryGate(func() bool { return gate })
+	ev := signal(domain.DirectionBuy, 105)
+	ev.BarTS = time.UnixMilli(2000)
+	ev.Meta = map[string]any{"entry_pending": true, "pending_entry": 100.0, domain.MetaKeyStopLoss: 98.0, domain.MetaKeyTakeProfit: 106.0, domain.MetaKeySetup: "fib_ob"}
+	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("arm: %v", err) }
+	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:99, High:103, Close:101, Closed:true})
+	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatal("inactive session must not fill pending entry") }
+	gate = true
+	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(4000), Low:99, High:103, Close:101, Closed:true})
+	open, _ = st.OpenPositions(context.Background()); if len(open) != 1 { t.Fatalf("active session should fill pending entry: %d", len(open)) }
+}

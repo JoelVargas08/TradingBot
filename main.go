@@ -211,7 +211,10 @@ func main() {
 		}
 		riskManager = risk.New(sqliteStore, riskCfg)
 		paperEngine = paper.New(sqliteStore, riskManager, paper.Config{}).
-			SetMarkStore(sqliteStore)
+			SetMarkStore(sqliteStore).
+			SetEntryGate(func() bool {
+				return tradingSession == nil || tradingSession.IsActive()
+			})
 		// Inicializar la cuenta con Equity/PeakEquity en el primer arranque; no
 		// esperar al primer cierre de posición.
 		if _, err := sqliteStore.GetAccount(ctx); errors.Is(err, domain.ErrNotFound) {
@@ -350,6 +353,7 @@ func main() {
 						}
 					}
 					if paperEngine != nil && k.Closed {
+						paperEngine.OnCandle(ctx, k)
 						if err := paperEngine.MarkPrice(ctx, k); err != nil {
 							log.Printf("paper mark-price %s %s: %v", k.Symbol, k.Timeframe, err)
 						}
