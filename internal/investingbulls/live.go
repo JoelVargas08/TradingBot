@@ -98,9 +98,29 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 		return domain.SignalEvent{}, false, nil
 	}
 	plan, ok := buildLearningPlan(matched, fib, k.Close, es, blocks, model.Base.TradePlan)
-	if !ok {
-		return domain.SignalEvent{}, false, nil
+	if !ok { return domain.SignalEvent{}, false, nil }
+
+	// La estrategia arma la zona y espera que el precio vuelva a tocarla.
+	zoneLow, zoneHigh := 0.0, 0.0
+	switch matched.FibZone {
+	case 1: zoneLow, zoneHigh = fib.Zone1Low, fib.Zone1High
+	case 2: zoneLow, zoneHigh = fib.Zone2Low, fib.Zone2High
+	default: return domain.SignalEvent{}, false, nil
 	}
-	ev := domain.SignalEvent{StrategyID: strategy.ID, Symbol: k.Symbol, Timeframe: k.Timeframe, Direction: candidate.Direction, Price: k.Close, BarTS: k.Start, Meta: map[string]any{"source": "investing_bulls", "setup": string(candidate.SetupType), "main_trend": string(ms.Trend), "stop_loss": plan.StopLoss, "take_profit": plan.TakeProfit}}
+	pendingEntry := zoneLow
+	if candidate.Direction == domain.DirectionSell { pendingEntry = zoneHigh }
+	if pendingEntry <= 0 { return domain.SignalEvent{}, false, nil }
+
+	ev := domain.SignalEvent{
+		StrategyID: strategy.ID, Symbol: k.Symbol, Timeframe: k.Timeframe,
+		Direction: candidate.Direction, Price: k.Close, BarTS: k.Start,
+		Meta: map[string]any{
+			"source":"investing_bulls", "setup":string(candidate.SetupType),
+			"main_trend":string(ms.Trend), "stop_loss":plan.StopLoss,
+			"take_profit":plan.TakeProfit, "entry_pending":true,
+			"pending_entry":pendingEntry, "entry_zone_low":zoneLow,
+			"entry_zone_high":zoneHigh,
+		},
+	}
 	return ev, true, nil
 }
