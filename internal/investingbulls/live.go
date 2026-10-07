@@ -104,8 +104,8 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 	case 2: zoneLow, zoneHigh = fib.Zone2Low, fib.Zone2High
 	default: return domain.SignalEvent{}, false, nil
 	}
-	pendingEntry := zoneLow
-	if candidate.Direction == domain.DirectionSell { pendingEntry = zoneHigh }
+	pendingEntry := zoneHigh
+	if candidate.Direction == domain.DirectionSell { pendingEntry = zoneLow }
 	if pendingEntry <= 0 { return domain.SignalEvent{}, false, nil }
 	plan, ok := buildLearningPlan(matched, fib, pendingEntry, es, blocks, model.Base.TradePlan)
 	if !ok { return domain.SignalEvent{}, false, nil }
