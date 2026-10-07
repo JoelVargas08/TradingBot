@@ -247,7 +247,7 @@ func TestConfluenceEvidenceSeparatesCurrentPriceFromFibPrice(t *testing.T) {
 }
 
 func TestParseConfluenceMode(t *testing.T) {
-	for _, in := range []string{"all", "ALL", " fib_ob "} {
+	for _, in := range []string{"all", "ALL", " fibonacci_order_block "} {
 		if _, ok := ParseConfluenceMode(in); !ok {
 			t.Fatalf("expected %q to parse", in)
 		}
