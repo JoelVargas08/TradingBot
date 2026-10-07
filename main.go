@@ -911,6 +911,12 @@ func monitorInvestingBullsPaperValidation(
 			}
 			if !reportedPass {
 				reportedPass = true
+				msg := fmt.Sprintf("✅ <b>Investing Bulls: muestra mínima completada</b>\\n\\nEstrategia: <code>%s</code>\\nOperaciones: %d/%d\\nWin rate: %.2f%%\\nMínimo requerido: %.2f%%\\n\\nLa estrategia superó la validación PAPER y la sesión continúa activa.", strategyID, trades, minTrades, winRate*100, minWinRate*100)
+				if userManager != nil {
+					for _, id := range userManager.ActiveUserIDs() {
+						telegram.SendMessage(id, msg)
+					}
+				}
 				log.Printf("IB paper validation: muestra mínima superada strategy=%s trades=%d winrate=%.2f%%", strategyID, trades, winRate*100)
 			}
 		}
