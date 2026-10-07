@@ -105,7 +105,9 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	for _, p := range open {
 		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe { continue }
 		if p.Side == ev.Direction { return nil }
-		if err := e.closePosition(ctx, p.ID, ev.Price, time.Now(), domain.CloseOptions{Reason:"signal-contrary"}); err != nil {
+		exitPrice := ev.Price
+		if market, ok := paperMetaFloat(ev.Meta, "signal_market_price"); ok && market > 0 { exitPrice = market }
+		if err := e.closePosition(ctx, p.ID, exitPrice, time.Now(), domain.CloseOptions{Reason:"signal-contrary"}); err != nil {
 			return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err)
 		}
 	}
