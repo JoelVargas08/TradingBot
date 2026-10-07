@@ -116,6 +116,7 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
 		}
 		e.mu.Unlock()
 		log.Printf("paper: limit IB ejecutada %s %s %.8f", p.Symbol, p.Side, p.Price)
+		break
 	}
 }
 
