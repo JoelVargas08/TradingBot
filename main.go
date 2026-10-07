@@ -212,6 +212,7 @@ func main() {
 		riskManager = risk.New(sqliteStore, riskCfg)
 		paperEngine = paper.New(sqliteStore, riskManager, paper.Config{}).
 			SetMarkStore(sqliteStore).
+			SetSessionGate(tradingSession).
 			SetEntryGate(func() bool {
 				return tradingSession == nil || tradingSession.IsActive()
 			})

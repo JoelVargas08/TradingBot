@@ -112,7 +112,7 @@ func EvaluateLive(ctx context.Context, store candleReader, strategy domain.Strat
 
 	ev := domain.SignalEvent{
 		StrategyID: strategy.ID, Symbol: k.Symbol, Timeframe: k.Timeframe,
-		Direction: candidate.Direction, Price: k.Close, BarTS: k.Start,
+		Direction: candidate.Direction, Price: pendingEntry, BarTS: k.Start,
 		Meta: map[string]any{
 			"source":"investing_bulls", "setup":string(candidate.SetupType),
 			"main_trend":string(ms.Trend), "stop_loss":plan.StopLoss,
