@@ -101,7 +101,7 @@ def main():
         gh(
             f"/repos/{REPO}/actions/workflows/paper-session.yml/dispatches",
             method="POST",
-            body={"ref": "main", "inputs": {"restore_state": "true", "strategy_id": ""}},
+            body={"ref": "main", "inputs": {"restore_state": "true", "strategy_id": "", "manual_session": "true"}},
         )
         telegram("getUpdates", {"offset": str(int(u["update_id"]) + 1), "limit": "1"})
         send(chat_id, "✅ <b>Workflow PAPER solicitado</b>\\n\\nEl runner comenzará a arrancar. Usa /session para comprobar cuándo está ACTIVO.")
