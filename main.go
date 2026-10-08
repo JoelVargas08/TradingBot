@@ -679,7 +679,7 @@ func main() {
 			case "learnibmtf":
 				go runInvestingBullsLearnMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
 			case "validateibmtf":
-				go runInvestingBullsValidateMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
+				go runInvestingBullsValidateMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg, tradingSession)
 			case "strategies":
 				if strategyCommands != nil {
 					strategyCommands.HandleStrategies(chatID)
@@ -874,8 +874,17 @@ func monitorInvestingBullsPaperValidation(
 				continue
 			}
 			trades, wins := 0, 0
+			sessionStart := time.Time{}
+			if session != nil {
+				sessionStart = session.StartedAt()
+			}
 			for _, p := range positions {
 				if p.StrategyID != strategyID {
+					continue
+				}
+				// Solo cuentan operaciones abiertas durante esta sesión PAPER.
+				// Las operaciones históricas permanecen en SQLite para aprendizaje.
+				if !sessionStart.IsZero() && p.EntryTS.Before(sessionStart) {
 					continue
 				}
 				trades++
@@ -1062,7 +1071,7 @@ func runInvestingBullsLearnMTF(ctx context.Context, store investingbulls.Learner
 	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nConfluencia: %s | componentes: %s | zona: %.2f%% | stop: %.2f%%\nSetups: %v%s\nUsa /validateibmtf %s %s", st.ID, len(learned.Trades), learned.Model.Base.ProfitFactor, learned.Model.Base.TotalReturn*100, learned.Model.Base.MaxDrawdown*100, learned.Model.Base.Confluence.Mode, learned.Model.Base.ConfluenceComponents, learned.Model.Base.Confluence.MaxZoneDistancePct*100, learned.Model.Base.TradePlan.MaxStopPct*100, learned.Model.AllowedSetups, confirmNote, st.ID, symbol))
 }
 
-func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string, appCfg *config.Config) {
+func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string, appCfg *config.Config, tradingSession *session.Manager) {
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
 		telegram.SendMessage(chatID, "Uso: /validateibmtf <strategyID> BTCUSDT [limite]")
@@ -1099,8 +1108,17 @@ func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.Lear
 	paperTrades, paperWins := 0, 0
 	if ps, ok := store.(domain.PositionStore); ok {
 		if positions, err := ps.ClosedPositions(ctx); err == nil {
+			var sessionStart time.Time
+			if tradingSession != nil {
+				sessionStart = tradingSession.StartedAt()
+			}
 			for _, p := range positions {
 				if p.StrategyID != parts[0] {
+					continue
+				}
+				// La validación PAPER empieza desde la sesión actual. El historial
+				// anterior se conserva para aprendizaje, pero no contamina 0/100.
+				if !sessionStart.IsZero() && p.EntryTS.Before(sessionStart) {
 					continue
 				}
 				paperTrades++

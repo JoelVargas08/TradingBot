@@ -7,6 +7,12 @@ on:
     - cron: "0 8 * * 1-5"
       timezone: "America/New_York"
   workflow_dispatch:
+    inputs:
+      restore_state:
+        description: "Restaurar el estado persistido (estrategias, historial y cuenta)"
+        required: false
+        default: true
+        type: boolean
 
 concurrency:
   group: tradingbot-paper-session
@@ -68,6 +74,7 @@ jobs:
           cache: true
 
       - name: Restore persisted state
+        if: ${{ inputs.restore_state != false }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
