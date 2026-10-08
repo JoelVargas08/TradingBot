@@ -18,6 +18,11 @@ on:
         required: false
         default: ""
         type: string
+      manual_session:
+        description: "Arranque manual desde Telegram: sesión PAPER completa de 6 horas"
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: tradingbot-paper-session
@@ -25,7 +30,7 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read
+  actions: write
 
 jobs:
   paper-session:
@@ -45,8 +50,8 @@ jobs:
       WATCH_TRADES: "false"
 
       TRADING_SESSION_ENABLED: "true"
-      TRADING_SESSION_START_ACTIVE: "false"
-      TRADING_SESSION_SCHEDULE_ENABLED: "true"
+      TRADING_SESSION_START_ACTIVE: \${{ inputs.manual_session == true && 'true' || 'false' }}
+      TRADING_SESSION_SCHEDULE_ENABLED: \${{ inputs.manual_session == true && 'false' || 'true' }}
       TRADING_SESSION_START: "08:00"
       TRADING_SESSION_END: "14:00"
       TRADING_SESSION_TIMEZONE: America/New_York
