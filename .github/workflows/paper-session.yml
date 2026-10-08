@@ -13,6 +13,11 @@ on:
         required: false
         default: true
         type: boolean
+      strategy_id:
+        description: "ID de la estrategia Investing Bulls a ejecutar"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: tradingbot-paper-session
@@ -52,7 +57,7 @@ jobs:
       INVESTING_BULLS_CONFIRM_TIMEFRAME: 5m
       INVESTING_BULLS_CONFIRM_5M: "true"
       INVESTING_BULLS_SYMBOL: BTCUSDT
-      INVESTING_BULLS_STRATEGY_ID: ${{ vars.INVESTING_BULLS_STRATEGY_ID }}
+      INVESTING_BULLS_STRATEGY_ID: ${{ inputs.strategy_id || vars.INVESTING_BULLS_STRATEGY_ID }}
 
       RISK_ENABLED: "true"
       DB_FILE: data/bot.db
