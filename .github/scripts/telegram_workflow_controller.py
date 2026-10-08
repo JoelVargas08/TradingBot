@@ -57,11 +57,13 @@ def active_paper_runs():
     return runs
 
 def authorized(chat_id):
-    return not ADMIN_CHAT_ID or str(chat_id) == ADMIN_CHAT_ID
+    return bool(ADMIN_CHAT_ID) and str(chat_id) == ADMIN_CHAT_ID
 
 def main():
     if not TG_TOKEN or not GH_TOKEN:
         raise SystemExit("TELEGRAM_BOT_TOKEN/GH_TOKEN faltan")
+    if not ADMIN_CHAT_ID:
+        raise SystemExit("TELEGRAM_ADMIN_CHAT_ID no configurado; se bloquea el control de workflow")
 
     runs = active_paper_runs()
     if runs:
