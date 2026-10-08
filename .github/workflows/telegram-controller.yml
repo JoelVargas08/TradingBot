@@ -1,0 +1,32 @@
+name: TradingBot - Telegram Workflow Controller
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: tradingbot-telegram-controller
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  control:
+    name: Telegram → GitHub Actions control plane
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
+    env:
+      TELEGRAM_BOT_TOKEN: \${{ secrets.TELEGRAM_BOT_TOKEN }}
+      GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: \${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Poll Telegram and control paper workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .github/scripts/telegram_workflow_controller.py
