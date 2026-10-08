@@ -30,21 +30,30 @@ type PerformanceProvider interface {
 	Performance(ctx context.Context) (domain.Performance, error)
 }
 
+// WorkflowController controls the lifecycle of the GitHub Actions runner.
+type WorkflowController interface {
+	Available() bool
+	CancelCurrent(context.Context) error
+	RunID() string
+}
+
 type CommandsHandler struct {
 	userManager *models.UserManager
 	telegram    *services.TelegramService
 	positions   domain.PositionStore
 	session     SessionController
 	performance PerformanceProvider
+	workflow WorkflowController
 }
 
-func NewCommandsHandler(um *models.UserManager, tg *services.TelegramService, positions domain.PositionStore, session SessionController, performance PerformanceProvider) *CommandsHandler {
+func NewCommandsHandler(um *models.UserManager, tg *services.TelegramService, positions domain.PositionStore, session SessionController, performance PerformanceProvider, workflow WorkflowController) *CommandsHandler {
 	return &CommandsHandler{
 		userManager: um,
 		telegram:    tg,
 		positions:   positions,
 		session:     session,
 		performance: performance,
+		workflow: workflow,
 	}
 }
 func (ch *CommandsHandler) HandleStart(chatID int64, args string) {
@@ -90,11 +99,23 @@ func (ch *CommandsHandler) HandlePing(chatID int64) {
 	)
 }
 func (ch *CommandsHandler) HandleSession(chatID int64) {
+	if ch.workflow != nil && ch.workflow.Available() {
+		if ch.session != nil && ch.session.IsActive() {
+			started := ch.session.StartedAt()
+			startText := "-"
+			if !started.IsZero() {
+				startText = started.Format("2006-01-02 15:04:05")
+			}
+			ch.telegram.SendMessage(chatID, fmt.Sprintf(
+				"🟢 <b>Workflow PAPER ACTIVO</b>\n\nRun: <code>%s</code>\nIniciada: %s\nWEEX: runner activo\nNuevas operaciones: habilitadas",
+				ch.workflow.RunID(), startText))
+			return
+		}
+		ch.telegram.SendMessage(chatID, "🔴 <b>Workflow PAPER DETENIDO</b>\n\nRunner: apagado\nWEEX: desconectado\nUsa /session_start para iniciar una nueva sesión.")
+		return
+	}
 	if ch.session == nil {
-		ch.telegram.SendMessage(
-			chatID,
-			"❌ Control de sesión no disponible",
-		)
+		ch.telegram.SendMessage(chatID, "❌ Control de sesión no disponible")
 		return
 	}
 	if ch.session.IsActive() {
@@ -103,63 +124,42 @@ func (ch *CommandsHandler) HandleSession(chatID int64) {
 		if !started.IsZero() {
 			startText = started.Format("2006-01-02 15:04:05")
 		}
-		ch.telegram.SendMessage(
-			chatID,
-			fmt.Sprintf(
-				"🟢 <b>Sesión de trading ACTIVA</b>\n\n"+
-					"Iniciada: %s\n"+
-					"Nuevas operaciones: habilitadas",
-				startText,
-			),
-		)
+		ch.telegram.SendMessage(chatID, fmt.Sprintf("🟢 <b>Sesión de trading ACTIVA</b>\n\nIniciada: %s\nNuevas operaciones: habilitadas", startText))
 		return
 	}
-	ch.telegram.SendMessage(
-		chatID,
-		"🔴 <b>Sesión de trading DETENIDA</b>\n\n"+
-			"Nuevas operaciones: deshabilitadas\n"+
-			"Las señales continúan registrándose.",
-	)
+	ch.telegram.SendMessage(chatID, "🔴 <b>Sesión de trading DETENIDA</b>\n\nNuevas operaciones: deshabilitadas")
 }
+
 func (ch *CommandsHandler) HandleSessionStart(chatID int64) {
-	if ch.session == nil {
-		ch.telegram.SendMessage(
-			chatID,
-			"❌ Control de sesión no disponible",
-		)
+	if ch.workflow != nil && ch.workflow.Available() {
+		ch.telegram.SendMessage(chatID, "ℹ️ El workflow PAPER ya está activo; /session_start no cambia el gate interno.")
 		return
 	}
-	duration := 6 * time.Hour
-	ch.session.StartFor(duration)
-	end := ch.session.StartedAt().Add(duration)
-	ch.telegram.SendMessage(
-		chatID,
-		fmt.Sprintf("🟢 <b>Sesión de trading INICIADA</b>\n\n"+
-			"Iniciada: %s\n"+
-			"Finaliza: %s\n"+
-			"Duración: 6 horas\n"+
-			"Nuevas operaciones: habilitadas\n"+
-			"Modo de ejecución: PAPER",
-			ch.session.StartedAt().Format("2006-01-02 15:04:05"),
-			end.Format("2006-01-02 15:04:05")),
-	)
-}
-func (ch *CommandsHandler) HandleSessionStop(chatID int64) {
 	if ch.session == nil {
-		ch.telegram.SendMessage(
-			chatID,
-			"❌ Control de sesión no disponible",
-		)
+		ch.telegram.SendMessage(chatID, "❌ Control de sesión no disponible")
+		return
+	}
+	ch.session.Start()
+	ch.telegram.SendMessage(chatID, "🟢 <b>Sesión de trading INICIADA</b>\n\nModo: PAPER\nNuevas operaciones: habilitadas")
+}
+
+func (ch *CommandsHandler) HandleSessionStop(chatID int64) {
+	if ch.workflow != nil && ch.workflow.Available() {
+		if err := ch.workflow.CancelCurrent(context.Background()); err != nil {
+			ch.telegram.SendMessage(chatID, "❌ No pude cancelar el workflow PAPER: "+err.Error())
+			return
+		}
+		ch.telegram.SendMessage(chatID, "🔴 <b>Apagado solicitado</b>\n\nGitHub Actions está cancelando el runner. WEEX se desconectará durante el shutdown. Las posiciones abiertas no se cierran automáticamente.")
+		return
+	}
+	if ch.session == nil {
+		ch.telegram.SendMessage(chatID, "❌ Control de sesión no disponible")
 		return
 	}
 	ch.session.Stop()
-	ch.telegram.SendMessage(
-		chatID,
-		"🔴 <b>Sesión de trading DETENIDA</b>\n\n"+
-			"No se abrirán nuevas posiciones.\n"+
-			"Las posiciones existentes no se cierran automáticamente.",
-	)
+	ch.telegram.SendMessage(chatID, "🔴 <b>Sesión de trading DETENIDA</b>\n\nNo se abrirán nuevas posiciones. Las posiciones existentes no se cierran automáticamente.")
 }
+
 func (ch *CommandsHandler) HandleSessionSchedule(chatID int64) {
 	if ch.session == nil {
 		ch.telegram.SendMessage(
@@ -193,8 +193,8 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/positions - Posiciones abiertas\n" +
 		"/risk - Estado de riesgo y cuenta\n" +
 		"/session - Estado de la sesión de trading\n" +
-		"/session_start - Iniciar trading\n" +
-		"/session_stop - Detener nuevas operaciones\n" +
+		"/session_start - Arrancar el workflow PAPER (runner + WEEX)\n" +
+		"/session_stop - Apagar el workflow PAPER y desconectar WEEX\n" +
 		"/session_schedule - Mostrar el horario de trading\n" +
 		"/performance - Métricas de paper trading\n" +
 		"/learn - Aprender estrategia desde un PDF adjunto\n" +
