@@ -23,6 +23,7 @@ import (
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/evaluator"
 	"tradingview-bot/internal/health"
+	"tradingview-bot/internal/githubactions"
 	"tradingview-bot/internal/ingest"
 	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/jobqueue"
@@ -626,7 +627,8 @@ func main() {
 	if paperEngine != nil {
 		positionsStore = paperEngine
 	}
-	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, positionsStore, tradingSession, paperEngine)
+	workflowController := githubactions.NewFromEnv()
+	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, positionsStore, tradingSession, paperEngine, workflowController)
 	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret, sqliteStore, sqliteStore, liveEngine)
 
 	// Configurar bot de Telegram para polling
@@ -659,7 +661,11 @@ func main() {
 			}
 			switch update.Message.Command() {
 			case "start":
-				commandsHandler.HandleStart(chatID, update.Message.CommandArguments())
+				if strings.TrimSpace(update.Message.CommandArguments()) == "" {
+					commandsHandler.HandleSessionStart(chatID)
+				} else {
+					commandsHandler.HandleStart(chatID, update.Message.CommandArguments())
+				}
 			case "close":
 				commandsHandler.HandleClose(chatID)
 			case "myid":
