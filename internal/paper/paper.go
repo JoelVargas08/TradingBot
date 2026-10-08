@@ -7,6 +7,7 @@ import (
 	"log"
 	"math"
 	"sync"
+	"strings"
 	"time"
 
 	"tradingview-bot/internal/domain"
@@ -44,6 +45,57 @@ type pendingEntry struct {
 	Quantity float64
 	RiskAmount float64
 	BarTS time.Time
+}
+
+type orderStore interface {
+	SaveOrder(context.Context, domain.Order) error
+	ListOrders(context.Context, string) ([]domain.Order, error)
+}
+
+const pendingOrderStatus = "paper_armed"
+
+func (e *Engine) persistPending(p pendingEntry) {
+	os, ok := e.store.(orderStore)
+	if !ok { return }
+	err := os.SaveOrder(context.Background(), domain.Order{
+		ClientID: p.Key, StrategyID: p.StrategyID, Symbol: p.Symbol, Side: p.Side,
+		Quantity: p.Quantity, Price: p.Price, StopLoss: p.StopLoss, TakeProfit: p.TakeProfit,
+		Status: pendingOrderStatus, Time: p.BarTS, UpdatedAt: time.Now(),
+	})
+	if err != nil { log.Printf("paper: persistiendo límite %s: %v", p.Key, err) }
+}
+
+func (e *Engine) updatePendingOrder(key, status string) {
+	os, ok := e.store.(orderStore)
+	if !ok { return }
+	_ = os.SaveOrder(context.Background(), domain.Order{ClientID:key, Status:status, UpdatedAt:time.Now()})
+}
+
+func pendingTimeframe(key string) string {
+	parts := strings.Split(key, "|")
+	if len(parts) >= 3 { return parts[2] }
+	return ""
+}
+
+func (e *Engine) recoverPending(ctx context.Context) error {
+	os, ok := e.store.(orderStore)
+	if !ok { return nil }
+	orders, err := os.ListOrders(ctx, pendingOrderStatus)
+	if err != nil { return fmt.Errorf("recover: leyendo límites armados: %w", err) }
+	count := 0
+	for _, o := range orders {
+		tf := pendingTimeframe(o.ClientID)
+		if tf == "" || o.StrategyID == "" || o.Symbol == "" || o.Price <= 0 { continue }
+		p := pendingEntry{
+			Key:o.ClientID, StrategyID:o.StrategyID, Symbol:o.Symbol, Timeframe:tf, Side:o.Side,
+			Price:o.Price, StopLoss:o.StopLoss, TakeProfit:o.TakeProfit, Quantity:o.Quantity,
+			RiskAmount:0, BarTS:o.Time,
+		}
+		e.pending[o.ClientID] = append(e.pending[o.ClientID], p)
+		count++
+	}
+	if count > 0 { log.Printf("paper recovery: %d límites IB armados restaurados", count) }
+	return nil
 }
 
 type Engine struct {
@@ -124,13 +176,16 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
 			log.Printf("paper: limit IB %.8f no ejecutada: %v", p.Price, err)
 			continue
 		}
+		e.updatePendingOrder(p.Key, "filled")
 		e.mu.Lock()
 		for key, entries := range e.pending {
 			filtered := entries[:0]
 			for _, other := range entries {
-				if other.StrategyID != p.StrategyID || other.Symbol != p.Symbol || other.Timeframe != p.Timeframe || other.Side != p.Side {
-					filtered = append(filtered, other)
+				if other.StrategyID == p.StrategyID && other.Symbol == p.Symbol && other.Timeframe == p.Timeframe && other.Side == p.Side {
+					e.updatePendingOrder(other.Key, "cancelled")
+					continue
 				}
+				filtered = append(filtered, other)
 			}
 			if len(filtered) == 0 { delete(e.pending,key) } else { e.pending[key] = filtered }
 		}
@@ -185,6 +240,7 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	if len(e.pending[key]) > 0 { e.mu.Unlock(); return nil }
 	for k, entries := range e.pending {
 		if len(entries)>0 && entries[0].StrategyID==ev.StrategyID && entries[0].Symbol==ev.Symbol && entries[0].Timeframe==ev.Timeframe && entries[0].Side!=ev.Direction {
+			for _, old := range entries { e.updatePendingOrder(old.Key, "cancelled") }
 			delete(e.pending,k)
 		}
 	}
@@ -213,11 +269,13 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	e.mu.Lock()
 	e.pending[key] = entries
 	e.mu.Unlock()
+	for _, p := range entries { e.persistPending(p) }
 	log.Printf("paper: zona armada %s %s %.8f-%.8f con 2 límites",ev.Symbol,ev.Direction,zoneLow,zoneHigh)
 	return nil
 }
 // Recover reconstruye el equity al arrancar a partir del estado persistido.
 func (e *Engine) Recover(ctx context.Context) error {
+	if err := e.recoverPending(ctx); err != nil { return err }
 	acc, err := e.store.GetAccount(ctx)
 	if errors.Is(err, domain.ErrNotFound) {
 		return nil
@@ -347,25 +405,62 @@ func (e *Engine) CheckStops(ctx context.Context, k domain.Kline) {
 }
 
 func (e *Engine) fillPending(ctx context.Context,k domain.Kline) {
+	if !k.Closed { return }
+	if e.entryGate != nil && !e.entryGate() { return }
 	e.mu.Lock()
-	defer e.mu.Unlock()
+	var touched *pendingEntry
+	var touchedKey string
 	for key, entries := range e.pending {
-		remaining := entries[:0]
-		for _, pe := range entries {
-			if pe.Symbol!=k.Symbol || pe.Timeframe!=k.Timeframe || k.Low>pe.Price || pe.Price>k.High {
-				remaining=append(remaining,pe); continue
+		for i := range entries {
+			pe := entries[i]
+			if pe.Symbol!=k.Symbol || pe.Timeframe!=k.Timeframe || !k.Start.After(pe.BarTS) { continue }
+			if (pe.Side==domain.DirectionBuy && k.Low<=pe.Price) || (pe.Side==domain.DirectionSell && k.High>=pe.Price) {
+				cp:=pe; touched=&cp; touchedKey=key; break
 			}
-			_, err := e.store.OpenPosition(ctx,domain.Position{StrategyID:pe.StrategyID,Symbol:pe.Symbol,Timeframe:pe.Timeframe,Side:pe.Side,EntryTS:k.Start,EntryPrice:pe.Price,StopLoss:pe.StopLoss,TakeProfit:pe.TakeProfit,Quantity:pe.Quantity,RiskAmount:pe.RiskAmount,Status:domain.PositionOpen})
-			if err!=nil { log.Printf("paper: ejecutando límite %.8f: %v",pe.Price,err); remaining=append(remaining,pe); continue }
-			log.Printf("paper: límite ejecutado %s %s price=%.8f qty=%.8f",pe.Symbol,pe.Side,pe.Price,pe.Quantity)
 		}
-		if len(remaining)==0 { delete(e.pending,key) } else { e.pending[key]=remaining }
+		if touched != nil { break }
 	}
+	e.mu.Unlock()
+	if touched == nil { return }
+
+	decision, err := e.riskCtrl.EvaluateSignal(ctx, domain.SignalEvent{
+		StrategyID:touched.StrategyID, Symbol:touched.Symbol, Timeframe:touched.Timeframe,
+		Direction:touched.Side, Price:touched.Price, BarTS:k.Start,
+		Meta:map[string]any{domain.MetaKeyStopLoss:touched.StopLoss, domain.MetaKeyTakeProfit:touched.TakeProfit, domain.MetaKeySetup:"investing_bulls_limit_fill"},
+	})
+	if err != nil || !decision.Allowed {
+		if err != nil { log.Printf("paper: límite %.8f rechazado al ejecutar: %v", touched.Price, err) } else { log.Printf("paper: límite %.8f rechazado al ejecutar: %s", touched.Price, decision.Reason) }
+		return
+	}
+	_, err = e.store.OpenPosition(ctx,domain.Position{
+		StrategyID:touched.StrategyID,Symbol:touched.Symbol,Timeframe:touched.Timeframe,Side:touched.Side,
+		EntryTS:k.Start,EntryPrice:touched.Price,StopLoss:touched.StopLoss,TakeProfit:touched.TakeProfit,
+		Quantity:touched.Quantity,RiskAmount:touched.RiskAmount,Status:domain.PositionOpen})
+	if err!=nil { log.Printf("paper: ejecutando límite %.8f: %v",touched.Price,err); return }
+
+	e.mu.Lock()
+	for key, entries := range e.pending {
+		filtered:=entries[:0]
+		for _, pe:=range entries {
+			if pe.StrategyID==touched.StrategyID && pe.Symbol==touched.Symbol && pe.Timeframe==touched.Timeframe && pe.Side==touched.Side {
+				status:="cancelled"
+				if pe.Key==touched.Key { status="filled" }
+				e.updatePendingOrder(pe.Key,status)
+				continue
+			}
+			filtered=append(filtered,pe)
+		}
+		if len(filtered)==0 { delete(e.pending,key) } else { e.pending[key]=filtered }
+	}
+	_ = touchedKey
+	e.mu.Unlock()
+	log.Printf("paper: límite ejecutado %s %s price=%.8f qty=%.8f",touched.Symbol,touched.Side,touched.Price,touched.Quantity)
 }
 
 func (e *Engine) CancelPending() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	for _, entries := range e.pending { for _, pe := range entries { e.updatePendingOrder(pe.Key, "cancelled") } }
 	clear(e.pending)
 }
 
