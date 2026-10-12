@@ -15,7 +15,18 @@ import (
 
 // CodeVersion identifica la versión del código que produjo un modelo.
 // Se persiste junto al modelo para reproducibilidad (sec 18).
-const CodeVersion = "investing-bulls/1.2.0"
+//
+// 1.3.0: incorpora la zona de oferta/demanda como cuarto componente de
+// confluencia (modos all4, three_of_four, fibonacci_supply_demand) y la
+// selección determinista de zona Fibonacci. Los modos legacy conservan su
+// semántica de tres componentes, por lo que los modelos 1.2.0 siguen siendo
+// interpretables sin migración.
+//
+// 1.4.0: el modelo base persiste el SearchSpace efectivo (modos, distancias y
+// stops) y el diagnóstico desagregado por setup y por conjunto de componentes
+// de confluencia (SetupStats/ComponentStats). Campos aditivos: los modelos
+// 1.3.0 siguen cargándose sin cambios.
+const CodeVersion = "investing-bulls/1.4.0"
 
 // minLearningBars es la primera vela evaluable: por debajo no hay estructura
 // confirmada (los swings exigen barras a izquierda y derecha).
@@ -34,6 +45,11 @@ type LearnConfig struct {
 	FeePct         float64
 	SlippagePct    float64
 	MinTrades      int
+	// PartialCloseFraction es la fracción de la posición que se cierra en el
+	// objetivo parcial (máximo/mínimo previo), protegiendo el resto a breakeven.
+	// Debe coincidir con paper.PartialCloseFraction para que PAPER y los
+	// simuladores midan el mismo resultado.
+	PartialCloseFraction float64
 }
 
 func DefaultLearnConfig() LearnConfig {
@@ -44,24 +60,37 @@ func DefaultLearnConfig() LearnConfig {
 		TradePlan:      DefaultTradePlanConfig(),
 		Search:         DefaultSearchSpace(),
 		InitialBalance: 10000, FeePct: 0.001, SlippagePct: 0.0002,
-		MinTrades: 8,
+		MinTrades:            8,
+		PartialCloseFraction: PartialCloseFractionDefault,
 	}
 }
 
+// PartialCloseFractionDefault es la fracción del TP parcial (50%): cerrar la
+// mitad en el máximo/mínimo previo y proteger el resto. Coincide con el default
+// del motor PAPER.
+const PartialCloseFractionDefault = 0.5
+
 // SearchSpace acota el espacio de búsqueda del learner. El valor por defecto
-// recorre la confluencia de tres factores y sus tres variantes 2/3, tolerancias
-// de zona del 0.5% al 2% y stops del 1% al 2% (tope del perfil Investing Bulls).
-// Las reglas de la estrategia NO se eliminan: lo que se abre es el grado de
-// confluencia y la tolerancia geométrica, ambas parametrizadas y auditables.
+// recorre la confluencia de CUATRO factores (los modos fieles) de la variante
+// más exigente 4/4 a las parejas, tolerancias de zona del 0.5% al 2% y stops
+// del 1% al 2% (tope del perfil Investing Bulls). Las reglas de la estrategia NO
+// se eliminan: lo que se abre es el grado de confluencia y la tolerancia
+// geométrica, ambas parametrizadas y auditables.
+//
+// Los modos legacy de tres componentes (all, fibonacci_order_block,
+// fibonacci_imbalance) siguen siendo válidos y se conservan en
+// SearchConfluenceModes para no reinterpretar modelos ya persistidos; el
+// espacio por defecto usa FaithfulConfluenceModes porque incluye la zona de
+// oferta/demanda como cuarto componente medido.
 type SearchSpace struct {
-	Modes     []ConfluenceMode
-	Distances []float64
-	Stops     []float64
+	Modes     []ConfluenceMode `json:"modes"`
+	Distances []float64        `json:"distances"`
+	Stops     []float64        `json:"stops"`
 }
 
 func DefaultSearchSpace() SearchSpace {
 	return SearchSpace{
-		Modes:     SearchConfluenceModes(),
+		Modes:     FaithfulConfluenceModes(),
 		Distances: []float64{0.005, 0.010, 0.015, MaxConfluenceDistanceLimit},
 		Stops:     []float64{0.010, 0.015, MaxStopPctLimit},
 	}
@@ -157,15 +186,25 @@ type LearnedModel struct {
 	// qué fue elegida esa configuración.
 	ConfluenceComponents string          `json:"confluence_components"`
 	TradePlan            TradePlanConfig `json:"trade_plan"`
-	InitialBalance       float64         `json:"initial_balance"`
-	FeePct               float64         `json:"fee_pct"`
-	SlippagePct          float64         `json:"slippage_pct"`
-	MinTrades            int             `json:"min_trades"`
-	ConfigsEvaluated     int             `json:"configs_evaluated"`
-	FinalBalance         float64         `json:"final_balance"`
-	Trades               int             `json:"trades"`
-	WinRate              float64         `json:"win_rate"`
-	ProfitFactor         float64         `json:"profit_factor"`
+	// Search conserva el espacio de búsqueda efectivo (modos de confluencia,
+	// distancias a objetivos y tamaños de stop) que se barrió para elegir la
+	// candidata. Un modelo sin su espacio no explica de dónde salió su
+	// configuración (sec 18 reproducibilidad).
+	Search SearchSpace `json:"search"`
+	// SetupStats desglosa el resultado por tipo de setup (continuación o
+	// reversión). Junto con ComponentStats explica qué parte del universo de
+	// setups/componentes aportó cada operación del modelo (sec 12 diagnóstico).
+	SetupStats       map[SetupType]SetupStats  `json:"setup_stats,omitempty"`
+	ComponentStats   map[string]ComponentStats `json:"component_stats,omitempty"`
+	InitialBalance   float64                   `json:"initial_balance"`
+	FeePct           float64                   `json:"fee_pct"`
+	SlippagePct      float64                   `json:"slippage_pct"`
+	MinTrades        int                       `json:"min_trades"`
+	ConfigsEvaluated int                       `json:"configs_evaluated"`
+	FinalBalance     float64                   `json:"final_balance"`
+	Trades           int                       `json:"trades"`
+	WinRate          float64                   `json:"win_rate"`
+	ProfitFactor     float64                   `json:"profit_factor"`
 	// ZeroLosses explica un ProfitFactor igual al tope registrado: la
 	// configuración candidata no cerró ninguna operación perdedora.
 	ZeroLosses   bool      `json:"zero_losses"`
@@ -278,6 +317,11 @@ type LearnedTrade struct {
 	// Components registra qué evidencia de confluencia produjo la entrada; sin
 	// ella una candidata 2/3 es indistinguible de una 3/3 en el histórico.
 	Components string
+	// PartialBar y PartialExitPrice describen el TP parcial: cuándo se cerró
+	// la fracción configurada en el máximo/mínimo previo. PnL ya incluye ambas
+	// patas, de modo que la operación se cuenta una sola vez en las métricas.
+	PartialBar       int
+	PartialExitPrice float64
 }
 
 // Learn performs a deterministic parameter search over the source strategy.
@@ -332,7 +376,7 @@ func Learn(ks []domain.Kline, cfg LearnConfig) (LearnResult, error) {
 			bestBalance = metrics.finalBalance
 			bestCfg = testCfg
 			bestMetrics = metrics
-			best = newLearnedModel(cfg, testCfg, digest, ks, metrics)
+			best = newLearnedModel(cfg, testCfg, space, digest, ks, trades, metrics)
 		}
 	}
 
@@ -393,7 +437,7 @@ func noCandidateReason(cfg LearnConfig, diag LearnDiagnostics) string {
 	return b.String()
 }
 
-func newLearnedModel(cfg, testCfg LearnConfig, digest string, ks []domain.Kline, metrics learnMetrics) LearnedModel {
+func newLearnedModel(cfg, testCfg LearnConfig, space SearchSpace, digest string, ks []domain.Kline, trades []LearnedTrade, metrics learnMetrics) LearnedModel {
 	return LearnedModel{
 		Version: 1, Family: "investing_bulls",
 		Symbol: cfg.Symbol, Timeframe: cfg.Timeframe,
@@ -402,6 +446,9 @@ func newLearnedModel(cfg, testCfg LearnConfig, digest string, ks []domain.Kline,
 		Confluence:           testCfg.Confluence,
 		ConfluenceComponents: metrics.components,
 		TradePlan:            testCfg.TradePlan,
+		Search:               space,
+		SetupStats:           statsBySetup(trades, cfg.InitialBalance),
+		ComponentStats:       statsByComponent(trades, cfg.InitialBalance),
 		InitialBalance:       cfg.InitialBalance, FeePct: cfg.FeePct,
 		SlippagePct: cfg.SlippagePct, MinTrades: cfg.MinTrades,
 		ConfigsEvaluated: cfg.Search.Size(),
@@ -508,6 +555,9 @@ func normalizeLearnConfig(cfg LearnConfig) LearnConfig {
 	if cfg.SlippagePct < 0 {
 		cfg.SlippagePct = 0
 	}
+	if cfg.PartialCloseFraction <= 0 || cfg.PartialCloseFraction >= 1 {
+		cfg.PartialCloseFraction = PartialCloseFractionDefault
+	}
 	if cfg.MinTrades <= 0 {
 		cfg.MinTrades = 8
 	}
@@ -525,7 +575,10 @@ type decisionPoint struct {
 	entry     float64
 	direction domain.Direction
 	setupType SetupType
-	evidence  ConfluenceEvidence
+	// evidences mide la confluencia de AMBAS zonas Fibonacci en la vela de
+	// decisión. La zona ganadora se elige en cada configuración con
+	// SelectSetupFromEvidence, nunca antes: medir y decidir son pasos separados.
+	evidences [2]ConfluenceEvidence
 	levels    planInputs
 }
 
@@ -538,6 +591,7 @@ func collectDecisionPoints(ks []domain.Kline, cfg LearnConfig, evaluationStart i
 	}
 	imbalanceCfg := DefaultImbalanceConfig()
 	orderBlockCfg := DefaultOrderBlockConfig()
+	supplyDemandCfg := DefaultSupplyDemandConfig()
 
 	var out []decisionPoint
 	for i := evaluationStart; i < len(ks)-1; i++ {
@@ -557,7 +611,8 @@ func collectDecisionPoints(ks []domain.Kline, cfg LearnConfig, evaluationStart i
 
 		imbs := UpdateImbalances(DetectImbalances(prefix, imbalanceCfg), prefix, imbalanceCfg)
 		blocks := UpdateOrderBlocks(DetectOrderBlocks(prefix, structure.Breaks, orderBlockCfg), prefix, orderBlockCfg)
-		evidence, ok := CollectConfluenceEvidence(prefix, i, structure, fib, imbs, blocks)
+		zones := UpdateSupplyDemandZones(DetectSupplyDemandZones(prefix, structure.Breaks, supplyDemandCfg), prefix, supplyDemandCfg)
+		evidences, ok := collectEvidenceForZones(prefix, i, structure, fib, imbs, blocks, zones)
 		if !ok {
 			continue
 		}
@@ -571,9 +626,10 @@ func collectDecisionPoints(ks []domain.Kline, cfg LearnConfig, evaluationStart i
 			continue
 		}
 
-		// Solo se guarda la vela si hay al menos una evidencia de confluencia:
-		// sin Fibonacci, imbalance ni order block ningún modo puede aceptarla.
-		if evidence.FibZone == 0 && evidence.ImbalanceIndex < 0 && evidence.OrderBlockIndex < 0 {
+		// Solo se guarda la vela si hay al menos una evidencia de confluencia
+		// medible: sin Fibonacci, imbalance, order block ni oferta/demanda ningún
+		// modo puede aceptarla.
+		if !hasGenuineConfluence(evidences) {
 			continue
 		}
 
@@ -582,13 +638,13 @@ func collectDecisionPoints(ks []domain.Kline, cfg LearnConfig, evaluationStart i
 		// setups que el learner nunca puede usar.
 		if diag != nil {
 			diag.SetupsDetected++
-			if evidence.FibZone > 0 {
+			if evidences[0].FibInZone || evidences[1].FibInZone {
 				diag.SetupsWithFibonacci++
 			}
-			if evidence.ImbalanceIndex >= 0 {
+			if evidences[0].ImbalanceIndex >= 0 {
 				diag.SetupsWithImbalance++
 			}
-			if evidence.OrderBlockIndex >= 0 {
+			if evidences[0].OrderBlockIndex >= 0 {
 				diag.SetupsWithOrderBlock++
 			}
 		}
@@ -597,13 +653,13 @@ func collectDecisionPoints(ks []domain.Kline, cfg LearnConfig, evaluationStart i
 			index:     i,
 			entryBar:  entryBar,
 			entry:     entry,
-			direction: evidence.Direction,
-			setupType: inferSetupType(structure, i, evidence.Direction),
-			evidence:  evidence,
+			direction: evidences[0].Direction,
+			setupType: inferSetupType(structure, i, evidences[0].Direction),
+			evidences: evidences,
 			levels: resolvePlanInputs(Setup{
 				Index:           i,
-				Direction:       evidence.Direction,
-				OrderBlockIndex: evidence.OrderBlockIndex,
+				Direction:       evidences[0].Direction,
+				OrderBlockIndex: evidences[0].OrderBlockIndex,
 			}, fib, entry, structure, blocks),
 		})
 	}
@@ -624,8 +680,7 @@ func simulateDecisions(ks []domain.Kline, decisions []decisionPoint, cfg LearnCo
 
 	var out []LearnedTrade
 	inTrade := false
-	var open LearnedTrade
-	stop, target := 0.0, 0.0
+	var sim tradeSim
 
 	start := decisions[0].index
 	if start < minLearningBars {
@@ -633,22 +688,8 @@ func simulateDecisions(ks []domain.Kline, decisions []decisionPoint, cfg LearnCo
 	}
 	for i := start; i < len(ks)-1; i++ {
 		if inTrade {
-			k := ks[i]
-			hitStop, hitTarget := false, false
-			if open.Direction == domain.DirectionBuy {
-				hitStop, hitTarget = k.Low <= stop, k.High >= target
-			} else {
-				hitStop, hitTarget = k.High >= stop, k.Low <= target
-			}
-			if hitStop || hitTarget {
-				exit, reason := stop, "stop"
-				if hitTarget && !hitStop {
-					exit, reason = target, "take"
-				}
-				exit = applyExitSlippage(exit, open.Direction, cfg.SlippagePct)
-				open.ExitBar, open.ExitPrice, open.Reason = i, exit, reason
-				open.PnL = tradePnL(open.Direction, open.EntryPrice, exit) - 2*cfg.FeePct
-				out = append(out, open)
+			if t, done := sim.onCandle(ks[i], i, cfg); done {
+				out = append(out, t)
 				inTrade = false
 			}
 			continue
@@ -659,8 +700,8 @@ func simulateDecisions(ks []domain.Kline, decisions []decisionPoint, cfg LearnCo
 			continue
 		}
 		d := decisions[idx]
-		setup, ok := d.evidence.Setup(cfg.Confluence)
-		if !ok || !setup.Valid || setup.Direction != d.direction {
+		setup, ok := SelectSetupFromEvidence(d.evidences[:], cfg.Confluence)
+		if !ok || setup.Direction != d.direction {
 			continue
 		}
 		plan, ok := buildPlan(d.levels, cfg.TradePlan)
@@ -668,26 +709,101 @@ func simulateDecisions(ks []domain.Kline, decisions []decisionPoint, cfg LearnCo
 			continue
 		}
 
-		open = LearnedTrade{
-			Direction:  d.direction,
-			EntryBar:   d.entryBar,
-			EntryPrice: d.entry * entryMultiplier(d.direction, cfg.SlippagePct),
-			FeePct:     cfg.FeePct,
-			Setup:      d.setupType,
-			Components: setup.Components,
+		sim = tradeSim{
+			open: LearnedTrade{
+				Direction:  d.direction,
+				EntryBar:   d.entryBar,
+				EntryPrice: d.entry * entryMultiplier(d.direction, cfg.SlippagePct),
+				FeePct:     cfg.FeePct,
+				Setup:      d.setupType,
+				Components: setup.Components,
+			},
+			stop:     plan.StopLoss,
+			target:   plan.TakeProfit,
+			fraction: partialFraction(cfg),
 		}
-		stop, target = plan.StopLoss, plan.TakeProfit
 		inTrade = true
 	}
 
 	if inTrade {
 		last := ks[len(ks)-1]
-		exit := applyExitSlippage(last.Close, open.Direction, cfg.SlippagePct)
-		open.ExitBar, open.ExitPrice, open.Reason = len(ks)-1, exit, "end"
-		open.PnL = tradePnL(open.Direction, open.EntryPrice, exit) - 2*cfg.FeePct
-		out = append(out, open)
+		out = append(out, sim.finalize(len(ks)-1, last.Close, "end", cfg))
 	}
 	return out
+}
+
+// tradeSim es el estado de una posición abierta en los simuladores barra a
+// barra (learner base y MTF). Reproduce la operativa del motor PAPER para el TP
+// parcial: el objetivo (= TakeProfit, máximo/mínimo previo) es el nivel donde se
+// cierra una fracción y el resto queda protegido a breakeven, por lo que las
+// métricas de research y PAPER/LIVE miden el mismo resultado.
+type tradeSim struct {
+	open        LearnedTrade
+	stop        float64
+	target      float64
+	fraction    float64
+	partialDone bool
+	partialBar  int
+	partialRaw  float64
+}
+
+// partialFraction devuelve la fracción de la posición que se cierra en el
+// objetivo parcial (= máximo/mínimo previo). Mismo default que el motor PAPER.
+func partialFraction(cfg LearnConfig) float64 {
+	if cfg.PartialCloseFraction <= 0 || cfg.PartialCloseFraction >= 1 {
+		return PartialCloseFractionDefault
+	}
+	return cfg.PartialCloseFraction
+}
+
+// onCandle pega la vela a la posición y devuelve la operación cerrada si la
+// salida se resolvió en esa vela. El primer toque del objetivo cierra solo la
+// fracción y NO cierra el resto en la misma vela (idéntico a PAPER); el stop
+// manda sobre el objetivo en una vela ambigua.
+func (s *tradeSim) onCandle(k domain.Kline, bar int, cfg LearnConfig) (LearnedTrade, bool) {
+	dir := s.open.Direction
+	var hitStop, hitPartial, hitTarget bool
+	if dir == domain.DirectionBuy {
+		hitStop = s.stop > 0 && k.Low <= s.stop
+		hitPartial = !s.partialDone && s.target > 0 && k.High >= s.target
+		hitTarget = s.target > 0 && k.High >= s.target
+	} else {
+		hitStop = s.stop > 0 && k.High >= s.stop
+		hitPartial = !s.partialDone && s.target > 0 && k.Low <= s.target
+		hitTarget = s.target > 0 && k.Low <= s.target
+	}
+
+	if hitStop {
+		return s.finalize(bar, s.stop, "stop", cfg), true
+	}
+	if hitPartial {
+		s.partialDone = true
+		s.partialBar = bar
+		s.partialRaw = s.target
+		s.stop = s.open.EntryPrice // breakeven
+		return LearnedTrade{}, false
+	}
+	if hitTarget {
+		return s.finalize(bar, s.target, "take", cfg), true
+	}
+	return LearnedTrade{}, false
+}
+
+// finalize cierra el resto de la posición y combina el PnL de las dos patas si
+// hubo TP parcial, para que la operación se cuente una sola vez en las métricas.
+func (s *tradeSim) finalize(bar int, rawExit float64, reason string, cfg LearnConfig) LearnedTrade {
+	exit := applyExitSlippage(rawExit, s.open.Direction, cfg.SlippagePct)
+	s.open.ExitBar, s.open.ExitPrice, s.open.Reason = bar, exit, reason
+	if s.partialDone {
+		partialExit := applyExitSlippage(s.partialRaw, s.open.Direction, cfg.SlippagePct)
+		s.open.PartialBar, s.open.PartialExitPrice = s.partialBar, partialExit
+		partial := s.fraction * tradePnL(s.open.Direction, s.open.EntryPrice, partialExit)
+		remainder := (1 - s.fraction) * tradePnL(s.open.Direction, s.open.EntryPrice, exit)
+		s.open.PnL = partial + remainder - 2*cfg.FeePct
+	} else {
+		s.open.PnL = tradePnL(s.open.Direction, s.open.EntryPrice, exit) - 2*cfg.FeePct
+	}
+	return s.open
 }
 
 func generateAndSimulate(ks []domain.Kline, cfg LearnConfig) []LearnedTrade {

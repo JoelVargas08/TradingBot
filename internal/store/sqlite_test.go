@@ -251,6 +251,96 @@ func TestClosePositionUpdatesPnLAndAccount(t *testing.T) {
 	}
 }
 
+func TestPartialClosePositionAccountingAndRoundtrip(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.UpdateAccount(ctx, domain.Account{Balance: 10000, PeakEquity: 10000, UpdatedAt: time.Now()}); err != nil {
+		t.Fatalf("UpdateAccount: %v", err)
+	}
+	p := position("BTCUSDT", domain.DirectionBuy, 60000, 1)
+	p.TakeProfit = 66000
+	p.PartialTP = 63000
+	id, err := s.OpenPosition(ctx, p)
+	if err != nil {
+		t.Fatalf("OpenPosition: %v", err)
+	}
+
+	// Parcial: cierra 0.5 a 63000 moviendo el stop a breakeven (60000).
+	updated, err := s.PartialClosePosition(ctx, id, 0.5, 63000, time.UnixMilli(2), domain.CloseOptions{Reason: "partial-take-profit", NewStopLoss: 60000})
+	if err != nil {
+		t.Fatalf("PartialClosePosition: %v", err)
+	}
+	if updated.Quantity != 0.5 || updated.PartialQty != 0.5 {
+		t.Errorf("tras parcial: qty=%v partial=%v, want 0.5/0.5", updated.Quantity, updated.PartialQty)
+	}
+	if updated.PartialPnL != (63000-60000)*0.5 {
+		t.Errorf("partial pnl = %v, want %v", updated.PartialPnL, (63000.0-60000)*0.5)
+	}
+	if updated.StopLoss != 60000 {
+		t.Errorf("stop = %v, want 60000 (breakeven)", updated.StopLoss)
+	}
+	if updated.Status != domain.PositionOpen {
+		t.Errorf("status = %s, want open (el resto sigue vivo)", updated.Status)
+	}
+	acc, _ := s.GetAccount(ctx)
+	if acc.Balance != 11500 || acc.RealizedPnL != 1500 {
+		t.Errorf("cuenta tras parcial: balance=%v realized=%v, want 11500/1500", acc.Balance, acc.RealizedPnL)
+	}
+
+	// Persistencia: la posición abierta conserva el estado parcial.
+	open, err := s.OpenPositions(ctx)
+	if err != nil {
+		t.Fatalf("OpenPositions: %v", err)
+	}
+	if len(open) != 1 {
+		t.Fatalf("abiertas = %d, want 1", len(open))
+	}
+	if open[0].PartialTP != 63000 || open[0].PartialQty != 0.5 || open[0].Quantity != 0.5 || open[0].PartialPnL != 1500 {
+		t.Errorf("estado parcial no persistido: %+v", open[0])
+	}
+
+	// Cerrar el resto a 66000: PnL total = 1500 + 3000 = 4500 (sin doble conteo).
+	final, err := s.ClosePosition(ctx, id, 66000, time.UnixMilli(3), domain.CloseOptions{})
+	if err != nil {
+		t.Fatalf("ClosePosition: %v", err)
+	}
+	if final.NetPnL != 4500 {
+		t.Errorf("net total = %v, want 4500 (parcial+resto)", final.NetPnL)
+	}
+	acc, _ = s.GetAccount(ctx)
+	if acc.Balance != 14500 {
+		t.Errorf("balance final = %v, want 14500", acc.Balance)
+	}
+	closed, _ := s.ClosedPositions(ctx)
+	if len(closed) != 1 || closed[0].NetPnL != 4500 {
+		t.Errorf("cerradas inesperadas: %+v", closed)
+	}
+}
+
+func TestPartialClosePositionRejectsFullOrClosed(t *testing.T) {
+	s := newTestStore(t)
+	ctx := context.Background()
+	if err := s.UpdateAccount(ctx, domain.Account{Balance: 10000, PeakEquity: 10000, UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.OpenPosition(ctx, position("BTCUSDT", domain.DirectionBuy, 60000, 1))
+	if err != nil {
+		t.Fatalf("OpenPosition: %v", err)
+	}
+	if _, err := s.PartialClosePosition(ctx, id, 1, 63000, time.UnixMilli(2), domain.CloseOptions{}); err == nil {
+		t.Error("cierre parcial con la cantidad completa debe rechazarse")
+	}
+	if _, err := s.PartialClosePosition(ctx, id, 0, 63000, time.UnixMilli(2), domain.CloseOptions{}); err == nil {
+		t.Error("cierre parcial con cantidad cero debe rechazarse")
+	}
+	if _, err := s.ClosePosition(ctx, id, 61000, time.UnixMilli(3), domain.CloseOptions{}); err != nil {
+		t.Fatalf("ClosePosition: %v", err)
+	}
+	if _, err := s.PartialClosePosition(ctx, id, 0.5, 63000, time.UnixMilli(4), domain.CloseOptions{}); err == nil {
+		t.Error("cierre parcial sobre posición cerrada debe rechazarse")
+	}
+}
+
 func TestAccountNotFoundAndRoundtrip(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()

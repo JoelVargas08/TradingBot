@@ -261,11 +261,11 @@ func TestSearchSpaceBuildsExpectedConfigurations(t *testing.T) {
 	cfg := DefaultLearnConfig()
 	space := cfg.Search
 	all := space.Configs(cfg)
-	if len(all) != 36 {
-		t.Fatalf("expected 3 modes x 4 distances x 3 stops = 36 configurations, got %d", len(all))
+	if len(all) != 72 {
+		t.Fatalf("expected 6 modes x 4 distances x 3 stops = 72 configurations, got %d", len(all))
 	}
-	if space.Size() != 36 {
-		t.Fatalf("Size must report 36, got %d", space.Size())
+	if space.Size() != 72 {
+		t.Fatalf("Size must report 72, got %d", space.Size())
 	}
 
 	distances := map[float64]bool{}
@@ -336,8 +336,8 @@ func TestSearchSpaceOrderIsDeterministic(t *testing.T) {
 			t.Fatalf("grid order changed at %d", i)
 		}
 	}
-	if first[0].Confluence.Mode != ConfluenceAll {
-		t.Fatalf("expected 3/3 first, got %q", first[0].Confluence.Mode)
+	if first[0].Confluence.Mode != ConfluenceAll4 {
+		t.Fatalf("expected the strictest 4/4 first, got %q", first[0].Confluence.Mode)
 	}
 }
 

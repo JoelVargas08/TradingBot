@@ -182,6 +182,9 @@ CREATE TABLE IF NOT EXISTS positions (
 	exit_ts      INTEGER NOT NULL DEFAULT 0,
 	exit_price   REAL NOT NULL DEFAULT 0,
 	pnl          REAL NOT NULL DEFAULT 0,
+	partial_tp   REAL NOT NULL DEFAULT 0,
+	partial_qty  REAL NOT NULL DEFAULT 0,
+	partial_pnl  REAL NOT NULL DEFAULT 0,
 	exit_reason  TEXT NOT NULL DEFAULT '',
 	entry_fee    REAL NOT NULL DEFAULT 0,
 	exit_fee     REAL NOT NULL DEFAULT 0,
@@ -210,6 +213,7 @@ CREATE TABLE IF NOT EXISTS orders (
 	filled_qty  REAL NOT NULL DEFAULT 0,
 	stop_loss   REAL NOT NULL DEFAULT 0,
 	take_profit REAL NOT NULL DEFAULT 0,
+	partial_tp  REAL NOT NULL DEFAULT 0,
 	created_at  INTEGER NOT NULL,
 	updated_at  INTEGER NOT NULL DEFAULT 0
 );
@@ -270,6 +274,10 @@ func migrate(db *sql.DB) error {
 		"ALTER TABLE positions ADD COLUMN r_multiple REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0",
 		"ALTER TABLE positions ADD COLUMN ambiguous_bar INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN partial_tp REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN partial_qty REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE positions ADD COLUMN partial_pnl REAL NOT NULL DEFAULT 0",
+		"ALTER TABLE orders ADD COLUMN partial_tp REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE account ADD COLUMN equity REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE account ADD COLUMN initial_balance REAL NOT NULL DEFAULT 0",
 		"ALTER TABLE account ADD COLUMN realized_pnl REAL NOT NULL DEFAULT 0",
@@ -620,10 +628,10 @@ func (s *Store) Marks(ctx context.Context) ([]domain.Mark, error) {
 func (s *Store) OpenPosition(ctx context.Context, p domain.Position) (int64, error) {
 	res, err := s.db.ExecContext(ctx, `
 		INSERT OR IGNORE INTO positions
-			(strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
+			(strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, partial_tp, status)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open')`,
 		p.StrategyID, p.Symbol, p.Timeframe, string(p.Side), p.EntryTS.UnixMilli(),
-		p.EntryPrice, p.StopLoss, p.TakeProfit, p.Quantity, p.RiskAmount)
+		p.EntryPrice, p.StopLoss, p.TakeProfit, p.Quantity, p.RiskAmount, p.PartialTP)
 	if err != nil {
 		return 0, fmt.Errorf("abriendo posición: %w", err)
 	}
@@ -646,9 +654,9 @@ func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, 
 	var side string
 	var entryTS int64
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status
+		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status, partial_qty, partial_pnl
 		FROM positions
-		WHERE id = ?`, id).Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS, &p.EntryPrice, &p.StopLoss, &p.TakeProfit, &p.Quantity, &p.RiskAmount, &p.Status)
+		WHERE id = ?`, id).Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS, &p.EntryPrice, &p.StopLoss, &p.TakeProfit, &p.Quantity, &p.RiskAmount, &p.Status, &p.PartialQty, &p.PartialPnL)
 	if errors.Is(err, sql.ErrNoRows) {
 		return p, domain.ErrNotFound
 	}
@@ -668,7 +676,12 @@ func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, 
 		p.GrossPnL = (p.EntryPrice - exitPrice) * p.Quantity
 	}
 	totalCost := opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
-	p.NetPnL = p.GrossPnL - totalCost
+	// remainderNet es lo realizado por el resto abierto; el balance solo suma ese
+	// tramo porque el parcial ya se contabilizó al ejecutarse. El PnL total de la
+	// posición sí incluye el parcial, para que las métricas cuenten la operación
+	// una sola vez.
+	remainderNet := p.GrossPnL - totalCost
+	p.NetPnL = remainderNet + p.PartialPnL
 	p.EntryFee = opts.EntryFee
 	p.ExitFee = opts.ExitFee
 	p.SlippageEntry = opts.SlippageEntry
@@ -705,9 +718,9 @@ func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, 
 	if err != nil {
 		return p, err
 	}
-	account.Balance += p.NetPnL
-	account.RealizedPnL += p.NetPnL
-	account.Fees += opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
+	account.Balance += remainderNet
+	account.RealizedPnL += remainderNet
+	account.Fees += totalCost
 	// No reseteamos UnrealizedPnL: otras posiciones pueden seguir abiertas;
 	// MarkPrice las revaloriza con los últimos precios conocidos.
 	account.Equity = account.Balance + account.UnrealizedPnL
@@ -727,9 +740,88 @@ func (s *Store) ClosePosition(ctx context.Context, id int64, exitPrice float64, 
 	return p, nil
 }
 
+// PartialClosePosition cierra parcialmente closeQty de una posición abierta.
+// Registra el PnL neto del tramo en la cuenta, reduce la cantidad restante y,
+// si opts.NewStopLoss > 0, mueve el stop del resto (protección a breakeven).
+// La posición permanece abierta. Rechaza cierres que no sean estrictamente
+// parciales (closeQty <= 0 o >= cantidad restante), de modo que un evento
+// repetido no pueda vaciar la posición por una ruta distinta a ClosePosition.
+func (s *Store) PartialClosePosition(ctx context.Context, id int64, closeQty, exitPrice float64, exitTS time.Time, opts domain.CloseOptions) (domain.Position, error) {
+	var p domain.Position
+	var side string
+	var entryTS int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status, partial_qty, partial_pnl
+		FROM positions
+		WHERE id = ?`, id).Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS, &p.EntryPrice, &p.StopLoss, &p.TakeProfit, &p.Quantity, &p.RiskAmount, &p.Status, &p.PartialQty, &p.PartialPnL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, domain.ErrNotFound
+	}
+	if err != nil {
+		return p, fmt.Errorf("leyendo posición para parcial: %w", err)
+	}
+	p.Side = domain.Direction(side)
+	p.EntryTS = time.UnixMilli(entryTS)
+	if p.Status != domain.PositionOpen {
+		return p, fmt.Errorf("posición %d no está abierta", id)
+	}
+	if closeQty <= 0 || closeQty >= p.Quantity {
+		return p, fmt.Errorf("cierre parcial inválido: closeQty=%v de cantidad=%v", closeQty, p.Quantity)
+	}
+	// PnL del tramo cerrado.
+	var gross float64
+	switch p.Side {
+	case domain.DirectionBuy:
+		gross = (exitPrice - p.EntryPrice) * closeQty
+	case domain.DirectionSell:
+		gross = (p.EntryPrice - exitPrice) * closeQty
+	}
+	totalCost := opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
+	net := gross - totalCost
+	newQty := p.Quantity - closeQty
+	newStop := p.StopLoss
+	if opts.NewStopLoss > 0 {
+		newStop = opts.NewStopLoss
+	}
+	if _, err := s.db.ExecContext(ctx, `
+		UPDATE positions
+		SET quantity = ?, stop_loss = ?, partial_qty = partial_qty + ?, partial_pnl = partial_pnl + ?
+		WHERE id = ? AND status = 'open'`,
+		newQty, newStop, closeQty, net, id); err != nil {
+		return p, fmt.Errorf("cerrando parcialmente posición: %w", err)
+	}
+	// Actualizar cuenta con el tramo realizado.
+	account, err := s.GetAccount(ctx)
+	if err != nil {
+		return p, err
+	}
+	account.Balance += net
+	account.RealizedPnL += net
+	account.Fees += totalCost
+	account.Equity = account.Balance + account.UnrealizedPnL
+	if account.Equity > account.PeakEquity {
+		account.PeakEquity = account.Equity
+	}
+	if account.PeakEquity > 0 {
+		dd := (account.PeakEquity - account.Equity) / account.PeakEquity
+		if dd > account.MaxDrawdown {
+			account.MaxDrawdown = dd
+		}
+	}
+	account.UpdatedAt = time.Now()
+	if err := s.UpdateAccount(ctx, account); err != nil {
+		return p, err
+	}
+	p.Quantity = newQty
+	p.StopLoss = newStop
+	p.PartialQty += closeQty
+	p.PartialPnL += net
+	return p, nil
+}
+
 func (s *Store) OpenPositions(ctx context.Context) ([]domain.Position, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status
+		SELECT id, strategy_id, symbol, timeframe, side, entry_ts, entry_price, stop_loss, take_profit, quantity, risk_amount, status, partial_tp, partial_qty, partial_pnl
 		FROM positions
 		WHERE status = 'open'
 		ORDER BY entry_ts`)
@@ -743,7 +835,8 @@ func (s *Store) OpenPositions(ctx context.Context) ([]domain.Position, error) {
 		var side string
 		var entryTS int64
 		if err := rows.Scan(&p.ID, &p.StrategyID, &p.Symbol, &p.Timeframe, &side, &entryTS,
-			&p.EntryPrice, &p.StopLoss, &p.TakeProfit, &p.Quantity, &p.RiskAmount, &p.Status); err != nil {
+			&p.EntryPrice, &p.StopLoss, &p.TakeProfit, &p.Quantity, &p.RiskAmount, &p.Status,
+			&p.PartialTP, &p.PartialQty, &p.PartialPnL); err != nil {
 			return nil, fmt.Errorf("escaneando posición: %w", err)
 		}
 		p.Side = domain.Direction(side)
@@ -848,8 +941,8 @@ func (s *Store) SaveOrder(ctx context.Context, o domain.Order) error {
 		o.Status = "pending"
 	}
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO orders (client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO orders (client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, partial_tp, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(client_id) DO UPDATE SET
 			order_id = excluded.order_id,
 			status = excluded.status,
@@ -858,10 +951,11 @@ func (s *Store) SaveOrder(ctx context.Context, o domain.Order) error {
 			price = excluded.price,
 			stop_loss = excluded.stop_loss,
 			take_profit = excluded.take_profit,
+			partial_tp = excluded.partial_tp,
 			quantity = excluded.quantity,
 			updated_at = excluded.updated_at`,
 		o.ClientID, o.ID, o.StrategyID, o.Symbol, string(o.Side), o.Quantity, o.Price,
-		o.Status, o.FilledPrice, o.FilledQty, o.StopLoss, o.TakeProfit,
+		o.Status, o.FilledPrice, o.FilledQty, o.StopLoss, o.TakeProfit, o.PartialTP,
 		o.Time.UnixMilli(), o.UpdatedAt.UnixMilli())
 	if err != nil {
 		return fmt.Errorf("guardando orden: %w", err)
@@ -874,10 +968,10 @@ func (s *Store) OrderByClientID(ctx context.Context, clientID string) (domain.Or
 	var o domain.Order
 	var side, createdAt, updatedAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, created_at, updated_at
+		SELECT client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, partial_tp, created_at, updated_at
 		FROM orders WHERE client_id = ?`, clientID).Scan(
 		&o.ClientID, &o.ID, &o.StrategyID, &o.Symbol, &side, &o.Quantity, &o.Price,
-		&o.Status, &o.FilledPrice, &o.FilledQty, &o.StopLoss, &o.TakeProfit, &createdAt, &updatedAt)
+		&o.Status, &o.FilledPrice, &o.FilledQty, &o.StopLoss, &o.TakeProfit, &o.PartialTP, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return o, domain.ErrNotFound
 	}
@@ -894,7 +988,7 @@ func (s *Store) OrderByClientID(ctx context.Context, clientID string) (domain.Or
 
 // ListOrders devuelve las órdenes persistidas, opcionalmente filtradas por estado.
 func (s *Store) ListOrders(ctx context.Context, status string) ([]domain.Order, error) {
-	q := `SELECT client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, created_at, updated_at
+	q := `SELECT client_id, order_id, strategy_id, symbol, side, quantity, price, status, filled_price, filled_qty, stop_loss, take_profit, partial_tp, created_at, updated_at
 		FROM orders`
 	args := []any{}
 	if status != "" {
@@ -913,7 +1007,7 @@ func (s *Store) ListOrders(ctx context.Context, status string) ([]domain.Order, 
 		var side, createdAt, updatedAt string
 		if err := rows.Scan(&o.ClientID, &o.ID, &o.StrategyID, &o.Symbol, &side, &o.Quantity,
 			&o.Price, &o.Status, &o.FilledPrice, &o.FilledQty, &o.StopLoss, &o.TakeProfit,
-			&createdAt, &updatedAt); err != nil {
+			&o.PartialTP, &createdAt, &updatedAt); err != nil {
 			return nil, fmt.Errorf("escaneando orden: %w", err)
 		}
 		o.Side = domain.Direction(side)

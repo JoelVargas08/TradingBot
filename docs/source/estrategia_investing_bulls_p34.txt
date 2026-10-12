@@ -1,0 +1,780 @@
+        ESTRATEGIA
+   THE INVESTING BULLS
+
+A continuación verás detalladamente, el proceso de análisis,
+los pasos y confirmaciones que uso para buscar una entrada.
+
+Personalmente busco una confluencia de estas 3
+confirmaciones
+
+     Order Block
+     Imbalance
+     Nivel Fibo
+     Zona de oferta/demanda
+
+En que temporalidad hago mis análisis?
+
+Depende el tipo de trader que eres y de tu gestión de riesgo.
+Esta estrategia es para aquellos que hacen day trading, los que
+abren y cierran operaciones en un mismo día.
+
+Así que yo hago mis análisis en temporalidad de 1H y 15m
+ PASOS PARA BUSCAR VENTAS POR
+       CAMBIO DE TENDENCIA
+
+EJEMPLO 1: GRAFICO DE 1 HORA - VENTA
+
+Entrada sniper de venta en temporalidad de 1hora. Existen
+confluencias de nivel fibo + order block
+
+        ANÁLISIS DE LA ENTRADA
+
+ Paso 1: Identificar la tendencia
+
+                                                 Primero observamos que hay
+                                                 una tendencia alcista.
+                                                 Máximos y mínimos cada vez
+                                                 más altos que el anterior
+                                                 Las líneas son los mínimos
+                                                 que ha dejado cada vez que
+                                                 ha retrocedido.
+Paso 2: Identificar si hay un cambio de tendencia
+
+El último retroceso ha sido tan fuerte que caído más bajo que
+el mínimo anterior. Esto denota que hay un cambio de
+tendencia de alcista a bajista. Y se lo representa con un CHOCH
+que significa cambio de estructura.
+Como ya existe estructura bajista, obviamente hay que
+empezar a buscar ventas.
+
+Paso 3: Trazar el Retrooceso de Fibonacci
+RECUERDA: Para buscar ventas se traza el fibonacci desde el
+último máximo hasta el último mínimo.
+Una vez trazado el fibo, nos enfocamos en dos zonas claves:
+
+  1.Nivel del 0.45 al 0.5
+  2.Nivel del 0.72 al 0.85
+En estas zonas siempre estará nuestra entrada en venta y
+para estar más seguro tienes que buscar una confluencia con
+un order block o imbalance.
+
+RECUERDA: Confluencia es la unión de dos o más cosas.
+En el ejemplo vemos que en la misma dirección de la primera
+zona fibo (0.45 - 0.5) hay un order block (zona gris).
+A esto le llamo de confluencia de order block e imbalance
+En este caso no hay imbalance pero ya tenemos: cambio de
+estructura y confluencia de OB y FVG suficiente para poner
+órdenes limit en esa zona
+En la zona gris podrías dejar dos órdenes de venta y el stop
+loss por encima del OB y antes de llegar a la otra zona fibo.
+El stop loss debe ser menor a 2% para tener una buena
+gestión de riesgo. Y el Take Profit debe estar en el mínimo o
+por debajo del mínimo anterior
+
+El precio rebota a buscar la zona fibo y donde se encuentra el
+order block para tomar liquidez y caer.
+PASOS PARA BUSCAR VENTAS POR
+  CONTINUACIÓN DE TENDENCIA
+
+EJEMPLO 2: GRAFICO DE 1 HORA - VENTA
+
+Entrada sniper de venta en temporalidad de 1 hora. Existen
+confluencias de nivel fibo + order block + imbalance
+
+        ANÁLISIS DE LA ENTRADA
+
+                                          Paso 1: Identificar la tendencia
+
+                                              El precio ha caído más bajo que el
+                                              mínimo anterior por tanto es una
+                                              tendencia bajista.
+                                              Es decir que vamos a buscar
+                                              oportunidades de venta.
+Paso 2: Buscar una estructura clara
+
+En este ejemplo se nota que
+hay una tendencia bajista
+porque ha hecho un nuevo
+mínimo.
+
+Así que buscaremos ventas
+
+para                                 continuar  su
+
+movimiento principal.
+
+Es importante tradear una moneda con una estructura clara
+que denote que es bajista, muchas veces hay monedas que
+hacen movimientos extraños o se quedan en rango y no
+tienen una dirección específica.
+
+Ignora las monedas que te generen confusión, analiza
+monedas que se vean ordenadas como el ejemplo.
+
+Paso 3: Trazar retroceso de fibonacci
+Recuerda trazar fibonacci desde el punto más alto al punto
+más bajo, para buscar ventas.
+Debes resaltar las dos zonas fibo donde vas a buscar ventas y
+buscar si hay otra confirmación para tener una entrada más
+segura.
+
+Analicemos la primera zona fibo...
+Cerca a esta zona hay un order block (cuadro celeste).
+Puede ser considerado como una confluencia de zona fibo +
+ob, pero si observas bien el ob ya fue tocado por una vela roja,
+es decir que ya tomó liquidez en ese ob.
+Entonces hay pocas probabilidades que el precio suba de
+nuevo hasta esa zona a tomar liquidez donde ya lo tomó, por
+tanto descarto aquella zona para venta.
+Analicemos la segunda zona fibo...
+He resaltado la zona fibo de amarillo, en esta zona dbes
+buscar un ob o un imbalance para tener más confirmaciones y
+sea una entrada exitosa.
+
+En la zona fibo hay un order block que es la vela verde antes
+del movimiento bajista, esta es una confirmación más.
+Si observas detalladamente cerca a la zona fibo y ob hay un
+imbalance que aún no ha sido llenado.
+
+Ahora hay confluencia de tres confirmaciones: Nivel Fibo + OB
++ Imbalance. Si en un mismo lugar estan estas 3
+confirmaciones es todo lo que necesitas para dejar ordenes de
+venta
+Dónde debo poner la orden de venta?
+Donde empieza el ob (zona celeste) porque al tocarlo estaría
+cerrando el imbalance (zona morado) y llegando a la zona fibo
+(zona amarilla)
+
+La venta se ha desarrollado a la perfección gracias a esta
+estrategia pero antes recapitula por qué entré allí.
+
+  1.En la primera zona fibo solo habia un OB que ya había sido
+     tocado y ninguna confirmación más, por eso lo descarté
+     para una venta en ese nivel.
+
+  1.En la segunda zona fibo había también una confluencia de
+     imbalance y OB, entonces son 3 confirmaciones que
+     hicieron que la venta fuera perfecta.
+               RECUERDA: Para que una entrada sea perfecta
+               debes considerar la zona fibo donde haya más
+               confirmaciones.
+PASOS PARA BUSCAR COMPRAS POR
+      CAMBIO DE TENDENCIA
+
+EJEMPLO 1: GRAFICO DE 1 HORA - COMPRA
+
+Entrada de compra en temporalidad de 1 hora. Existen
+confluencias de nivel fibo + order block + imbalance
+
+         ANÁLISIS DE LA ENTRADA
+
+                                          Paso 1: Identificar la tendencia
+
+                                              Claramente se trata de una
+                                              tendencia bajista porque el
+                                              último mínimo ha sido más bajo
+                                              que el anterior.
+ Paso 2: Buscar una estructura clara
+
+Después del último mínimo que ha marcado se esperaría un
+rebote para seguir cayendo porque era una tendencia bajista.
+Sin embargo el precio subió superando el último alto,
+entonces ya se trataría de un cambio de estructura (CHOCH)
+
+Paso 3: Trazar retroceso de fibonacci
+Recuerda trazar fibonacci desde el punto más bajo al punto
+más alto, para buscar compras.
+Siempre resalta las 2 zonas donde se van a buscar compras
+para analizar cada una de ellas. Observar y ver en cuál zona
+hay más confluencias para tomar la entrada.
+
+Analicemos la primera zona fibo...
+Cerca a esta zona hay un imbalance (cuadro celeste). Esto es
+una confluencia de nivel fibo + imbalance.
+Analicemos la segunda zona fibo...
+En esta zona no hay nada interesante, solo varias mechas.
+Conclusión:
+Entonces la zona que tiene más probabilidades hasta donde
+caer es la primera porque hay imbalance y zona fibo pero en la
+segunda zona no hay confirmaciones para entrar.
+Dónde debo poner la orden de compra?
+En este caso debes poner la orden de compra en la zona fibo
+porque al bajar a ese precio estaría cerrando el imbalance
+previo.
+
+Es recomendable colocar el stop antes de la siguiente zona
+fibo y poner el tp en el último alto o pasando el alto.
+
+Fue una entrada sniper, el precio cumplió con la proyección,
+bajó a cerrar el imbalance, tocó la zona fibo y subió a marcar
+un nuevo alto, siendo una operación exitosa.
+PASOS PARA BUSCAR COMPRAS POR
+  CONTINUACIÓN DE TENDENCIA
+
+EJEMPLO 2: GRAFICO DE 1 HORA - VENTA
+
+Entrada sniper de compra en temporalidad de 1 hora. Existen
+confluencias de nivel fibo + zona de demanda + imbalance
+
+         ANÁLISIS DE LA ENTRADA
+
+                                          Paso 1: Identificar la tendencia
+
+                                              El precio ha marcado un nuevo
+                                              máximo por tanto ha sido más
+                                              alto que el anterior.
+                                              El máximo ha cerrado por encima
+                                              del alto anterior. Y he resaltado
+                                              con un BOS para tener presente
+                                              que la tendencia continúa.
+ Paso 2: Trazar Retroceso de Fibonacci
+
+Para buscar compras debes trazar el fibonacci desde el punto
+más bajo al punto más alto.
+Resalta las dos zonas fibo donde se analizará cada una para
+ver donde tiene más probabilidades que el precio baje.
+Analiza la primera zona fibo...
+En esta zona no hay ninguna confirmación interesante,
+aunque hay grandes imbalances pero terminan en la segunda
+zona
+Analiza la segunda zona fibo...
+Hay varias cosas que analizar en la segunda zona.
+
+Primero hay un gran imbalance / vacío.
+Luego una zona de demanda.
+Finalmente hay otro imbalance justo en la segunda zona fibo.
+Finalmente el precio ha bajado hasta la segunda zona fibo,
+pero antes ha cerrado el imbalance de gran tamaño, tomó
+liquidez en la zona de demanda y tocó justamente la zona fibo.
+
+Colocas el stop loss por debajo del último bajo si no pasa de
+2% y tp por encima del último alto.
+
+Estas 3 confirmaciones hicieron que sea una entrada sniper
+exitosa.
+              NIVELES SECRETOS
+                 DE FIBONACCI
+
+Durante mi experiencia como trader he descubierto una zona
+conformada por dos niveles fibo que generalmente funciona
+como zona de reacción para cambio de tendencia.
+
+Estos niveles son:
+     1.34
+     1.53
+  FUNCIÓN DE ZONA SECRETA FIBO
+
+TENDENCIA ALCISTA
+
+Cómo se traza?
+En una tendencia alcista se traza desde el último máximo al
+último mínimo, como si hubiera que buscar ventas.
+
+ La zona secreta quedará por la parte de arriba, entonces lo
+ interpreto como una zona en donde el precio puede subir para
+ retroceder o cambiar de tendencia.
+Aquella zona es hasta donde posiblemente suba el precio así
+que puede ser tu zona donde tomes ganancias si estabas en
+compras.
+
+Además como es una zona de reacción, puedes considerarlo
+como una zona para abrir ventas.
+Pero será más arriesgado porque debes buscar otras
+confirmaciones como ob o imbalances que haya dejado en esa
+dirección anteriormente
+                 EJEMPLO 1
+
+1.Comprobar que la tendencia sea alcista
+
+2. Trazar fibonacci desde el último máximo al mínimo, como si
+estuvieras trazando para buscar ventas.
+
+La zona quedará por encima del máximo anterior
+3. Esperar que el precio llegue a la zona fibo proyectada
+
+Efectivamente el precio llega a la zona y tienes dos opciones:
+  1.Cierras tu operación si traías una compra/long
+  2.Considerar la zona como posible venta/short
+       EJEMPLO 2
+
+Antes
+
+Claramente es una tendencia alcista entonces se traza el fibo
+desde el máximo al mínimo para saber cual aproximadamente
+hasta dónde subirá el precio.
+
+Después
+
+El precio marca un nuevo máximo tocando la zona proyectada
+y cae con gran fuerza.
+       EJEMPLO 3
+
+Antes
+
+La tendencia es alcistay no ha cambiado, se traza fibo desde al
+alto al bajo para proyectar cuál será el próximo objetivo.
+
+Después
+
+El precio llega a la zona fibo proyectada y empieza a caer y al
+parecer a cambiar de tendencia.
+  FUNCIÓN DE ZONA SECRETA FIBO
+
+TENDENCIA BAJISTA
+
+Cómo se traza?
+En una tendencia bajista se traza desde el último mínimo al
+último máximo, como si hubiera que buscar ventas.
+
+ La zona secreta quedará por la parte de abajo, el precio podría
+ llegar a esa zona para cambiar de tendencia de bajista a
+ alcista o simplemente interpretarlo como un objetivo si estás
+ en ventas.
+Esta es una zona donde se espera que el precio se detenga de
+caer por tanto lo puedes poner en práctica para ver donde
+cerrar tus ventas.
+
+Algunas veces el precio toca esta zona y cambia de tendencia
+así que puedes abrir compras. No es suficiente que solo
+identifiques aquella zona para comprar sino que debes buscar
+otras confirmaciones como ob, imbalance, etc.
+                 EJEMPLO 1
+
+1.Comprobar que la tendencia sea bajista
+
+2. Trazar fibonacci desde el último mínimo al máximo, como si
+estuvieras trazando para buscar compras.
+
+La zona quedará por debajo del mínimo anterior
+3. Esperar que el precio llegue a la zona fibo proyectada
+
+Efectivamente el precio llega a la zona y tienes dos opciones:
+  1.Cierras tu operación si traías una venta/short
+  2.Considerar la zona como posible compra/long
+
+Tal y como estaba proyectado, el precio cae a la zona fibo
+esperada y reacciona al alza.
+        EJEMPLO 2
+
+Antes
+
+Hay un rebote dentro de una tendencia bajista entonces
+asumes que es para seguir cayendo, trazas fibo y te dará una
+zona estimada para hacer su próximo rebote o cambio de
+tendencia.
+
+Después
+
+El precio marca un nuevo mínimo llegando a la zona esperada
+        EJEMPLO 3
+
+Antes
+
+Después de un gran movimiento bajista el precio ha rebotado,
+debes trazar el fibo desde el mínimo hasta el máximo y
+proyectará cual es la próxima zona que el precio puede visitar.
+
+Después
+
+El precio marca un nuevo mínimo llegando a la zona esperada,
+rebota tan fuerte que hasta cambia de tendencia a alcista
+        TENDENCIA PRINCIPAL
+         Y MICRO TENDENCIA
+
+Sabías que una tendencia está formada formada por micro
+tendencia. La tendencia principal se ve en temporalidades de
+1h, 2h y 4h y la micro tendencia en 30 o 15 minutos.
+
+       TEMPORALIDAD 1 HORA
+
+Esta es una tendencia principal porque la temporalidad es más
+alta.
+
+    TEMPORALIDAD 15 MINUTOS
+
+  Esta es una micro tendencia, se ve así visto desde
+  temporalidad de 15 minutos.
+                 TENDENCIA
+         Y MICRO TENDENCIA
+
+Así se ve una tendencia principal y micro tendencia
+combinadas. La tendencia principal es para saber la dirección
+del mercado, a dónde se moverá. La micro tendencia es para
+encontrar entradas precisas y con menos riesgo.
+
+ Por qué es importante conocer estos conceptos?
+ Es importante para disminuir el riesgo en tus operaciones, si
+ buscas entradas en 1H el porcentaje de stop loss en mucho
+ mayor que si buscas en 15m.
+ Temporalidad 1H: Para saber la dirección del mercado, para
+ identificar si la tendencia es bajista o alcista. Para saber si
+ compras o vendes.
+ Temporalidad 15m: Para buscar entradas, el stop loss será
+ más pequeño y tendrás una mejor gestión de riesgo.
+ Si en 1H ves que la tendencia es alcista, en 15m buscarás
+ compras.
+ Si en 1H ves que la tendencia es bajista, en 15m buscarás
+ ventas.
+       Ejemplo
+
+ En este ejemplo he resaltado correctamente los puntos
+ máximos y mínimos de la tendencia. Este gráfico está en
+ temporalidad de 1H. La tendencia es alcista por tanto hay que
+ buscar compras.
+
+Así se ve una micro tendencia, resaltado de color naranja
+En temporalidad de 15m se puede ver mejor la micro
+tendencia. O lo que algunos le llaman ondas de elliot
+
+Debes aprovechar la temporalidad de 15m para buscar
+entradas con menor riesgo.
+En este ejemplo tracé fibo desde un mínimo a un máximo
+para buscar una compra. Y el segundo nivel fibo tenía más
+probabilidades de ser la zona de rebote porque tenía una zona
+de demanda (zona gris).
+Cuando la tendencia principal es alcista solo procura buscar
+compras, no vale la pena abrir ventas en los retrocesos.
+
+Es muy riesgoso abrir ventas en los retrocesos de una
+tendencia alcista, te recomiendo no operar esas zonas.
+Muchas veces el precio baja rápidamente y enseguida sigue
+subiendo entonces irá por tu stop loss cuando ni tomaste
+ganancias.
+Lo mismo ocurre con una tendencia bajista. Solo debes buscar
+ventas, en sus retrocesos no vale la pena tradear
+compras/long.
+
+No operes los retrocesos de una tendencia bajista son
+demasiados riesgosos.
+
+Muchas personas quieren tradear todos los movimientos
+alcistas y bajistas para ganar más pero por la avaricia
+terminas perdiendo más, siempre tradea a favor de la
+tendencia así sea pocas veces pero tu riesgo de perder baja.
+      Ejemplo
+
+Así se ve este gráfico en temporalidad de 1H, la tendencia es
+bajista por tanto solo hay que enfocarse en buscar ventas en
+la micro tendencia.
+
+Así se ve el mismo gráfico en temporalidad de 15m
+
+Siguiendo la misma lógica de buscar ventas en temporalidades
+cortas, te explico dónde hubiera sido una excelente entrada.
+ Aquí se observa mejor una micro tendencia y dos veces dió
+ buenas entradas para ventas.
+
+Siguiendo con el mismo ejemplo tomé un impulso bajista para
+trazar fibo y buscar una venta. Recuerda analizar las dos zonas
+fibo pero entrarás en dónde haya confluencia de varios
+factores.
+
+En esta entrada, en la misma dirección de la primera zona fibo
+había una zona de demanda anteriormente por eso la tomé
+como entrada en short. Aunque sea una vela de demanda y no
+de oferta hay liquidez por tanto se espera una reacción.
+Una vez visto todos los conceptos, confirmaciones y consejos
+que tienes que seguir antes de abrir una entrada, te mostraré
+detalladamente como encontrar una excelente entrada
+aplicando todo lo aprendido.
+
+1.Buscar una moneda en temporalidad de 1H:
+
+   Con gráfico sin tantas manipulaciones.
+   Dónde puedas identificar la tendencia fácilmente.
+
+2. Observar en 1H que factores importantes puedo destacar y
+que me ayudará para buscar la entrada.
+En temporalidad de 1H se puede ver claramente una vela de
+demanda que la he resaltado, la tendré en cuenta para ver si
+conflueye con alguna otra confirmación.
+Así se ve el gráfico en temporalidad de 15m
+
+3. Traza fibonacci para saber las posibles zonas de compra
+Analiza cada una de las dos zonas fibo para ver en cuál hay
+confluencia con más confirmaciones,
+
+1era zona fibo: En la misma dirección había anteriormente
+una resistencia, además hay un imbalance y una zona de
+demanda, todo esto en la zona que había resaltado en el
+gráfico de 1H.
+2da zona fibo: Justo en el mismo lugar hay un imbalance, más
+nada interesante.
+Entonces, en cuál zona fibo hay se confluyen más
+confirmaciones?
+Correcto. En la primera zona fibo, entonces ese nivel será tu
+zona de entrada en compra
+El precio finalmente llega a la zona de entrada
+
+4. Si quieres saber hasta dónde subirá aproximadamente,
+debes trazar fibo para proyectar los niveles fibo secretos.
+Para saber hasta dónde subirá, traza fibo como si fueras a
+buscar una venta.
+Finalmente el precio llega a la zona proyectada, aunque no
+siempre lo va a hacer. En varias ocasiones el precio solo llega a
+tocar el alto anterior (nivel donde indica la flecha amarilla) y
+se devuelve. Por eso es importante cerrar la mayoría cuando
+toca el alto anterior y proteger.
+
+Muchas veces no vas a encontrar gráficos que se vean
+ordenados con una tendencia clara, entonces lo principal
+antes de analizar cualquier moneda es identificar los máximos
+y mínimos de la tendencia.
+Este es un ejemplo e indicaré los mínimos y máximos
+correctos de la tendencia.
+
+ Así se ve correctamente marcado la tendencia. El “CHOCH”
+ representa que la tendencia ha cambiado.
+
+ Para que sea un cambio de tendencia debe marcar un nuevo
+ máximo o mínimo con cierre de vela, no basta que sea solo por
+ mecha.
+Los cuadros amarillos son los máximos y mínimos válidos de
+este gráfico. Es importante identificar los correctos máximos
+y mínimos para saber de que punto a que punto trazar el
+retroceso de fibonacci.
+
+Así se ve los máximos y mínimos sin el gráfico. Te das cuenta
+que parece fácil visto desde unas cuantas líneas rectas. Pero
+en la realidad tú debes cuidadosamente llegar a verlo así.
+Visto de esta forma es fácil saber los correctos puntos para
+trazar fibonacci.
+El precio marcó un “choch” que indica que la tendencia a
+cambiado a bajista. Entonces debes buscar ventas.
+
+Una vez trazado fibo, ya quedan las 2 zonas para analizar y
+posiblemente abrir una venta.
+De esta forma quedaría configurado el setup para una venta
+
+Respetó los mismo parámetros de la estrategia, rebotó a uno
+de los niveles fibo para seguir cayendo pero porque tracé de
+forma corrects el fibonacci
+
+Si no identificas los máximos y mínimos válidos, trazaras de
+forma errónea el fibo y por tanto las zonas esperas no serán
+válidas,
+Te enseñaré a analizar este gráfico utilizando todos los
+conceptos aprendidos.
+Este gráfico se ve en temporalidad de 15m.
+
+1.Identificar los puntos máximos y mínimos de la tendencia
+   principal.
+2. Trazar fibonacci.
+En este ejemplo la tendencia principal es alcista entonces
+debes buscar compras.
+
+2. Resaltar cada zona fibo para analizarla
+El precio se ha disparado y ha subido un gran porcentaje
+entonces por lógica yo pienso que el precio como tuvo una
+gran subida, tendrá una gran corrección por tanto lo espraría
+en la segunda zona fibo.
+
+Tienes 2 opciones a partir de ahora:
+1) Abrir una venta hasta la zona amarilla
+2) Esperar que el precio llegue hasta la zona amarilla para
+abrir una compra
+La mayoría no quiere quedarse sin tradear o son impacientes
+y prefieren abrir una venta hasta llegar a la zona amarilla.
+Si este sería tu caso, estos son los pasos que deberías seguir:
+
+  1.Bajara a temporalidad más pequeña. Estaba en 15m
+     entonces debes bajar a 5m.
+
+2. Identificar máximos y mínimos de la temporalidad pequeña
+y trazar fibo para saber la posible zona de venta.
+Finalmente el precio toca la zona fibo y sigue bajando. Esta es
+una de las formas de aprovechar los movimientos pequeños
+del mercado.
+Aplicando la misma estrategia, siguiendo los mismos
+parámetro y buscando las mismas confirmaciones.
+
+                Si analizas en temporalidad de 1H, busca
+                confirmaciones en 15 minutos.
+                Si analizas en temporalidad de 15m, busca
+                confirmaciones en 5 minutos.
+Entonces...
+
+Nivel fibo  +  ob               = Ganancia
+
+               zona de oferta
+
+               zona de demanda
+
+               imbalance
+
+LOS 10 MANDAMIENTOS
+        DEL TRADING
+
+Para ser rentable debes tener claro que no basta solo con
+saber analizar gráficas, es una combinación de psicología y
+análisis.
+
+Estos son los mejores consejos que a mí me hubiera gustado
+saber cuando empecé hacer trading.
+
+  1.Configura tu TradingView como te sientas cómodo.
+
+Configura los colores de las velas, de las mechas y hasta del
+fondo de panatalla que sea a tu gusto. Tiene un gran impacto
+psicológico que muchos no lo notan
+Sentirías inspiración con un gráfico así?
+Sacarías las mejores entradas con un gráfico así?
+Puedes encontrar una estructura clara con un gráfico así?
+
+ Pero si mantienes un gráfico con colores a tu gusto, donde
+ puedas ver claramente la estructura del mercado, puedas
+ identificar fácilmente la tendencia, entonces tus niveles de
+ estrés bajan
+2. No tradear monedas volátiles si aún no eres experto.
+
+Generalmente las monedas con mayor capitalización de
+mercado son menos volátiles. Monedas como BTC, ETH, BNB.
+
+Pero con menor capitalización o meme coins como LQTY, XVS,
+BOND, 1000SHIB, ACH, GMT, TRB, TLM y demás monedas que
+no son conocidas es mejor no tradear porque el stop loss
+quedaría con un gran porcentaje.
+
+Y debes buscar entradas donde se permita poner stop loss de
+1.5% máximo para arriesgar menos y ganar más
+
+3. Mantener analizadas las gráficas
+
+Analiza monedas en temporalidad de 1H, marca con un
+cuadro las zonas a donde el precio podría llegar siguiendo la
+estrategia que te he explicado.
+
+Cuando el precio llegue a la zona que haz marcado, ve a la
+temporalidad de 15m para que la analices bien y tomes la
+entrada.
+
+Si analizas una moneda en este momento, quizás no
+encuentres una entrada pero puedes dejar zonas marcadas
+ad donde el precio llegue en las próximas horas.
+
+4. Sé consistente
+
+El 70% de las personas que están leyendo esto ya no estarán
+en los próximos 2 años dentro del mercado cryto porque
+supuestamente se les hace difícil.
+
+Pero si ya vistes caer a BTC de 70k a 15k entonces haz
+resistido a una de sus mayores correciones.
+Te puedo asegurar que solo se tarda 3 años en ser rentable,
+solo 3 años en el cual tu pc se convertirá en tu cajero
+automático.
+
+4. Haz backtesting
+
+Backtesting es testear una estrategia antes de usarla pero
+también puedas probar la estrategia con gráfico pasados. Con
+la estrategia que acabas de aprender ponlo a prueba en el
+pasado hasta que le cogas el ritmo y luego buscas entradas en
+tiempo real.
+
+5. No tradear en 4H
+
+Lo que la mayoría quiere es ganar dinero rápido, si analizas
+un gráfico en 4H y pretendes abrir una entrada. Ten en cuenta
+que un análisis en 4H puede tardar días o semanas en
+cumplirse la proyección.
+
+Seguramente no tienes la paciencia en esperar o no
+soportarías ver como tu trade va en ganancias pero de un
+momento a otro está en precio de entrada luego a punto de
+tocar stop loss y finalmente otra vez en ganancias.
+
+Tradear en 4H es como una montaña rusa con tus emociones,
+las pequeñas correciones harán que baje tus ganancias y te
+estresarás diciendo “hubiera cerrado antes” pero es tu culpa,
+porque debes ser conciente de lo que conlleva tradear en 4H.
+6. No te sobre apalanques
+
+Toda rentabilidad temprana es suerte, si crees que es mejor
+apalancarte a 50x - 100x estas en lo incorrecto. Sobre
+apalancarse retrasa tu rentabilidad. Es un proceso en la que
+te dejas llevar por tu ambición, pensando que puedes hacer
+dinero rápido y fácil.
+
+Al principio te puede salir todo perfecto usando alto
+apalancamiento pero eventualmente llegará un momento
+donde perderás todo. Lo que ganaste en 15 operaciones lo
+perderás en 1.
+
+7. Aprende a administrar tu cuenta
+
+Si no puedes crecer una cuenta de 100 dólares como
+pretendes crecer una cuenta de 1000 dólares. Es que no
+deberías tener ni deseos de tener 1k en tu cuenta cuando no
+eres rentable en lo poco.
+
+Si no aumentas tu capital pequeño no estás preparado para
+administrar grandes cantidades de dinero.
+
+8. No prestes dinero para tradear
+
+Si tan solo pides prestado dinero o adquieres un préstamo
+para tradear, quiere decir que no tienes liquidez en tus
+manos. La desesperación y el estrés se apoderarán de ti
+porque solo pensarás que no debes perder ni un dólar ya que
+no es tu dinero, pero eventualmente un stop loss llegará, te
+frustrarás y renunciarás a seguir tradeando.
+9. Siempre usa stop loss
+
+Si tan solo supieras la importancia del stop loss y de las
+grandes pérdidas que puedes evitar, siempre lo pondrías.
+
+La principal causa por la que muchos no usan stop loss es por
+la volatilidad del mercado, piensan que cuando su trade está
+en negativo, pronto regresará a ganancias, entonces
+mantienen esas esperanzas.
+
+Esperanzas que muchas veces no existe porque el precio
+puede ir en contra con gran fuerza y tener pérdidas del 30 - 50
+-90% de tu capital o hasta quemar la cuenta.
+
+10. Lleva un registro de tus ganancias/pérdidas
+
+Puedes abrir un excel e ir registrando cada operación que
+abres, cuánto ganas, cuánto pierdes, cuántos trades abres,
+etc.
+A finales de mes verás el porcentaje de aciertos (ROI). No
+importa si tu capital es de 100 dólares o si es de 100mil
+dólares, lleva un registro.
+
+11. Créate una ilusión y escenarios
+
+Esto puede sonar muy estúpido, aunque es psicológico puede
+llevarte al siguiente nivel.
+
+Auméntale un cero a tu cuenta
+
+Si tienes una cuenta de 100 usd, imagínate que eres un gran
+trader famoso que maneja un fondo de inversión de 100mil
+dólares.
+Pregúntate si tuvieras 100k te apalancarías a 125x? No cierto.
+
+Ten hábitos de un trader rentable hasta que lo seas
+
+Un trader rentable hace estos 10 tips que te los he nombrado
+además de meditar, leer, aprender de sus errores, ejercitarse
+y siempre estar en constante aprendizaje.
+
+    GESTIÓN DE RIESGO
+
+   - No pierdas más de 1% de tu capital por día
+   - Utiliza del 3% al 4% de tu capital por trade
+   - Usa stop loss máximo hasta 1.5%
+   - Si tu stop loss es de 1.5% apaláncate máximo a 20x
+
+   Si tu cuenta es de 1000 dólares
+        En cada trade ingresarás con 30usd
+        Pérdida máxima del 30% del margen que son 9usd
+        Solo puedes perder 30usd en un día
+        Podrías intentar 3 trades al día con stop de 1.5%
+        Si en cada operación buscas mínimo el 3% de
+        ganancias (60% a 20x) ganarías 18 usd por trade
+        Con un trade que ganes, cubrirías 2 stop loss
+        Pérdida máxima del día: 30 usd
+        Ganancia mínima del día: 54 usd
+

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 	"time"
 
 	"tradingview-bot/internal/domain"
@@ -60,6 +61,20 @@ type SetupStats struct {
 	ProfitFactor float64
 	TotalReturn  float64
 	MaxDrawdown  float64
+}
+
+// ComponentStats desglosa el resultado por conjunto de componentes de
+// confluencia (por ejemplo "fibonacci,order_block"): la clave indica qué
+// componentes confluyeron en las entradas del grupo. Permite ver si ganó
+// sistemáticamente un factor o solo la combinación completa.
+type ComponentStats struct {
+	Trades  int
+	WinRate float64
+	// ConfluentCount es cuántos componentes (de los 3/4) confluían en el grupo.
+	ConfluentCount int
+	ProfitFactor   float64
+	TotalReturn    float64
+	MaxDrawdown    float64
 }
 
 // MultiTimeframeLearnResult expone el diagnóstico del learn base: es la forma de
@@ -118,6 +133,9 @@ func normalizeMTF(c MultiTimeframeConfig) MultiTimeframeConfig {
 // sobre el pipeline MTF ejecutable.
 func LearnMultiTimeframe(main, entry, confirm []domain.Kline, cfg LearnConfig, mtf MultiTimeframeConfig) (MultiTimeframeLearnResult, error) {
 	mtf = normalizeMTF(mtf)
+	if err := ValidateMultiTimeframeConfig(mtf); err != nil {
+		return MultiTimeframeLearnResult{}, err
+	}
 	if len(main) < 100 || len(entry) < 100 {
 		return MultiTimeframeLearnResult{}, fmt.Errorf("learn mtf: se necesitan al menos 100 velas en 1H y 15m")
 	}
@@ -192,7 +210,7 @@ func learnMultiTimeframeWindow(main, entry, confirm []domain.Kline, cfg LearnCon
 			bestTrades = trades
 			bestMetrics = metrics
 			bestCfg = testCfg
-			bestModel = newLearnedModel(cfg, testCfg, digest, entry, metrics)
+			bestModel = newLearnedModel(cfg, testCfg, space, digest, entry, trades, metrics)
 		}
 	}
 
@@ -263,7 +281,10 @@ type mtfDecisionPoint struct {
 	entryBar  int
 	direction domain.Direction
 	setupType SetupType
-	evidence  ConfluenceEvidence
+	// evidences mide la confluencia de AMBAS zonas Fibonacci: la zona ganadora
+	// se decide por configuración con SelectSetupFromEvidence, igual que en el
+	// learner base y en LIVE.
+	evidences [2]ConfluenceEvidence
 	levels    planInputs
 }
 
@@ -290,6 +311,7 @@ func collectMTFDecisionPoints(
 
 	ic := DefaultImbalanceConfig()
 	bc := DefaultOrderBlockConfig()
+	sc := DefaultSupplyDemandConfig()
 	out := make([]mtfDecisionPoint, 0)
 
 	for i := evaluationStart; i < len(entry)-1; i++ {
@@ -333,11 +355,12 @@ func collectMTFDecisionPoints(
 		}
 		imbs := UpdateImbalances(DetectImbalances(ep, ic), ep, ic)
 		blocks := UpdateOrderBlocks(DetectOrderBlocks(ep, es.Breaks, bc), ep, bc)
-		evidence, ok := CollectConfluenceEvidence(ep, i, es, fib, imbs, blocks)
+		zones := UpdateSupplyDemandZones(DetectSupplyDemandZones(ep, es.Breaks, sc), ep, sc)
+		evidences, ok := collectEvidenceForZones(ep, i, es, fib, imbs, blocks, zones)
 		if !ok {
 			continue
 		}
-		if evidence.FibZone == 0 && evidence.ImbalanceIndex < 0 && evidence.OrderBlockIndex < 0 {
+		if !hasGenuineConfluence(evidences) {
 			continue
 		}
 
@@ -355,18 +378,18 @@ func collectMTFDecisionPoints(
 
 		levels := resolvePlanInputs(Setup{
 			Index: i, Direction: candidate.Direction,
-			OrderBlockIndex: evidence.OrderBlockIndex,
+			OrderBlockIndex: evidences[0].OrderBlockIndex,
 		}, fib, entryPrice, es, blocks)
 
 		if diag != nil {
 			diag.SetupsDetected++
-			if evidence.FibZone > 0 {
+			if evidences[0].FibInZone || evidences[1].FibInZone {
 				diag.SetupsWithFibonacci++
 			}
-			if evidence.ImbalanceIndex >= 0 {
+			if evidences[0].ImbalanceIndex >= 0 {
 				diag.SetupsWithImbalance++
 			}
-			if evidence.OrderBlockIndex >= 0 {
+			if evidences[0].OrderBlockIndex >= 0 {
 				diag.SetupsWithOrderBlock++
 			}
 		}
@@ -374,7 +397,7 @@ func collectMTFDecisionPoints(
 		out = append(out, mtfDecisionPoint{
 			index: i, entryBar: i,
 			direction: candidate.Direction, setupType: candidate.SetupType,
-			evidence: evidence, levels: levels,
+			evidences: evidences, levels: levels,
 		})
 	}
 	return out
@@ -383,7 +406,8 @@ func collectMTFDecisionPoints(
 // simulateMTFDecisionPoints ejecuta las oportunidades ya validadas por el
 // pipeline MTF. Solo la configuración de confluencia y el stop/plan se aplican
 // aquí; no se vuelven a introducir filtros distintos a los usados durante el
-// aprendizaje.
+// aprendizaje. Comparte con el learner base la misma operativa barra a barra
+// (incluido el TP parcial), vía tradeSim.
 func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, cfg LearnConfig, evaluationStart int) []LearnedTrade {
 	if len(decisions) == 0 || len(ks) < 2 {
 		return nil
@@ -397,8 +421,7 @@ func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, 
 
 	var out []LearnedTrade
 	inTrade := false
-	var open LearnedTrade
-	stop, target := 0.0, 0.0
+	var sim tradeSim
 	start := evaluationStart
 	if start < minLearningBars {
 		start = minLearningBars
@@ -406,22 +429,8 @@ func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, 
 
 	for i := start; i < len(ks)-1; i++ {
 		if inTrade {
-			k := ks[i]
-			hitStop, hitTarget := false, false
-			if open.Direction == domain.DirectionBuy {
-				hitStop, hitTarget = k.Low <= stop, k.High >= target
-			} else {
-				hitStop, hitTarget = k.High >= stop, k.Low <= target
-			}
-			if hitStop || hitTarget {
-				exit, reason := stop, "stop"
-				if hitTarget && !hitStop {
-					exit, reason = target, "take"
-				}
-				exit = applyExitSlippage(exit, open.Direction, cfg.SlippagePct)
-				open.ExitBar, open.ExitPrice, open.Reason = i, exit, reason
-				open.PnL = tradePnL(open.Direction, open.EntryPrice, exit) - 2*cfg.FeePct
-				out = append(out, open)
+			if t, done := sim.onCandle(ks[i], i, cfg); done {
+				out = append(out, t)
 				inTrade = false
 			}
 			continue
@@ -432,8 +441,8 @@ func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, 
 			continue
 		}
 		d := decisions[idx]
-		setup, ok := d.evidence.Setup(cfg.Confluence)
-		if !ok || !setup.Valid || setup.Direction != d.direction {
+		setup, ok := SelectSetupFromEvidence(d.evidences[:], cfg.Confluence)
+		if !ok || setup.Direction != d.direction {
 			continue
 		}
 		plan, ok := buildPlan(d.levels, cfg.TradePlan)
@@ -441,24 +450,25 @@ func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, 
 			continue
 		}
 
-		open = LearnedTrade{
-			Direction: d.direction,
-			EntryBar: d.entryBar,
-			EntryPrice: d.levels.Entry * entryMultiplier(d.direction, cfg.SlippagePct),
-			FeePct: cfg.FeePct,
-			Setup: d.setupType,
-			Components: setup.Components,
+		sim = tradeSim{
+			open: LearnedTrade{
+				Direction:  d.direction,
+				EntryBar:   d.entryBar,
+				EntryPrice: d.levels.Entry * entryMultiplier(d.direction, cfg.SlippagePct),
+				FeePct:     cfg.FeePct,
+				Setup:      d.setupType,
+				Components: setup.Components,
+			},
+			stop:     plan.StopLoss,
+			target:   plan.TakeProfit,
+			fraction: partialFraction(cfg),
 		}
-		stop, target = plan.StopLoss, plan.TakeProfit
 		inTrade = true
 	}
 
 	if inTrade {
 		last := ks[len(ks)-1]
-		exit := applyExitSlippage(last.Close, open.Direction, cfg.SlippagePct)
-		open.ExitBar, open.ExitPrice, open.Reason = len(ks)-1, exit, "end"
-		open.PnL = tradePnL(open.Direction, open.EntryPrice, exit) - 2*cfg.FeePct
-		out = append(out, open)
+		out = append(out, sim.finalize(len(ks)-1, last.Close, "end", cfg))
 	}
 	return out
 }
@@ -527,6 +537,32 @@ func statsBySetup(trades []LearnedTrade, initial float64) map[SetupType]SetupSta
 	}
 	return out
 }
+
+// statsByComponent desglosa el grupo de operaciones por el conjunto de
+// componentes de confluencia que produjo cada entrada. La clave es la cadena
+// literal de Components (p. ej. "fibonacci,order_block").
+func statsByComponent(trades []LearnedTrade, initial float64) map[string]ComponentStats {
+	groups := map[string][]LearnedTrade{}
+	for _, t := range trades {
+		if t.Components == "" {
+			continue
+		}
+		groups[t.Components] = append(groups[t.Components], t)
+	}
+	out := map[string]ComponentStats{}
+	for k, ts := range groups {
+		m := tradeMetrics(ts, initial)
+		out[k] = ComponentStats{
+			Trades:         m.trades,
+			WinRate:        m.winRate,
+			ConfluentCount: strings.Count(k, ",") + 1,
+			ProfitFactor:   recordedProfitFactor(m.profitFactor),
+			TotalReturn:    recordedMetric(m.totalReturn),
+			MaxDrawdown:    recordedMetric(m.maxDrawdown),
+		}
+	}
+	return out
+}
 func filterTradesBySetup(trades []LearnedTrade, allowed []SetupType) []LearnedTrade {
 	set := map[SetupType]bool{}
 	for _, s := range allowed {
@@ -577,7 +613,7 @@ func LearnMultiTimeframeAndPersist(ctx context.Context, store LearnerStore, symb
 		return domain.Strategy{}, result, err
 	}
 	m := tradeMetrics(result.Trades, cfg.InitialBalance)
-	bt := domain.BacktestResult{StrategyID: id, Trades: m.trades, WinRate: m.winRate, ProfitFactor: m.profitFactor, Sharpe: m.sharpe, Sortino: m.sortino, MaxDrawdown: m.maxDrawdown, TotalReturn: m.totalReturn, AverageWin: m.averageWin, AverageLoss: m.averageLoss, Expectancy: m.expectancy, GrossProfit: m.grossProfit, GrossLoss: m.grossLoss, FeesPaid: m.feesPaid, TestBars: len(entry), Passed: result.Accepted, Status: "in_sample_candidate", MetricsAt: now}
+	bt := domain.BacktestResult{StrategyID: id, Trades: m.trades, WinRate: m.winRate, ProfitFactor: recordedProfitFactor(m.profitFactor), Sharpe: m.sharpe, Sortino: m.sortino, MaxDrawdown: m.maxDrawdown, TotalReturn: m.totalReturn, AverageWin: m.averageWin, AverageLoss: m.averageLoss, Expectancy: m.expectancy, GrossProfit: m.grossProfit, GrossLoss: m.grossLoss, FeesPaid: m.feesPaid, TestBars: len(entry), Passed: result.Accepted, Status: "in_sample_candidate", MetricsAt: now}
 	if err := store.SaveBacktest(ctx, bt); err != nil {
 		return domain.Strategy{}, result, err
 	}
@@ -591,8 +627,8 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 	if err != nil {
 		return domain.BacktestResult{}, err
 	}
-	var model MultiTimeframeModel
-	if err = json.Unmarshal([]byte(st.Spec), &model); err != nil {
+	model, err := LoadMultiTimeframeModel(st.Spec)
+	if err != nil {
 		return domain.BacktestResult{}, fmt.Errorf("mtf spec: %w", err)
 	}
 	if model.Symbol != "" && model.Symbol != symbol {
@@ -695,7 +731,7 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 
 		m := tradeMetrics(trades, fixedCfg.InitialBalance)
 		fold := domain.OOSFold{
-			Trades: m.trades, WinRate: m.winRate, ProfitFactor: m.profitFactor,
+			Trades: m.trades, WinRate: m.winRate, ProfitFactor: recordedProfitFactor(m.profitFactor),
 			Sharpe: m.sharpe, Sortino: m.sortino, MaxDrawdown: m.maxDrawdown,
 			TotalReturn: m.totalReturn, Bars: oosEnd - trainEnd,
 		}
@@ -729,7 +765,7 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 	now := time.Now().UTC()
 	bt := domain.BacktestResult{
 		StrategyID: strategyID, Trades: m.trades, WinRate: m.winRate,
-		ProfitFactor: m.profitFactor, Sharpe: m.sharpe, Sortino: m.sortino,
+		ProfitFactor: recordedProfitFactor(m.profitFactor), Sharpe: m.sharpe, Sortino: m.sortino,
 		MaxDrawdown: m.maxDrawdown, TotalReturn: m.totalReturn,
 		AverageWin: m.averageWin, AverageLoss: m.averageLoss, Expectancy: m.expectancy,
 		GrossProfit: m.grossProfit, GrossLoss: m.grossLoss, FeesPaid: m.feesPaid,

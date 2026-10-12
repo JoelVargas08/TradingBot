@@ -61,7 +61,7 @@ func (c WeexConfig) withDefaults() WeexConfig {
 		c.ReconnectMax = 30 * time.Second
 	}
 	if c.BackfillBars <= 0 {
-		c.BackfillBars = 5000
+		c.BackfillBars = RestMaxBars
 	}
 	if c.MaxAttempts <= 1 {
 		c.MaxAttempts = 4
@@ -97,9 +97,10 @@ func NewWEEXProvider(store domain.CandleStore, cfg WeexConfig) *WeexProvider {
 	}
 }
 
-// Backfill descarga velas históricas cerradas de forma paginada (avanzando por
-// timestamp, nunca dependiendo de una única llamada REST) y las persiste en el
-// CandleStore. Reintenta errores transitorios (429/5xx) con backoff.
+// Backfill descarga velas históricas cerradas y las persiste en el CandleStore.
+// La API pública de WEEX ignora startTime/endTime y solo sirve las RestMaxBars
+// velas más recientes, así que el límite se acota a RestMaxBars. Reintenta
+// errores transitorios (429/5xx) con backoff.
 func (p *WeexProvider) Backfill(ctx context.Context, symbol, timeframe string, limit int) error {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	timeframe = strings.TrimSpace(timeframe)
@@ -108,6 +109,10 @@ func (p *WeexProvider) Backfill(ctx context.Context, symbol, timeframe string, l
 	}
 	if limit <= 0 {
 		limit = p.cfg.BackfillBars
+	}
+	if limit > RestMaxBars {
+		log.Printf("weex backfill: limit %d excede el máximo de la API (%d); se pedirán %d velas recientes", limit, RestMaxBars, RestMaxBars)
+		limit = RestMaxBars
 	}
 	current := time.Now().Truncate(parseInterval(timeframe))
 	start := current.Add(-time.Duration(limit) * parseInterval(timeframe))
@@ -122,12 +127,18 @@ func (p *WeexProvider) Backfill(ctx context.Context, symbol, timeframe string, l
 		}
 		seen++
 	}
-	log.Printf("weex backfill: %s %s -> %d velas almacenadas", symbol, timeframe, seen)
+	if seen < limit {
+		log.Printf("weex backfill: %s %s -> %d velas (pedidas %d); la API pública de WEEX ignora rangos y solo sirve las %d más recientes", symbol, timeframe, seen, limit, RestMaxBars)
+	} else {
+		log.Printf("weex backfill: %s %s -> %d velas almacenadas", symbol, timeframe, seen)
+	}
 	return nil
 }
 
-// GetKlines descarga velas históricas en [start, end), con paginación por
-// timestamp, ordenadas ascendentemente, sin duplicados y validadas.
+// GetKlines descarga las velas más recientes disponibles y las devuelve
+// ordenadas ascendentemente, sin duplicados y validadas. La API pública de WEEX
+// ignora startTime/endTime y limita la respuesta a RestMaxBars velas, por lo que
+// no se puede paginar hacia atrás del máximo reciente.
 func (p *WeexProvider) GetKlines(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, error) {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	timeframe = strings.TrimSpace(timeframe)
@@ -143,38 +154,14 @@ func (p *WeexProvider) GetKlines(ctx context.Context, symbol, timeframe string, 
 	if limit <= 0 {
 		limit = p.cfg.BackfillBars
 	}
-	step := parseInterval(timeframe)
-	from := start
-	var out []domain.Kline
-	remaining := limit
-	for {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if remaining <= 0 {
-			break
-		}
-		want := remaining
-		if want > RestMaxBars {
-			want = RestMaxBars
-		}
-		bars, err := p.fetchKlinesRange(ctx, symbol, timeframe, from, end, want)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, bars...)
-		if len(bars) == 0 {
-			break
-		}
-		last := bars[len(bars)-1].Start
-		remaining -= len(bars)
-		if len(bars) < want || !last.Add(step).Before(end) {
-			break
-		}
-		from = last.Add(step)
+	if limit > RestMaxBars {
+		limit = RestMaxBars
 	}
-	out = dedupeSortKlines(out)
-	return out, nil
+	bars, err := p.fetchKlinesRange(ctx, symbol, timeframe, start, end, limit)
+	if err != nil {
+		return nil, err
+	}
+	return dedupeSortKlines(bars), nil
 }
 
 func (p *WeexProvider) klinesURL(symbol, timeframe string, start, end time.Time, limit int) string {

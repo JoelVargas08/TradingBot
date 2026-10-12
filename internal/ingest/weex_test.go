@@ -3,7 +3,6 @@ package ingest
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -415,56 +414,40 @@ func TestParseWSKlineDField(t *testing.T) {
 	}
 }
 
-func TestWeexGetKlinesPaginatedSortedDeduped(t *testing.T) {
-	const pageSize = 1000
-	const step = int64(3600000)
+func TestWeexGetKlinesSingleRequestCappedAtRestMaxBars(t *testing.T) {
+	// La API real de WEEX ignora startTime/endTime y devuelve como máximo
+	// RestMaxBars velas en una sola llamada: GetKlines no debe paginar.
 	var calls atomic.Int32
-	var limits []int
+	var gotLimit string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		mu := sync.Mutex{}
-		limit := 0
-		fmt.Sscanf(r.URL.Query().Get("limit"), "%d", &limit)
-		mu.Lock()
-		limits = append(limits, limit)
-		mu.Unlock()
-		var start int64
-		fmt.Sscanf(r.URL.Query().Get("startTime"), "%d", &start)
-		if start >= 4000*step {
-			w.Write([]byte("[]"))
-			return
-		}
-		// Devolver velas con números como strings y con un duplicado en la
-		// frontera de página: la vela de entrada de la página 2 ya estaba en la 1.
+		gotLimit = r.URL.Query().Get("limit")
 		rows := []string{}
-		for i := 0; i < pageSize; i++ {
-			ts := start + int64(i)*step
-			rows = append(rows, klineRow(ts))
+		for i := 0; i < RestMaxBars; i++ {
+			rows = append(rows, klineRow(int64(i+1)*int64(3600000)))
 		}
 		w.Write([]byte("[" + strings.Join(rows, ",") + "]"))
 	}))
 	defer srv.Close()
 
 	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL})
-	end := time.UnixMilli(5000 * step)
-	start := time.UnixMilli(1)
-	bars, err := p.GetKlines(context.Background(), "BTCUSDT", "1h", start, end, 2000)
+	bars, err := p.GetKlines(context.Background(), "BTCUSDT", "1h", time.UnixMilli(1), time.UnixMilli(5000*3600000), 5000)
 	if err != nil {
 		t.Fatalf("GetKlines: %v", err)
 	}
-	if len(bars) != 2000 {
-		t.Fatalf("bars = %d, want 2000", len(bars))
+	if gotLimit != "1000" {
+		t.Errorf("limit = %s, want 1000 (tope REST)", gotLimit)
+	}
+	if calls.Load() != 1 {
+		t.Errorf("llamadas = %d, want 1 (sin paginación)", calls.Load())
+	}
+	if len(bars) != RestMaxBars {
+		t.Fatalf("bars = %d, want %d", len(bars), RestMaxBars)
 	}
 	for i := 1; i < len(bars); i++ {
-		if bars[i].Start.Before(bars[i-1].Start) {
-			t.Fatalf("velas desordenadas en índice %d", i)
+		if !bars[i].Start.After(bars[i-1].Start) {
+			t.Fatalf("velas no estrictamente crecientes en índice %d", i)
 		}
-		if bars[i].Start.Equal(bars[i-1].Start) {
-			t.Fatalf("vela duplicada en índice %d", i)
-		}
-	}
-	if bars[0].Start.UnixMilli() != 1 {
-		t.Errorf("primera vela = %d, want 1", bars[0].Start.UnixMilli())
 	}
 }
 
@@ -555,29 +538,24 @@ func TestWeexBackfillRetriesOn429(t *testing.T) {
 	}
 }
 
-func TestWeexGetKlinesDedupeOverlappingPages(t *testing.T) {
-	// La página 2 repite la última vela de la página 1: GetKlines debe descartarla.
-	var seq atomic.Int32
+func TestWeexGetKlinesDeduplicatesWithinResponse(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		n := seq.Add(1)
-		var start int64
-		fmt.Sscanf(r.URL.Query().Get("startTime"), "%d", &start)
 		rows := []string{}
-		for i := 0; i < 1000; i++ {
-			rows = append(rows, klineRow(start+int64(i)*int64(3600000)))
+		for i := 1; i <= 10; i++ {
+			rows = append(rows, klineRow(int64(i)*int64(3600000)))
 		}
-		if n >= 2 {
-			// Página 2: repite el primer elemento de la página 1 (duplicado).
-			rows = append(rows, klineRow(start))
-		}
+		rows = append(rows, klineRow(5*int64(3600000)))
 		w.Write([]byte("[" + strings.Join(rows, ",") + "]"))
 	}))
 	defer srv.Close()
 
 	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL})
-	bars, err := p.GetKlines(context.Background(), "BTCUSDT", "1h", time.UnixMilli(1), time.UnixMilli(5000*3600000), 1500)
+	bars, err := p.GetKlines(context.Background(), "BTCUSDT", "1h", time.UnixMilli(1), time.UnixMilli(5000*3600000), 1000)
 	if err != nil {
 		t.Fatalf("GetKlines: %v", err)
+	}
+	if len(bars) != 10 {
+		t.Fatalf("bars = %d, want 10 tras deduplicar", len(bars))
 	}
 	seen := make(map[int64]int, len(bars))
 	for _, k := range bars {
@@ -601,7 +579,7 @@ func TestWeexConfigWithDefaults(t *testing.T) {
 	if c.PriceType != "LAST_PRICE" {
 		t.Errorf("PriceType = %q", c.PriceType)
 	}
-	if c.BackfillBars != 5000 || c.HTTPClient == nil || c.MaxAttempts <= 1 {
+	if c.BackfillBars != RestMaxBars || c.HTTPClient == nil || c.MaxAttempts <= 1 {
 		t.Errorf("defaults inválidos: %+v", c)
 	}
 }

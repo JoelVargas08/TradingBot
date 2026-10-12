@@ -67,6 +67,22 @@ func (f *fakeLocal) ClosePosition(_ context.Context, id int64, exitPrice float64
 	}
 	return domain.Position{}, errors.New("no encontrada")
 }
+func (f *fakeLocal) PartialClosePosition(_ context.Context, id int64, closeQty, exitPrice float64, ts time.Time, opts domain.CloseOptions) (domain.Position, error) {
+	for i := range f.positions {
+		if f.positions[i].ID == id {
+			if f.positions[i].Status != domain.PositionOpen || closeQty <= 0 || closeQty >= f.positions[i].Quantity {
+				return domain.Position{}, errors.New("cierre parcial inválido")
+			}
+			f.positions[i].Quantity -= closeQty
+			if opts.NewStopLoss > 0 {
+				f.positions[i].StopLoss = opts.NewStopLoss
+			}
+			f.positions[i].PartialQty += closeQty
+			return f.positions[i], nil
+		}
+	}
+	return domain.Position{}, errors.New("no encontrada")
+}
 func (f *fakeLocal) SaveOrder(_ context.Context, o domain.Order) error {
 	o.UpdatedAt = time.Now().UTC()
 	for i := range f.orders {

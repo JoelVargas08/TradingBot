@@ -51,6 +51,37 @@ func (m *memStore) ClosePosition(_ context.Context, id int64, exitPrice float64,
 	return domain.Position{}, domain.ErrNotFound
 }
 
+func (m *memStore) PartialClosePosition(_ context.Context, id int64, closeQty, exitPrice float64, exitTS time.Time, opts domain.CloseOptions) (domain.Position, error) {
+	for i, p := range m.positions {
+		if p.ID != id {
+			continue
+		}
+		if p.Status != domain.PositionOpen || closeQty <= 0 || closeQty >= p.Quantity {
+			return domain.Position{}, domain.ErrNotFound
+		}
+		var gross float64
+		if p.Side == domain.DirectionBuy {
+			gross = (exitPrice - p.EntryPrice) * closeQty
+		} else {
+			gross = (p.EntryPrice - exitPrice) * closeQty
+		}
+		totalCost := opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
+		net := gross - totalCost
+		p.Quantity -= closeQty
+		if opts.NewStopLoss > 0 {
+			p.StopLoss = opts.NewStopLoss
+		}
+		p.PartialQty += closeQty
+		p.PartialPnL += net
+		m.account.Balance += net
+		m.account.RealizedPnL += net
+		m.account.Fees += totalCost
+		m.positions[i] = p
+		return p, nil
+	}
+	return domain.Position{}, domain.ErrNotFound
+}
+
 func (m *memStore) ClosedPositions(_ context.Context) ([]domain.Position, error) {
 	var out []domain.Position
 	for _, p := range m.positions {

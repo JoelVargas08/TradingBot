@@ -22,8 +22,8 @@ import (
 	"tradingview-bot/internal/detect"
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/internal/evaluator"
-	"tradingview-bot/internal/health"
 	"tradingview-bot/internal/githubactions"
+	"tradingview-bot/internal/health"
 	"tradingview-bot/internal/ingest"
 	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/jobqueue"
@@ -180,13 +180,13 @@ func main() {
 		} else {
 			investingBullsLive = strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
 			liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL"))
-		if liveSymbol == "" {
-			liveSymbol = "BTCUSDT"
-		}
-		liveTF := strings.TrimSpace(os.Getenv("INVESTING_BULLS_ENTRY_TIMEFRAME"))
-		if liveTF == "" {
-			liveTF = "15m"
-		}
+			if liveSymbol == "" {
+				liveSymbol = "BTCUSDT"
+			}
+			liveTF := strings.TrimSpace(os.Getenv("INVESTING_BULLS_ENTRY_TIMEFRAME"))
+			if liveTF == "" {
+				liveTF = "15m"
+			}
 			if err := investingBullsLive.SetSelection(sid, liveSymbol, liveTF); err != nil {
 				log.Printf("Investing Bulls live: %v", err)
 			} else {
@@ -203,6 +203,13 @@ func main() {
 	// Gestión de riesgo y posiciones
 	var riskManager *risk.Manager
 	var paperEngine *paper.Engine
+	ibProfile := risk.DefaultIBRiskProfile()
+	if err := ibProfile.Validate(); err != nil {
+		log.Fatalf("perfil de riesgo Investing Bulls inválido: %v", err)
+	}
+	if cfg.IBMaxStopPct > risk.IBStopMaxPct {
+		log.Fatalf("INVESTING_BULLS_MAX_STOP=%.4f excede el tope del perfil IB %.4f", cfg.IBMaxStopPct, risk.IBStopMaxPct)
+	}
 	if cfg.RiskEnabled {
 		riskCfg := risk.Config{
 			RiskPct:          cfg.RiskPct,
@@ -686,6 +693,8 @@ func main() {
 				go runInvestingBullsLearnMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
 			case "validateibmtf":
 				go runInvestingBullsValidateMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg, tradingSession)
+			case "ibdiag":
+				go runInvestingBullsDiag(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
 			case "strategies":
 				if strategyCommands != nil {
 					strategyCommands.HandleStrategies(chatID)
@@ -844,7 +853,6 @@ func main() {
 	checkpointCancel()
 	bot.StopReceivingUpdates()
 }
-
 
 func monitorInvestingBullsPaperValidation(
 	ctx context.Context,
@@ -1077,6 +1085,87 @@ func runInvestingBullsLearnMTF(ctx context.Context, store investingbulls.Learner
 	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nConfluencia: %s | componentes: %s | zona: %.2f%% | stop: %.2f%%\nSetups: %v%s\nUsa /validateibmtf %s %s", st.ID, len(learned.Trades), learned.Model.Base.ProfitFactor, learned.Model.Base.TotalReturn*100, learned.Model.Base.MaxDrawdown*100, learned.Model.Base.Confluence.Mode, learned.Model.Base.ConfluenceComponents, learned.Model.Base.Confluence.MaxZoneDistancePct*100, learned.Model.Base.TradePlan.MaxStopPct*100, learned.Model.AllowedSetups, confirmNote, st.ID, symbol))
 }
 
+// runInvestingBullsDiag explica las decisiones del pipeline para las últimas
+// barras usando la MISMA ruta que PAPER/LIVE. Es de solo lectura: no crea,
+// modifica ni cierra órdenes.
+func runInvestingBullsDiag(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string) {
+	parts := strings.Fields(args)
+	if len(parts) < 2 {
+		telegram.SendMessage(chatID, "Uso: /ibdiag <strategyID> <symbol> [barras]")
+		return
+	}
+	strategyID, symbol := parts[0], parts[1]
+	bars := 20
+	if len(parts) >= 3 {
+		if n, err := strconv.Atoi(parts[2]); err == nil && n > 0 {
+			bars = n
+		}
+	}
+	st, err := store.GetStrategy(ctx, strategyID)
+	if err != nil {
+		telegram.SendMessage(chatID, "❌ Estrategia no encontrada: "+err.Error())
+		return
+	}
+	model, err := investingbulls.LoadMultiTimeframeModel(st.Spec)
+	if err != nil {
+		telegram.SendMessage(chatID, "❌ Spec inválido: "+err.Error())
+		return
+	}
+	tf := model.Timeframes.EntryTimeframe
+	if tf == "" {
+		telegram.SendMessage(chatID, "❌ La estrategia no define timeframe de entrada")
+		return
+	}
+	entry, err := store.RecentCandles(ctx, symbol, tf, 5000)
+	if err != nil {
+		telegram.SendMessage(chatID, "❌ Cargando velas: "+err.Error())
+		return
+	}
+	if len(entry) == 0 {
+		telegram.SendMessage(chatID, "❌ Sin velas para "+symbol+" "+tf)
+		return
+	}
+	start := len(entry) - bars
+	if start < 0 {
+		start = 0
+	}
+	accepted := 0
+	reasons := map[string]int{}
+	var order []string
+	lastRejected := ""
+	for i := start; i < len(entry); i++ {
+		k := entry[i]
+		k.Closed = true
+		_, ok, trace, err := investingbulls.EvaluateLiveWithTrace(ctx, store, st, k)
+		if err != nil {
+			telegram.SendMessage(chatID, "❌ Diagnóstico: "+err.Error())
+			return
+		}
+		if ok {
+			accepted++
+			continue
+		}
+		r := trace.FinalReason
+		if r == "" {
+			r = "sin_motivo"
+		}
+		if _, seen := reasons[r]; !seen {
+			order = append(order, r)
+		}
+		reasons[r]++
+		lastRejected = trace.Summary()
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "🔎 <b>IB diag</b> %s\nEstrategia: %s · TF: %s\nBarras: %d · señales: %d\n", symbol, strategyID, tf, len(entry)-start, accepted)
+	for _, r := range order {
+		fmt.Fprintf(&b, "  %s: %d\n", r, reasons[r])
+	}
+	telegram.SendMessage(chatID, strings.TrimRight(b.String(), "\n"))
+	if accepted == 0 && lastRejected != "" {
+		telegram.SendMessage(chatID, "Última vela rechazada:\n<pre>"+lastRejected+"</pre>")
+	}
+}
+
 func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.LearnerStore, telegram *services.TelegramService, chatID int64, args string, appCfg *config.Config, tradingSession *session.Manager) {
 	parts := strings.Fields(args)
 	if len(parts) < 2 {
@@ -1140,8 +1229,12 @@ func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.Lear
 	}
 	minTrades, minWR := 100, 75.0
 	if appCfg != nil {
-		if appCfg.IBValidationMinTrades > 0 { minTrades = appCfg.IBValidationMinTrades }
-		if appCfg.IBValidationMinWinRate > 0 { minWR = appCfg.IBValidationMinWinRate * 100 }
+		if appCfg.IBValidationMinTrades > 0 {
+			minTrades = appCfg.IBValidationMinTrades
+		}
+		if appCfg.IBValidationMinWinRate > 0 {
+			minWR = appCfg.IBValidationMinWinRate * 100
+		}
 	}
 	telegram.SendMessage(chatID, fmt.Sprintf("🔬 <b>Validación MTF</b> %s\n\n"+
 		"Estado: ACTIVE — PAPER en observación\n"+

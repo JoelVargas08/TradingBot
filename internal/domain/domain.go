@@ -38,6 +38,7 @@ const (
 	MetaKeyTrend4H     = "trend4h"
 	MetaKeyStopLoss    = "stop_loss"
 	MetaKeyTakeProfit  = "take_profit"
+	MetaKeyPartialTP   = "partial_tp"
 	MetaKeyRegime      = "regime"
 	MetaKeyConfidence  = "confidence"
 	MetaKeyProbability = "probability"
@@ -236,6 +237,14 @@ type Position struct {
 	ExitPrice  float64
 	PnL        float64
 
+	// Parcial (TP parcial 50% en el máximo/mínimo previo): PartialTP es el
+	// objetivo al que se cierra una fracción de la posición protegiendo el resto;
+	// PartialQty/PartialPnL registran lo ya cerrado para que la contabilidad y el
+	// PnL total de la posición (parcial + resto) se cuenten una sola vez.
+	PartialTP  float64
+	PartialQty float64
+	PartialPnL float64
+
 	ExitReason    string
 	EntryFee      float64
 	ExitFee       float64
@@ -290,6 +299,9 @@ type CloseOptions struct {
 	SlippageEntry float64
 	SlippageExit  float64
 	AmbiguousBar  bool
+	// NewStopLoss, si es > 0, mueve el stop de la posición restante tras un
+	// cierre parcial (protección del resto, típicamente a breakeven).
+	NewStopLoss float64
 }
 
 // Decision es la salida de la evaluación de riesgo de una señal.
@@ -346,6 +358,7 @@ type Order struct {
 	Price      float64 // límite; 0 = mercado
 	StopLoss   float64
 	TakeProfit float64
+	PartialTP  float64
 	ClientID   string
 	Time       time.Time
 
@@ -384,6 +397,10 @@ type ModelVersion struct {
 type PositionStore interface {
 	OpenPosition(ctx context.Context, p Position) (int64, error)
 	ClosePosition(ctx context.Context, id int64, exitPrice float64, exitTS time.Time, opts CloseOptions) (Position, error)
+	// PartialClosePosition cierra closeQty de una posición abierta: registra el
+	// PnL del tramo en la cuenta, reduce la cantidad restante y, si
+	// opts.NewStopLoss > 0, mueve el stop del resto. La posición permanece abierta.
+	PartialClosePosition(ctx context.Context, id int64, closeQty, exitPrice float64, exitTS time.Time, opts CloseOptions) (Position, error)
 	OpenPositions(ctx context.Context) ([]Position, error)
 	ClosedPositions(ctx context.Context) ([]Position, error)
 	GetAccount(ctx context.Context) (Account, error)

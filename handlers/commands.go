@@ -202,6 +202,7 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/learnibmtf <symbol> [limit] [confirm5m] - Aprender 1H→15m→5m\n" +
 		"/validateibmtf <strategy_id> <symbol> [limit] - Validar OOS fijo y activar\n" +
 		"/validateib <strategy_id> <symbol> <tf> [limit] - Validar OOS y activar si pasa\n" +
+		"/ibdiag <strategy_id> <symbol> [bars] - Diagnóstico del pipeline (no opera)\n" +
 		"/strategies - Listar estrategias aprendidas\n" +
 		"/strategy <id> - Detalle de una estrategia\n" +
 		"/backtest <id> - Re-validar una estrategia (OOS)\n" +

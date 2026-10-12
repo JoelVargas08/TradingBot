@@ -35,6 +35,9 @@ head_*.txt
 *_diff.txt
 head_*.md
 
+# Material fuente binario (PDF grande; el texto está en docs/source/)
+*.pdf
+
 # IDE / sistema
 .vscode/
 .idea/

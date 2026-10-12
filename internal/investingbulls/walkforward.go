@@ -104,7 +104,7 @@ func WalkForward(ks []domain.Kline, cfg LearnConfig, wcfg WalkForwardConfig) (Wa
 		fold := domain.OOSFold{
 			Trades:       m.trades,
 			WinRate:      m.winRate,
-			ProfitFactor: m.profitFactor,
+			ProfitFactor: recordedProfitFactor(m.profitFactor),
 			Sharpe:       m.sharpe,
 			Sortino:      m.sortino,
 			MaxDrawdown:  m.maxDrawdown,
@@ -140,7 +140,7 @@ func WalkForward(ks []domain.Kline, cfg LearnConfig, wcfg WalkForwardConfig) (Wa
 		EvaluatedBars: lastOOS - int(math.Floor(float64(len(ks))*wcfg.TrainPct)),
 		TotalTrades:   agg.trades,
 		WinRate:       agg.winRate,
-		ProfitFactor:  agg.profitFactor,
+		ProfitFactor:  recordedProfitFactor(agg.profitFactor),
 		TotalReturn:   agg.totalReturn,
 		MaxDrawdown:   agg.maxDrawdown,
 		ValidatedAt:   time.Now().UTC(),

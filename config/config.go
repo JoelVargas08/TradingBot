@@ -183,7 +183,7 @@ func Load() (*Config, error) {
 		WeexTestnet:        getEnvBool("WEEX_TESTNET", false),
 		WeexSymbol:         getEnv("WEEX_SYMBOL", "BTCUSDT"),
 		LiveTradingConfirm: getEnvBool("LIVE_TRADING_CONFIRM", false),
-		WeexBackfillBars:   getEnvInt("WEEX_BACKFILL_BARS", 5000),
+		WeexBackfillBars:   getEnvInt("WEEX_BACKFILL_BARS", 1000),
 
 		// Investing Bulls multi-timeframe (Fase 7)
 		IBMainTimeframe:    getEnv("INVESTING_BULLS_MAIN_TIMEFRAME", "1h"),

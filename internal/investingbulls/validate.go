@@ -2,7 +2,6 @@ package investingbulls
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -32,8 +31,8 @@ func ValidateAndPromote(ctx context.Context, store LearnerStore, strategyID, sym
 		return domain.BacktestResult{}, fmt.Errorf("oos: la estrategia no contiene Spec")
 	}
 
-	var model LearnedModel
-	if err := json.Unmarshal([]byte(strategy.Spec), &model); err != nil {
+	model, err := LoadLearnedModel(strategy.Spec)
+	if err != nil {
 		return domain.BacktestResult{}, fmt.Errorf("oos: decodificando modelo: %w", err)
 	}
 	if model.Symbol != "" && model.Symbol != symbol {

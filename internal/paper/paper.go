@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	"tradingview-bot/internal/domain"
@@ -19,6 +19,10 @@ type Config struct {
 	FeeRate float64
 	// SlippageRate es el deslizamiento estimado (proporción del nocional).
 	SlippageRate float64
+	// PartialCloseFraction es la fracción de la posición que se cierra en el
+	// objetivo parcial (máximo/mínimo previo) antes de proteger el resto.
+	// Por defecto 0.5 (cerrar el 50%).
+	PartialCloseFraction float64
 }
 
 func (c Config) withDefaults() Config {
@@ -28,23 +32,27 @@ func (c Config) withDefaults() Config {
 	if c.SlippageRate <= 0 {
 		c.SlippageRate = 0.0002
 	}
+	if c.PartialCloseFraction <= 0 || c.PartialCloseFraction >= 1 {
+		c.PartialCloseFraction = 0.5
+	}
 	return c
 }
 
 // Engine es el motor de paper trading: abre/cierra posiciones, vigila
 // SL/TP con velas cerradas, actualiza equity intratrade y calcula métricas.
 type pendingEntry struct {
-	Key string
+	Key        string
 	StrategyID string
-	Symbol string
-	Timeframe string
-	Side domain.Direction
-	Price float64
-	StopLoss float64
+	Symbol     string
+	Timeframe  string
+	Side       domain.Direction
+	Price      float64
+	StopLoss   float64
 	TakeProfit float64
-	Quantity float64
+	PartialTP  float64
+	Quantity   float64
 	RiskAmount float64
-	BarTS time.Time
+	BarTS      time.Time
 }
 
 type orderStore interface {
@@ -56,56 +64,73 @@ const pendingOrderStatus = "paper_armed"
 
 func (e *Engine) persistPending(p pendingEntry) {
 	os, ok := e.store.(orderStore)
-	if !ok { return }
+	if !ok {
+		return
+	}
 	err := os.SaveOrder(context.Background(), domain.Order{
 		ClientID: p.Key, StrategyID: p.StrategyID, Symbol: p.Symbol, Side: p.Side,
 		Quantity: p.Quantity, Price: p.Price, StopLoss: p.StopLoss, TakeProfit: p.TakeProfit,
-		Status: pendingOrderStatus, Time: p.BarTS, UpdatedAt: time.Now(),
+		PartialTP: p.PartialTP,
+		Status:    pendingOrderStatus, Time: p.BarTS, UpdatedAt: time.Now(),
 	})
-	if err != nil { log.Printf("paper: persistiendo límite %s: %v", p.Key, err) }
+	if err != nil {
+		log.Printf("paper: persistiendo límite %s: %v", p.Key, err)
+	}
 }
 
 func (e *Engine) updatePendingOrder(key, status string) {
 	os, ok := e.store.(orderStore)
-	if !ok { return }
-	_ = os.SaveOrder(context.Background(), domain.Order{ClientID:key, Status:status, UpdatedAt:time.Now()})
+	if !ok {
+		return
+	}
+	_ = os.SaveOrder(context.Background(), domain.Order{ClientID: key, Status: status, UpdatedAt: time.Now()})
 }
 
 func pendingTimeframe(key string) string {
 	parts := strings.Split(key, "|")
-	if len(parts) >= 3 { return parts[2] }
+	if len(parts) >= 3 {
+		return parts[2]
+	}
 	return ""
 }
 
 func (e *Engine) recoverPending(ctx context.Context) error {
 	os, ok := e.store.(orderStore)
-	if !ok { return nil }
+	if !ok {
+		return nil
+	}
 	orders, err := os.ListOrders(ctx, pendingOrderStatus)
-	if err != nil { return fmt.Errorf("recover: leyendo límites armados: %w", err) }
+	if err != nil {
+		return fmt.Errorf("recover: leyendo límites armados: %w", err)
+	}
 	count := 0
 	for _, o := range orders {
 		tf := pendingTimeframe(o.ClientID)
-		if tf == "" || o.StrategyID == "" || o.Symbol == "" || o.Price <= 0 { continue }
+		if tf == "" || o.StrategyID == "" || o.Symbol == "" || o.Price <= 0 {
+			continue
+		}
 		p := pendingEntry{
-			Key:o.ClientID, StrategyID:o.StrategyID, Symbol:o.Symbol, Timeframe:tf, Side:o.Side,
-			Price:o.Price, StopLoss:o.StopLoss, TakeProfit:o.TakeProfit, Quantity:o.Quantity,
-			RiskAmount:0, BarTS:o.Time,
+			Key: o.ClientID, StrategyID: o.StrategyID, Symbol: o.Symbol, Timeframe: tf, Side: o.Side,
+			Price: o.Price, StopLoss: o.StopLoss, TakeProfit: o.TakeProfit, PartialTP: o.PartialTP,
+			Quantity: o.Quantity, RiskAmount: 0, BarTS: o.Time,
 		}
 		e.pending[o.ClientID] = append(e.pending[o.ClientID], p)
 		count++
 	}
-	if count > 0 { log.Printf("paper recovery: %d límites IB armados restaurados", count) }
+	if count > 0 {
+		log.Printf("paper recovery: %d límites IB armados restaurados", count)
+	}
 	return nil
 }
 
 type Engine struct {
-	store    domain.PositionStore
-	candles  domain.CandleStore
-	riskCtrl domain.RiskDecider
-	cfg      Config
-	marks    domain.MarkStore
-	mu       sync.Mutex
-	pending  map[string][]pendingEntry
+	store     domain.PositionStore
+	candles   domain.CandleStore
+	riskCtrl  domain.RiskDecider
+	cfg       Config
+	marks     domain.MarkStore
+	mu        sync.Mutex
+	pending   map[string][]pendingEntry
 	entryGate func() bool
 }
 
@@ -132,7 +157,11 @@ func (e *Engine) SetMarkStore(ms domain.MarkStore) *Engine {
 }
 
 func (e *Engine) SetSessionGate(g interface{ IsActive() bool }) *Engine {
-	if g == nil { e.entryGate = nil } else { e.entryGate = g.IsActive }
+	if g == nil {
+		e.entryGate = nil
+	} else {
+		e.entryGate = g.IsActive
+	}
 	return e
 }
 
@@ -146,13 +175,20 @@ func (e *Engine) SetEntryGate(g func() bool) *Engine {
 // currently models one position per strategy/symbol/timeframe, so the first
 // filled staged entry represents the paper position and cancels the other.
 func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
-	if !k.Closed { return }
-	if e.entryGate != nil && !e.entryGate() { return }
+	if !k.Closed {
+		return
+	}
+	if e.entryGate != nil && !e.entryGate() {
+		return
+	}
 
 	e.mu.Lock()
 	var fills []pendingEntry
 	for key, entries := range e.pending {
-		if len(entries) == 0 { delete(e.pending, key); continue }
+		if len(entries) == 0 {
+			delete(e.pending, key)
+			continue
+		}
 		remaining := entries[:0]
 		for _, p := range entries {
 			if p.Symbol != k.Symbol || p.Timeframe != k.Timeframe || !k.Start.After(p.BarTS) {
@@ -160,9 +196,17 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
 				continue
 			}
 			touched := (p.Side == domain.DirectionBuy && k.Low <= p.Price) || (p.Side == domain.DirectionSell && k.High >= p.Price)
-			if touched { fills = append(fills, p) } else { remaining = append(remaining, p) }
+			if touched {
+				fills = append(fills, p)
+			} else {
+				remaining = append(remaining, p)
+			}
 		}
-		if len(remaining) == 0 { delete(e.pending, key) } else { e.pending[key] = remaining }
+		if len(remaining) == 0 {
+			delete(e.pending, key)
+		} else {
+			e.pending[key] = remaining
+		}
 	}
 	e.mu.Unlock()
 
@@ -170,7 +214,7 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
 		ev := domain.SignalEvent{
 			StrategyID: p.StrategyID, Symbol: p.Symbol, Timeframe: p.Timeframe,
 			Direction: p.Side, Price: p.Price, BarTS: k.Start,
-			Meta: map[string]any{domain.MetaKeyStopLoss:p.StopLoss, domain.MetaKeyTakeProfit:p.TakeProfit, domain.MetaKeySetup:"investing_bulls_limit_fill"},
+			Meta: limitFillMeta(p),
 		}
 		if err := e.openPending(ctx, ev, p.Quantity, p.RiskAmount); err != nil {
 			log.Printf("paper: limit IB %.8f no ejecutada: %v", p.Price, err)
@@ -187,7 +231,11 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
 				}
 				filtered = append(filtered, other)
 			}
-			if len(filtered) == 0 { delete(e.pending,key) } else { e.pending[key] = filtered }
+			if len(filtered) == 0 {
+				delete(e.pending, key)
+			} else {
+				e.pending[key] = filtered
+			}
 		}
 		e.mu.Unlock()
 		log.Printf("paper: limit IB ejecutada %s %s %.8f", p.Symbol, p.Side, p.Price)
@@ -196,19 +244,32 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
 }
 
 func (e *Engine) openPending(ctx context.Context, ev domain.SignalEvent, quantity, riskAmount float64) error {
-	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
+	if e.riskCtrl == nil {
+		return fmt.Errorf("controlador de riesgo no configurado")
+	}
 	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev)
-	if err != nil { return err }
-	if !decision.Allowed { return fmt.Errorf("señal rechazada: %s", decision.Reason) }
-	if quantity > 0 { decision.Quantity = quantity }
-	if riskAmount > 0 { decision.RiskAmount = riskAmount }
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed {
+		return fmt.Errorf("señal rechazada: %s", decision.Reason)
+	}
+	if quantity > 0 {
+		decision.Quantity = quantity
+	}
+	if riskAmount > 0 {
+		decision.RiskAmount = riskAmount
+	}
 	_, err = e.store.OpenPosition(ctx, domain.Position{
-		StrategyID:ev.StrategyID, Symbol:ev.Symbol, Timeframe:ev.Timeframe,
-		Side:decision.Side, EntryTS:time.Now(), EntryPrice:decision.EntryPrice,
-		StopLoss:decision.StopLoss, TakeProfit:decision.TakeProfit,
-		Quantity:decision.Quantity, RiskAmount:decision.RiskAmount, Status:domain.PositionOpen,
+		StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe,
+		Side: decision.Side, EntryTS: time.Now(), EntryPrice: decision.EntryPrice,
+		StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit,
+		PartialTP: metaPartialTP(ev.Meta),
+		Quantity:  decision.Quantity, RiskAmount: decision.RiskAmount, Status: domain.PositionOpen,
 	})
-	if err != nil { return fmt.Errorf("abriendo posición límite: %w", err) }
+	if err != nil {
+		return fmt.Errorf("abriendo posición límite: %w", err)
+	}
 	return nil
 }
 
@@ -216,52 +277,78 @@ func (e *Engine) openPending(ctx context.Context, ev domain.SignalEvent, quantit
 // cierra posiciones contrarias con costes, ignora mismas direcciones,
 // evalúa riesgo y abre posición si está permitido.
 func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
-	if e.riskCtrl == nil { return fmt.Errorf("controlador de riesgo no configurado") }
-	if e.entryGate != nil && !e.entryGate() { return nil }
+	if e.riskCtrl == nil {
+		return fmt.Errorf("controlador de riesgo no configurado")
+	}
+	if e.entryGate != nil && !e.entryGate() {
+		return nil
+	}
 
 	zoneLow, hasLow := paperMetaFloat(ev.Meta, "entry_zone_low")
 	zoneHigh, hasHigh := paperMetaFloat(ev.Meta, "entry_zone_high")
 	twoLimits := hasLow && hasHigh && zoneLow > 0 && zoneHigh > zoneLow
 
 	open, err := e.store.OpenPositions(ctx)
-	if err != nil { return fmt.Errorf("listando posiciones abiertas: %w", err) }
+	if err != nil {
+		return fmt.Errorf("listando posiciones abiertas: %w", err)
+	}
 	for _, p := range open {
-		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe { continue }
-		if p.Side == ev.Direction { return nil }
+		if p.StrategyID != ev.StrategyID || p.Symbol != ev.Symbol || p.Timeframe != ev.Timeframe {
+			continue
+		}
+		if p.Side == ev.Direction {
+			return nil
+		}
 		exitPrice := ev.Price
-		if market, ok := paperMetaFloat(ev.Meta, "signal_market_price"); ok && market > 0 { exitPrice = market }
-		if err := e.closePosition(ctx, p.ID, exitPrice, time.Now(), domain.CloseOptions{Reason:"signal-contrary"}); err != nil {
+		if market, ok := paperMetaFloat(ev.Meta, "signal_market_price"); ok && market > 0 {
+			exitPrice = market
+		}
+		if err := e.closePosition(ctx, p.ID, exitPrice, time.Now(), domain.CloseOptions{Reason: "signal-contrary"}); err != nil {
 			return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err)
 		}
 	}
 
 	key := ev.IdempotencyKey()
 	e.mu.Lock()
-	if len(e.pending[key]) > 0 { e.mu.Unlock(); return nil }
+	if len(e.pending[key]) > 0 {
+		e.mu.Unlock()
+		return nil
+	}
 	for k, entries := range e.pending {
-		if len(entries)>0 && entries[0].StrategyID==ev.StrategyID && entries[0].Symbol==ev.Symbol && entries[0].Timeframe==ev.Timeframe && entries[0].Side!=ev.Direction {
-			for _, old := range entries { e.updatePendingOrder(old.Key, "cancelled") }
-			delete(e.pending,k)
+		if len(entries) > 0 && entries[0].StrategyID == ev.StrategyID && entries[0].Symbol == ev.Symbol && entries[0].Timeframe == ev.Timeframe && entries[0].Side != ev.Direction {
+			for _, old := range entries {
+				e.updatePendingOrder(old.Key, "cancelled")
+			}
+			delete(e.pending, k)
 		}
 	}
 	e.mu.Unlock()
 
 	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev)
-	if err != nil { return err }
-	if !decision.Allowed { return fmt.Errorf("señal rechazada: %s", decision.Reason) }
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed {
+		return fmt.Errorf("señal rechazada: %s", decision.Reason)
+	}
 
 	if !twoLimits {
-		_, err = e.store.OpenPosition(ctx, domain.Position{StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:decision.Side,EntryTS:time.Now(),EntryPrice:decision.EntryPrice,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:decision.Quantity,RiskAmount:decision.RiskAmount,Status:domain.PositionOpen})
-		if err != nil { return fmt.Errorf("abriendo posición: %w",err) }
+		_, err = e.store.OpenPosition(ctx, domain.Position{StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: decision.Side, EntryTS: time.Now(), EntryPrice: decision.EntryPrice, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: metaPartialTP(ev.Meta), Quantity: decision.Quantity, RiskAmount: decision.RiskAmount, Status: domain.PositionOpen})
+		if err != nil {
+			return fmt.Errorf("abriendo posición: %w", err)
+		}
 		return nil
 	}
 
 	first, second := zoneHigh, zoneLow
-	if ev.Direction == domain.DirectionSell { first, second = zoneLow, zoneHigh }
+	if ev.Direction == domain.DirectionSell {
+		first, second = zoneLow, zoneHigh
+	}
 	halfQty, halfRisk := decision.Quantity/2, decision.RiskAmount/2
+	partialTP := metaPartialTP(ev.Meta)
 	entries := []pendingEntry{
-		{Key:key+"|1",StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:ev.Direction,Price:first,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:halfQty,RiskAmount:halfRisk,BarTS:ev.BarTS},
-		{Key:key+"|2",StrategyID:ev.StrategyID,Symbol:ev.Symbol,Timeframe:ev.Timeframe,Side:ev.Direction,Price:second,StopLoss:decision.StopLoss,TakeProfit:decision.TakeProfit,Quantity:halfQty,RiskAmount:halfRisk,BarTS:ev.BarTS},
+		{Key: key + "|1", StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: ev.Direction, Price: first, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: partialTP, Quantity: halfQty, RiskAmount: halfRisk, BarTS: ev.BarTS},
+		{Key: key + "|2", StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: ev.Direction, Price: second, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: partialTP, Quantity: halfQty, RiskAmount: halfRisk, BarTS: ev.BarTS},
 	}
 	// Both entries remain armed and are filled independently. The first level
 	// follows the natural approach into the zone: high boundary for longs,
@@ -269,13 +356,18 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	e.mu.Lock()
 	e.pending[key] = entries
 	e.mu.Unlock()
-	for _, p := range entries { e.persistPending(p) }
-	log.Printf("paper: zona armada %s %s %.8f-%.8f con 2 límites",ev.Symbol,ev.Direction,zoneLow,zoneHigh)
+	for _, p := range entries {
+		e.persistPending(p)
+	}
+	log.Printf("paper: zona armada %s %s %.8f-%.8f con 2 límites", ev.Symbol, ev.Direction, zoneLow, zoneHigh)
 	return nil
 }
+
 // Recover reconstruye el equity al arrancar a partir del estado persistido.
 func (e *Engine) Recover(ctx context.Context) error {
-	if err := e.recoverPending(ctx); err != nil { return err }
+	if err := e.recoverPending(ctx); err != nil {
+		return err
+	}
 	acc, err := e.store.GetAccount(ctx)
 	if errors.Is(err, domain.ErrNotFound) {
 		return nil
@@ -350,23 +442,14 @@ func (e *Engine) ReconcileOpenPositions(ctx context.Context) error {
 			if k.Start.Before(p.EntryTS) {
 				continue
 			}
-			// CheckStops vuelve a consultar las posiciones abiertas, por lo que
-			// después de cerrar esta posición no se vuelve a procesar.
-			e.checkPosition(ctx, p, k)
-			stillOpen, err := e.store.OpenPositions(ctx)
+			// Releer la posición en cada vela: tras un cierre parcial la cantidad y
+			// el stop cambian, y usar el snapshot inicial reaplicaría el parcial o
+			// evaluaría un stop obsoleto.
+			current, err := e.openPositionByID(ctx, p.ID)
 			if err != nil {
-				return fmt.Errorf("reconcile %d: verificando posición: %w", p.ID, err)
+				break // ya cerrada
 			}
-			found := false
-			for _, current := range stillOpen {
-				if current.ID == p.ID {
-					found = true
-					break
-				}
-			}
-			if !found {
-				break
-			}
+			e.checkPosition(ctx, current, k)
 		}
 	}
 	if len(open) > 0 {
@@ -397,105 +480,187 @@ func (e *Engine) closePosition(ctx context.Context, id int64, exitPrice float64,
 
 // CheckStops revisa una vela cerrada y cierra posiciones cuyo SL/TP se tocó.
 func (e *Engine) CheckStops(ctx context.Context, k domain.Kline) {
-	if !k.Closed { return }
-	if e.entryGate == nil || e.entryGate() { e.fillPending(ctx,k) }
+	if !k.Closed {
+		return
+	}
+	if e.entryGate == nil || e.entryGate() {
+		e.fillPending(ctx, k)
+	}
 	open, err := e.store.OpenPositions(ctx)
-	if err != nil { log.Printf("paper: leyendo posiciones abiertas: %v",err); return }
-	for _, p := range open { if p.Symbol==k.Symbol && p.Timeframe==k.Timeframe { e.checkPosition(ctx,p,k) } }
+	if err != nil {
+		log.Printf("paper: leyendo posiciones abiertas: %v", err)
+		return
+	}
+	for _, p := range open {
+		if p.Symbol == k.Symbol && p.Timeframe == k.Timeframe {
+			e.checkPosition(ctx, p, k)
+		}
+	}
 }
 
-func (e *Engine) fillPending(ctx context.Context,k domain.Kline) {
-	if !k.Closed { return }
-	if e.entryGate != nil && !e.entryGate() { return }
+func (e *Engine) fillPending(ctx context.Context, k domain.Kline) {
+	if !k.Closed {
+		return
+	}
+	if e.entryGate != nil && !e.entryGate() {
+		return
+	}
 	e.mu.Lock()
 	var touched *pendingEntry
 	var touchedKey string
 	for key, entries := range e.pending {
 		for i := range entries {
 			pe := entries[i]
-			if pe.Symbol!=k.Symbol || pe.Timeframe!=k.Timeframe || !k.Start.After(pe.BarTS) { continue }
-			if (pe.Side==domain.DirectionBuy && k.Low<=pe.Price) || (pe.Side==domain.DirectionSell && k.High>=pe.Price) {
-				cp:=pe; touched=&cp; touchedKey=key; break
+			if pe.Symbol != k.Symbol || pe.Timeframe != k.Timeframe || !k.Start.After(pe.BarTS) {
+				continue
+			}
+			if (pe.Side == domain.DirectionBuy && k.Low <= pe.Price) || (pe.Side == domain.DirectionSell && k.High >= pe.Price) {
+				cp := pe
+				touched = &cp
+				touchedKey = key
+				break
 			}
 		}
-		if touched != nil { break }
+		if touched != nil {
+			break
+		}
 	}
 	e.mu.Unlock()
-	if touched == nil { return }
-
-	decision, err := e.riskCtrl.EvaluateSignal(ctx, domain.SignalEvent{
-		StrategyID:touched.StrategyID, Symbol:touched.Symbol, Timeframe:touched.Timeframe,
-		Direction:touched.Side, Price:touched.Price, BarTS:k.Start,
-		Meta:map[string]any{domain.MetaKeyStopLoss:touched.StopLoss, domain.MetaKeyTakeProfit:touched.TakeProfit, domain.MetaKeySetup:"investing_bulls_limit_fill"},
-	})
-	if err != nil || !decision.Allowed {
-		if err != nil { log.Printf("paper: límite %.8f rechazado al ejecutar: %v", touched.Price, err) } else { log.Printf("paper: límite %.8f rechazado al ejecutar: %s", touched.Price, decision.Reason) }
+	if touched == nil {
 		return
 	}
-	_, err = e.store.OpenPosition(ctx,domain.Position{
-		StrategyID:touched.StrategyID,Symbol:touched.Symbol,Timeframe:touched.Timeframe,Side:touched.Side,
-		EntryTS:k.Start,EntryPrice:touched.Price,StopLoss:touched.StopLoss,TakeProfit:touched.TakeProfit,
-		Quantity:touched.Quantity,RiskAmount:touched.RiskAmount,Status:domain.PositionOpen})
-	if err!=nil { log.Printf("paper: ejecutando límite %.8f: %v",touched.Price,err); return }
+
+	decision, err := e.riskCtrl.EvaluateSignal(ctx, domain.SignalEvent{
+		StrategyID: touched.StrategyID, Symbol: touched.Symbol, Timeframe: touched.Timeframe,
+		Direction: touched.Side, Price: touched.Price, BarTS: k.Start,
+		Meta: limitFillMeta(*touched),
+	})
+	if err != nil || !decision.Allowed {
+		if err != nil {
+			log.Printf("paper: límite %.8f rechazado al ejecutar: %v", touched.Price, err)
+		} else {
+			log.Printf("paper: límite %.8f rechazado al ejecutar: %s", touched.Price, decision.Reason)
+		}
+		return
+	}
+	_, err = e.store.OpenPosition(ctx, domain.Position{
+		StrategyID: touched.StrategyID, Symbol: touched.Symbol, Timeframe: touched.Timeframe, Side: touched.Side,
+		EntryTS: k.Start, EntryPrice: touched.Price, StopLoss: touched.StopLoss, TakeProfit: touched.TakeProfit,
+		PartialTP: touched.PartialTP, Quantity: touched.Quantity, RiskAmount: touched.RiskAmount, Status: domain.PositionOpen})
+	if err != nil {
+		log.Printf("paper: ejecutando límite %.8f: %v", touched.Price, err)
+		return
+	}
 
 	e.mu.Lock()
 	for key, entries := range e.pending {
-		filtered:=entries[:0]
-		for _, pe:=range entries {
-			if pe.StrategyID==touched.StrategyID && pe.Symbol==touched.Symbol && pe.Timeframe==touched.Timeframe && pe.Side==touched.Side {
-				status:="cancelled"
-				if pe.Key==touched.Key { status="filled" }
-				e.updatePendingOrder(pe.Key,status)
+		filtered := entries[:0]
+		for _, pe := range entries {
+			if pe.StrategyID == touched.StrategyID && pe.Symbol == touched.Symbol && pe.Timeframe == touched.Timeframe && pe.Side == touched.Side {
+				status := "cancelled"
+				if pe.Key == touched.Key {
+					status = "filled"
+				}
+				e.updatePendingOrder(pe.Key, status)
 				continue
 			}
-			filtered=append(filtered,pe)
+			filtered = append(filtered, pe)
 		}
-		if len(filtered)==0 { delete(e.pending,key) } else { e.pending[key]=filtered }
+		if len(filtered) == 0 {
+			delete(e.pending, key)
+		} else {
+			e.pending[key] = filtered
+		}
 	}
 	_ = touchedKey
 	e.mu.Unlock()
-	log.Printf("paper: límite ejecutado %s %s price=%.8f qty=%.8f",touched.Symbol,touched.Side,touched.Price,touched.Quantity)
+	log.Printf("paper: límite ejecutado %s %s price=%.8f qty=%.8f", touched.Symbol, touched.Side, touched.Price, touched.Quantity)
 }
 
 func (e *Engine) CancelPending() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	for _, entries := range e.pending { for _, pe := range entries { e.updatePendingOrder(pe.Key, "cancelled") } }
+	for _, entries := range e.pending {
+		for _, pe := range entries {
+			e.updatePendingOrder(pe.Key, "cancelled")
+		}
+	}
 	clear(e.pending)
 }
 
 func (e *Engine) checkPosition(ctx context.Context, p domain.Position, k domain.Kline) {
-	var hitStop, hitTarget bool
-	var stopPrice, targetPrice float64
-	stopPrice = p.StopLoss
-	targetPrice = p.TakeProfit
-
+	if p.Quantity <= 0 {
+		return
+	}
+	var hitStop, hitPartial, hitTarget bool
 	switch p.Side {
 	case domain.DirectionBuy:
 		hitStop = p.StopLoss > 0 && k.Low <= p.StopLoss
+		hitPartial = p.PartialTP > 0 && p.PartialQty == 0 && k.High >= p.PartialTP
 		hitTarget = p.TakeProfit > 0 && k.High >= p.TakeProfit
 	case domain.DirectionSell:
 		hitStop = p.StopLoss > 0 && k.High >= p.StopLoss
+		hitPartial = p.PartialTP > 0 && p.PartialQty == 0 && k.Low <= p.PartialTP
 		hitTarget = p.TakeProfit > 0 && k.Low <= p.TakeProfit
 	}
 
-	ambiguous := hitStop && hitTarget
-	switch {
-	case ambiguous:
-		if err := e.closePosition(ctx, p.ID, stopPrice, k.Start, domain.CloseOptions{Reason: "stop", AmbiguousBar: true}); err != nil {
-			log.Printf("paper: cerrando %d por stop (ambiguo): %v", p.ID, err)
+	// El stop manda: en una vela ambigua (toca stop y objetivo) no hay orden
+	// intravela conocida, por lo que se cierra el resto al stop. El parcial solo
+	// se aplica cuando la vela no alcanza también el stop.
+	if hitStop {
+		ambiguous := hitPartial || hitTarget
+		opts := domain.CloseOptions{Reason: "stop", AmbiguousBar: ambiguous}
+		if err := e.closePosition(ctx, p.ID, p.StopLoss, k.Start, opts); err != nil {
+			log.Printf("paper: cerrando %d por stop (ambiguo=%v): %v", p.ID, ambiguous, err)
 			return
 		}
-		log.Printf("paper: posición %d cerrada (vino ambiguo → stop; SL=%v TP=%v vela L/H=%v/%v)", p.ID, p.StopLoss, p.TakeProfit, k.Low, k.High)
-	case hitStop:
-		if err := e.Close(ctx, p.ID, stopPrice, k.Start, "stop"); err != nil {
-			log.Printf("paper: cerrando %d por stop: %v", p.ID, err)
+		log.Printf("paper: posición %d cerrada por stop (SL=%v vela L/H=%v/%v)", p.ID, p.StopLoss, k.Low, k.High)
+		return
+	}
+
+	// TP parcial: cierra la fracción configurada en el máximo/mínimo previo y
+	// protege el resto (breakeven). Prioridad sobre el TP completo para que la
+	// primera vez que el precio toca el nivel se cierre solo la mayoría.
+	if hitPartial {
+		if err := e.applyPartial(ctx, p, k); err != nil {
+			log.Printf("paper: cierre parcial %d en %.8f: %v", p.ID, p.PartialTP, err)
 		}
-	case hitTarget:
-		if err := e.Close(ctx, p.ID, targetPrice, k.Start, "take-profit"); err != nil {
+		return
+	}
+
+	if hitTarget {
+		if err := e.Close(ctx, p.ID, p.TakeProfit, k.Start, "take-profit"); err != nil {
 			log.Printf("paper: cerrando %d por take-profit: %v", p.ID, err)
 		}
 	}
+}
+
+// applyPartial cierra la fracción configurada de la posición en el objetivo
+// parcial y mueve el stop del resto a breakeven. Idempotente respecto al estado
+// persistido: si PartialQty > 0 la posición ya parcializó y no se vuelve a
+// aplicar (relevante al reconciliar tras un reinicio).
+func (e *Engine) applyPartial(ctx context.Context, p domain.Position, k domain.Kline) error {
+	if p.PartialTP <= 0 || p.PartialQty > 0 {
+		return nil
+	}
+	qty := p.Quantity * e.cfg.PartialCloseFraction
+	if qty <= 0 || qty >= p.Quantity {
+		return fmt.Errorf("fracción parcial %v produce cantidad inválida %v (de %v)", e.cfg.PartialCloseFraction, qty, p.Quantity)
+	}
+	opts := domain.CloseOptions{
+		Reason:        "partial-take-profit",
+		EntryFee:      p.EntryPrice * qty * e.cfg.FeeRate,
+		ExitFee:       p.PartialTP * qty * e.cfg.FeeRate,
+		SlippageEntry: p.EntryPrice * qty * e.cfg.SlippageRate,
+		SlippageExit:  p.PartialTP * qty * e.cfg.SlippageRate,
+		NewStopLoss:   p.EntryPrice,
+	}
+	updated, err := e.store.PartialClosePosition(ctx, p.ID, qty, p.PartialTP, k.Start, opts)
+	if err != nil {
+		return err
+	}
+	log.Printf("paper: TP parcial posición %d: cerrado %.8f en %.8f, resto %.8f protegido en %.8f", p.ID, qty, p.PartialTP, updated.Quantity, updated.StopLoss)
+	return nil
 }
 
 func (e *Engine) openPositionByID(ctx context.Context, id int64) (domain.Position, error) {
@@ -724,6 +889,11 @@ func (e *Engine) ClosePosition(ctx context.Context, id int64, exitPrice float64,
 	return e.store.ClosePosition(ctx, id, exitPrice, exitTS, opts)
 }
 
+// PartialClosePosition implementa domain.PositionStore delegando en el store.
+func (e *Engine) PartialClosePosition(ctx context.Context, id int64, closeQty, exitPrice float64, exitTS time.Time, opts domain.CloseOptions) (domain.Position, error) {
+	return e.store.PartialClosePosition(ctx, id, closeQty, exitPrice, exitTS, opts)
+}
+
 // OpenPositions implementa domain.PositionStore.
 func (e *Engine) OpenPositions(ctx context.Context) ([]domain.Position, error) {
 	return e.store.OpenPositions(ctx)
@@ -744,26 +914,59 @@ func (e *Engine) UpdateAccount(ctx context.Context, a domain.Account) error {
 	return e.store.UpdateAccount(ctx, a)
 }
 
+// limitFillMeta construye la Meta de una ejecución de límite incluyendo el
+// objetivo parcial cuando existe.
+func limitFillMeta(p pendingEntry) map[string]any {
+	meta := map[string]any{
+		domain.MetaKeyStopLoss:   p.StopLoss,
+		domain.MetaKeyTakeProfit: p.TakeProfit,
+		domain.MetaKeySetup:      "investing_bulls_limit_fill",
+	}
+	if p.PartialTP > 0 {
+		meta[domain.MetaKeyPartialTP] = p.PartialTP
+	}
+	return meta
+}
+
+// metaPartialTP extrae el objetivo parcial (máximo/mínimo previo) de la Meta.
+// Ausente o no positivo significa que la posición no usa TP parcial.
+func metaPartialTP(meta map[string]any) float64 {
+	if v, ok := paperMetaFloat(meta, domain.MetaKeyPartialTP); ok && v > 0 {
+		return v
+	}
+	return 0
+}
 
 func paperMetaFloat(meta map[string]any, key string) (float64, bool) {
 	v, ok := meta[key]
-	if !ok { return 0, false }
+	if !ok {
+		return 0, false
+	}
 	switch n := v.(type) {
-	case float64: return n, true
-	case int: return float64(n), true
-	case int64: return float64(n), true
-	default: return 0, false
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
 	}
 }
 
-
 func metaFloat(meta map[string]any, key string) (float64, bool) {
 	v, ok := meta[key]
-	if !ok { return 0, false }
+	if !ok {
+		return 0, false
+	}
 	switch n := v.(type) {
-	case float64: return n, true
-	case int: return float64(n), true
-	case int64: return float64(n), true
-	default: return 0, false
+	case float64:
+		return n, true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	default:
+		return 0, false
 	}
 }

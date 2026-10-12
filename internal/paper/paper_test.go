@@ -2,6 +2,7 @@ package paper
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -11,7 +12,43 @@ import (
 type memStore struct {
 	positions []domain.Position
 	account   domain.Account
+	candles   []domain.Kline
 	nextID    int64
+}
+
+func (m *memStore) SaveCandle(_ context.Context, k domain.Kline) error {
+	m.candles = append(m.candles, k)
+	return nil
+}
+
+func (m *memStore) CandlesBetween(_ context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
+	var out []domain.Kline
+	for _, k := range m.candles {
+		if k.Symbol == symbol && k.Timeframe == timeframe && !k.Start.Before(start) && k.Start.Before(end) {
+			out = append(out, k)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) RecentCandles(_ context.Context, symbol, timeframe string, limit int) ([]domain.Kline, error) {
+	var out []domain.Kline
+	for _, k := range m.candles {
+		if k.Symbol == symbol && k.Timeframe == timeframe {
+			out = append(out, k)
+		}
+	}
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].Start.Before(out[i].Start) {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
 }
 
 func (m *memStore) OpenPosition(_ context.Context, p domain.Position) (int64, error) {
@@ -45,12 +82,14 @@ func (m *memStore) ClosePosition(_ context.Context, id int64, exitPrice float64,
 				p.GrossPnL = (p.EntryPrice - exitPrice) * p.Quantity
 			}
 			totalCost := opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
-			p.NetPnL = p.GrossPnL - totalCost
+			remainderNet := p.GrossPnL - totalCost
+			p.NetPnL = remainderNet + p.PartialPnL
+			p.PnL = p.NetPnL
 			if p.RiskAmount > 0 {
 				p.RMultiple = p.NetPnL / p.RiskAmount
 			}
-			m.account.Balance += p.NetPnL
-			m.account.RealizedPnL += p.NetPnL
+			m.account.Balance += remainderNet
+			m.account.RealizedPnL += remainderNet
 			m.account.Fees += totalCost
 			m.account.Equity = m.account.Balance
 			m.account.UnrealizedPnL = 0
@@ -66,6 +105,44 @@ func (m *memStore) ClosePosition(_ context.Context, id int64, exitPrice float64,
 			m.positions[i] = p
 			return p, nil
 		}
+	}
+	return domain.Position{}, domain.ErrNotFound
+}
+
+func (m *memStore) PartialClosePosition(_ context.Context, id int64, closeQty, exitPrice float64, exitTS time.Time, opts domain.CloseOptions) (domain.Position, error) {
+	for i, p := range m.positions {
+		if p.ID != id {
+			continue
+		}
+		if p.Status != domain.PositionOpen {
+			return domain.Position{}, fmt.Errorf("posición %d no está abierta", id)
+		}
+		if closeQty <= 0 || closeQty >= p.Quantity {
+			return domain.Position{}, fmt.Errorf("cierre parcial inválido")
+		}
+		var gross float64
+		if p.Side == domain.DirectionBuy {
+			gross = (exitPrice - p.EntryPrice) * closeQty
+		} else {
+			gross = (p.EntryPrice - exitPrice) * closeQty
+		}
+		totalCost := opts.EntryFee + opts.ExitFee + opts.SlippageEntry + opts.SlippageExit
+		net := gross - totalCost
+		p.Quantity -= closeQty
+		if opts.NewStopLoss > 0 {
+			p.StopLoss = opts.NewStopLoss
+		}
+		p.PartialQty += closeQty
+		p.PartialPnL += net
+		m.account.Balance += net
+		m.account.RealizedPnL += net
+		m.account.Fees += totalCost
+		m.account.Equity = m.account.Balance
+		if m.account.Balance > m.account.PeakEquity {
+			m.account.PeakEquity = m.account.Balance
+		}
+		m.positions[i] = p
+		return p, nil
 	}
 	return domain.Position{}, domain.ErrNotFound
 }
@@ -428,13 +505,23 @@ func TestPendingLimitDoesNotFillOnSignalBar(t *testing.T) {
 	e.SetEntryGate(func() bool { return gate })
 	ev := signal(domain.DirectionBuy, 105)
 	ev.BarTS = time.UnixMilli(2000)
-	ev.Meta = map[string]any{"entry_zone_low":100.0, "entry_zone_high":102.0}
-	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("arm: %v", err) }
-	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(2000), Low:99, High:106, Close:103, Closed:true})
-	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatalf("signal candle must not retroactively fill: %d", len(open)) }
-	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:99, High:103, Close:101, Closed:true})
-	open, _ = st.OpenPositions(context.Background()); if len(open) != 1 { t.Fatalf("next candle should fill limit: %d", len(open)) }
-	if open[0].EntryPrice != 102 { t.Fatalf("entry=%.2f want 102", open[0].EntryPrice) }
+	ev.Meta = map[string]any{"entry_zone_low": 100.0, "entry_zone_high": 102.0}
+	if err := e.OnSignal(context.Background(), ev); err != nil {
+		t.Fatalf("arm: %v", err)
+	}
+	e.OnCandle(context.Background(), domain.Kline{Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000), Low: 99, High: 106, Close: 103, Closed: true})
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 0 {
+		t.Fatalf("signal candle must not retroactively fill: %d", len(open))
+	}
+	e.OnCandle(context.Background(), domain.Kline{Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(3000), Low: 99, High: 103, Close: 101, Closed: true})
+	open, _ = st.OpenPositions(context.Background())
+	if len(open) != 1 {
+		t.Fatalf("next candle should fill limit: %d", len(open))
+	}
+	if open[0].EntryPrice != 102 {
+		t.Fatalf("entry=%.2f want 102", open[0].EntryPrice)
+	}
 }
 
 func TestPendingLimitRespectsSessionGate(t *testing.T) {
@@ -443,14 +530,23 @@ func TestPendingLimitRespectsSessionGate(t *testing.T) {
 	e.SetEntryGate(func() bool { return gate })
 	ev := signal(domain.DirectionBuy, 105)
 	ev.BarTS = time.UnixMilli(2000)
-	ev.Meta = map[string]any{"entry_zone_low":100.0, "entry_zone_high":102.0}
-	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("inactive signal: %v", err) }
-	open, _ := st.OpenPositions(context.Background()); if len(open) != 0 { t.Fatal("inactive session must not open") }
+	ev.Meta = map[string]any{"entry_zone_low": 100.0, "entry_zone_high": 102.0}
+	if err := e.OnSignal(context.Background(), ev); err != nil {
+		t.Fatalf("inactive signal: %v", err)
+	}
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 0 {
+		t.Fatal("inactive session must not open")
+	}
 	gate = true
-	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("active signal: %v", err) }
-	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT", Timeframe:"1h", Start:time.UnixMilli(3000), Low:101, High:103, Close:102, Closed:true})
+	if err := e.OnSignal(context.Background(), ev); err != nil {
+		t.Fatalf("active signal: %v", err)
+	}
+	e.OnCandle(context.Background(), domain.Kline{Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(3000), Low: 101, High: 103, Close: 102, Closed: true})
 	open, _ = st.OpenPositions(context.Background())
-	if len(open) != 1 || open[0].EntryPrice != 102 { t.Fatalf("active session should fill 102: %+v", open) }
+	if len(open) != 1 || open[0].EntryPrice != 102 {
+		t.Fatalf("active session should fill 102: %+v", open)
+	}
 }
 
 func TestOnSignalArmsTwoLimitsAndFillsOnLaterCandle(t *testing.T) {
@@ -460,14 +556,279 @@ func TestOnSignalArmsTwoLimitsAndFillsOnLaterCandle(t *testing.T) {
 	ev.BarTS = time.UnixMilli(1000)
 	ev.Meta["entry_zone_low"] = float64(100)
 	ev.Meta["entry_zone_high"] = float64(105)
-	if err := e.OnSignal(context.Background(), ev); err != nil { t.Fatalf("OnSignal: %v", err) }
+	if err := e.OnSignal(context.Background(), ev); err != nil {
+		t.Fatalf("OnSignal: %v", err)
+	}
 	open, _ := st.OpenPositions(context.Background())
-	if len(open) != 0 { t.Fatalf("zone signal must not open immediately: %d", len(open)) }
-	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT",Timeframe:"1h",Start:time.UnixMilli(1000),Low:104,High:108,Close:105,Closed:true})
+	if len(open) != 0 {
+		t.Fatalf("zone signal must not open immediately: %d", len(open))
+	}
+	e.OnCandle(context.Background(), domain.Kline{Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(1000), Low: 104, High: 108, Close: 105, Closed: true})
 	open, _ = st.OpenPositions(context.Background())
-	if len(open) != 0 { t.Fatalf("signal candle must not retroactively fill: %d", len(open)) }
-	e.OnCandle(context.Background(), domain.Kline{Symbol:"BTCUSDT",Timeframe:"1h",Start:time.UnixMilli(2000),Low:104,High:108,Close:105,Closed:true})
+	if len(open) != 0 {
+		t.Fatalf("signal candle must not retroactively fill: %d", len(open))
+	}
+	e.OnCandle(context.Background(), domain.Kline{Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000), Low: 104, High: 108, Close: 105, Closed: true})
 	open, _ = st.OpenPositions(context.Background())
-	if len(open) != 1 || open[0].EntryPrice != 105 { t.Fatalf("first limit should fill at 105: %+v", open) }
+	if len(open) != 1 || open[0].EntryPrice != 105 {
+		t.Fatalf("first limit should fill at 105: %+v", open)
+	}
 }
 
+func seedPartialLong(t testing.TB, e *Engine, st *memStore) int64 {
+	t.Helper()
+	id, err := e.OpenPosition(context.Background(), domain.Position{
+		StrategyID: "chandelier",
+		Symbol:     "BTCUSDT",
+		Timeframe:  "1h",
+		Side:       domain.DirectionBuy,
+		EntryTS:    time.UnixMilli(1000),
+		EntryPrice: 100,
+		StopLoss:   97,
+		TakeProfit: 110,
+		PartialTP:  105,
+		Quantity:   1,
+		RiskAmount: 3,
+		Status:     domain.PositionOpen,
+	})
+	if err != nil {
+		t.Fatalf("OpenPosition (parcial): %v", err)
+	}
+	return id
+}
+
+// TestPartialTPClosesHalfAndProtectsRest verifica el cierre del 50% en el
+// máximo previo, la protección a breakeven y que la posición permanece abierta.
+func TestPartialTPClosesHalfAndProtectsRest(t *testing.T) {
+	e, st := newTestEngine()
+	seedPartialLong(t, e, st)
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000),
+		Low: 100.5, High: 106, Close: 105, Closed: true,
+	})
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 1 {
+		t.Fatalf("abiertas = %d, want 1 (resto protegido)", len(open))
+	}
+	p := open[0]
+	if mathAbs(p.Quantity-0.5) > 1e-9 {
+		t.Errorf("cantidad restante = %.4f, want 0.5", p.Quantity)
+	}
+	if mathAbs(p.PartialQty-0.5) > 1e-9 {
+		t.Errorf("parcial = %.4f, want 0.5", p.PartialQty)
+	}
+	if p.StopLoss != 100 {
+		t.Errorf("stop = %v, want 100 (breakeven)", p.StopLoss)
+	}
+	if p.PartialPnL <= 0 {
+		t.Errorf("partial pnl = %.4f, want > 0", p.PartialPnL)
+	}
+	closed, _ := st.ClosedPositions(context.Background())
+	if len(closed) != 0 {
+		t.Errorf("no debe haber posiciones cerradas, got %d", len(closed))
+	}
+	wantPartialNet := (105.0-100)*0.5 - (100*0.5*0.001 + 105*0.5*0.001 + 100*0.5*0.0002 + 105*0.5*0.0002)
+	acc, _ := st.GetAccount(context.Background())
+	if mathAbs(acc.Balance-(10000+wantPartialNet)) > 1e-6 {
+		t.Errorf("balance = %.6f, want %.6f", acc.Balance, 10000+wantPartialNet)
+	}
+}
+
+func TestPartialTPNotTriggeredBelowTarget(t *testing.T) {
+	e, st := newTestEngine()
+	seedPartialLong(t, e, st)
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000),
+		Low: 99, High: 104, Close: 102, Closed: true,
+	})
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 1 {
+		t.Fatalf("abiertas = %d, want 1", len(open))
+	}
+	if open[0].Quantity != 1 || open[0].PartialQty != 0 {
+		t.Errorf("no debe parcializar por debajo del objetivo: qty=%.4f partial=%.4f", open[0].Quantity, open[0].PartialQty)
+	}
+}
+
+// TestPartialTPNotReapplied simula una vela posterior que vuelve a tocar el
+// objetivo: el parcial no se reaplica (idempotencia intra-sesión).
+func TestPartialTPNotReapplied(t *testing.T) {
+	e, st := newTestEngine()
+	seedPartialLong(t, e, st)
+	candle := domain.Kline{Symbol: "BTCUSDT", Timeframe: "1h", Low: 100.5, High: 106, Close: 105, Closed: true}
+	candle.Start = time.UnixMilli(2000)
+	e.CheckStops(context.Background(), candle)
+	candle.Start = time.UnixMilli(3000)
+	e.CheckStops(context.Background(), candle)
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 1 {
+		t.Fatalf("abiertas = %d, want 1", len(open))
+	}
+	if mathAbs(open[0].Quantity-0.5) > 1e-9 || mathAbs(open[0].PartialQty-0.5) > 1e-9 {
+		t.Errorf("el parcial se reaplicó: qty=%.4f partial=%.4f", open[0].Quantity, open[0].PartialQty)
+	}
+}
+
+// TestPartialTPRemainderClosesAtTakeProfit comprueba que el resto puede salir
+// en el TP completo y que el PnL total (parcial + resto) se cuenta una vez.
+func TestPartialTPRemainderClosesAtTakeProfit(t *testing.T) {
+	e, st := newTestEngine()
+	seedPartialLong(t, e, st)
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000),
+		Low: 100.5, High: 106, Close: 105, Closed: true,
+	})
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(3000),
+		Low: 105.5, High: 111, Close: 110, Closed: true,
+	})
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 0 {
+		t.Fatalf("abiertas = %d, want 0", len(open))
+	}
+	closed, _ := st.ClosedPositions(context.Background())
+	if len(closed) != 1 {
+		t.Fatalf("cerradas = %d, want 1", len(closed))
+	}
+	c := closed[0]
+	if c.ExitReason != "take-profit" {
+		t.Errorf("reason = %s, want take-profit", c.ExitReason)
+	}
+	if mathAbs(c.Quantity-0.5) > 1e-9 {
+		t.Errorf("cantidad restante cerrada = %.4f, want 0.5", c.Quantity)
+	}
+	wantPartial := (105.0-100)*0.5 - (100*0.5*0.001 + 105*0.5*0.001 + 100*0.5*0.0002 + 105*0.5*0.0002)
+	wantRemainder := (110.0-100)*0.5 - (100*0.5*0.001 + 110*0.5*0.001 + 100*0.5*0.0002 + 110*0.5*0.0002)
+	if mathAbs(c.NetPnL-(wantPartial+wantRemainder)) > 1e-6 {
+		t.Errorf("net total = %.6f, want %.6f (parcial+resto)", c.NetPnL, wantPartial+wantRemainder)
+	}
+	if mathAbs(c.RMultiple-c.NetPnL/3) > 1e-9 {
+		t.Errorf("R = %.6f, want %.6f", c.RMultiple, c.NetPnL/3)
+	}
+	acc, _ := st.GetAccount(context.Background())
+	if mathAbs(acc.Balance-(10000+wantPartial+wantRemainder)) > 1e-6 {
+		t.Errorf("balance = %.6f, want %.6f", acc.Balance, 10000+wantPartial+wantRemainder)
+	}
+}
+
+// TestPartialTPRemainderStopsAtBreakeven verifica que el resto sale a la entrada
+// (breakeven) si el precio regresa antes de alcanzar el TP completo.
+func TestPartialTPRemainderStopsAtBreakeven(t *testing.T) {
+	e, st := newTestEngine()
+	seedPartialLong(t, e, st)
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000),
+		Low: 100.5, High: 106, Close: 105, Closed: true,
+	})
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(3000),
+		Low: 99.5, High: 106, Close: 100, Closed: true,
+	})
+	closed, _ := st.ClosedPositions(context.Background())
+	if len(closed) != 1 {
+		t.Fatalf("cerradas = %d, want 1", len(closed))
+	}
+	if closed[0].ExitReason != "stop" {
+		t.Errorf("reason = %s, want stop", closed[0].ExitReason)
+	}
+	if closed[0].ExitPrice != 100 {
+		t.Errorf("exit = %.2f, want 100 (breakeven)", closed[0].ExitPrice)
+	}
+	if closed[0].PartialQty != 0.5 {
+		t.Errorf("parcial = %.4f, want 0.5", closed[0].PartialQty)
+	}
+}
+
+// TestPartialTPAmbiguousBarPrefersStop: si la vela toca stop y objetivo parcial
+// a la vez, se cierra todo al stop (sin información intravela) y no se registra
+// parcial.
+func TestPartialTPAmbiguousBarPrefersStop(t *testing.T) {
+	e, st := newTestEngine()
+	seedPartialLong(t, e, st)
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000),
+		Low: 96, High: 106, Close: 100, Closed: true,
+	})
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 0 {
+		t.Fatalf("abiertas = %d, want 0 (cierre total al stop)", len(open))
+	}
+	closed, _ := st.ClosedPositions(context.Background())
+	if len(closed) != 1 {
+		t.Fatalf("cerradas = %d, want 1", len(closed))
+	}
+	c := closed[0]
+	if c.ExitReason != "stop" || !c.AmbiguousBar {
+		t.Errorf("reason=%s ambiguous=%v, want stop/true", c.ExitReason, c.AmbiguousBar)
+	}
+	if c.ExitPrice != 97 {
+		t.Errorf("exit = %.2f, want 97 (SL)", c.ExitPrice)
+	}
+	if c.PartialQty != 0 {
+		t.Errorf("no debe registrarse parcial en vela ambigua, got %.4f", c.PartialQty)
+	}
+}
+
+func TestPartialTPShortSideProtectsRest(t *testing.T) {
+	e, st := newTestEngine()
+	if _, err := e.OpenPosition(context.Background(), domain.Position{
+		StrategyID: "chandelier", Symbol: "BTCUSDT", Timeframe: "1h",
+		Side: domain.DirectionSell, EntryTS: time.UnixMilli(1000),
+		EntryPrice: 100, StopLoss: 103, TakeProfit: 90, PartialTP: 95,
+		Quantity: 1, RiskAmount: 3, Status: domain.PositionOpen,
+	}); err != nil {
+		t.Fatalf("OpenPosition short: %v", err)
+	}
+	e.CheckStops(context.Background(), domain.Kline{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000),
+		Low: 94, High: 99, Close: 95, Closed: true,
+	})
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 1 {
+		t.Fatalf("abiertas = %d, want 1", len(open))
+	}
+	p := open[0]
+	if mathAbs(p.Quantity-0.5) > 1e-9 || mathAbs(p.PartialQty-0.5) > 1e-9 {
+		t.Errorf("short parcial esperado: qty=%.4f partial=%.4f", p.Quantity, p.PartialQty)
+	}
+	if p.StopLoss != 100 {
+		t.Errorf("stop = %v, want 100 (breakeven)", p.StopLoss)
+	}
+	if p.PartialPnL <= 0 {
+		t.Errorf("partial pnl = %.4f, want > 0", p.PartialPnL)
+	}
+}
+
+// TestReconcileDoesNotRepeatPartialAfterRestart arranca con una posición ya
+// parcializada (estado persistido) y repera velas: el parcial no se duplica.
+func TestReconcileDoesNotRepeatPartialAfterRestart(t *testing.T) {
+	_, st := newTestEngine()
+	id, err := st.OpenPosition(context.Background(), domain.Position{
+		StrategyID: "chandelier", Symbol: "BTCUSDT", Timeframe: "1h",
+		Side: domain.DirectionBuy, EntryTS: time.UnixMilli(1000),
+		EntryPrice: 100, StopLoss: 100, TakeProfit: 110, PartialTP: 105,
+		Quantity: 0.5, RiskAmount: 1.5, PartialQty: 0.5, PartialPnL: 2.0,
+		Status: domain.PositionOpen,
+	})
+	if err != nil {
+		t.Fatalf("OpenPosition persistida: %v", err)
+	}
+	st.candles = []domain.Kline{{
+		Symbol: "BTCUSDT", Timeframe: "1h", Start: time.UnixMilli(2000),
+		Low: 101, High: 106, Close: 105, Closed: true,
+	}}
+	e := New(st, noopController{}, Config{})
+	if err := e.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if err := e.ReconcileOpenPositions(context.Background()); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	open, _ := st.OpenPositions(context.Background())
+	if len(open) != 1 || open[0].ID != id {
+		t.Fatalf("abiertas = %d, want 1 (id=%d)", len(open), id)
+	}
+	if mathAbs(open[0].Quantity-0.5) > 1e-9 || mathAbs(open[0].PartialQty-0.5) > 1e-9 {
+		t.Errorf("reconcile duplicó el parcial: qty=%.4f partial=%.4f", open[0].Quantity, open[0].PartialQty)
+	}
+}

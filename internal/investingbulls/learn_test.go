@@ -1,6 +1,7 @@
 package investingbulls
 
 import (
+	"math"
 	"math/rand"
 	"strings"
 	"testing"
@@ -160,6 +161,102 @@ func TestLearnIsDeterministic(t *testing.T) {
 	}
 }
 
+// El modelo base debe persistir el espacio de búsqueda efectivo y el
+// diagnóstico desagregado por setup y por conjunto de componentes: sin eso un
+// candidato no explica de dónde salió su configuración (Fase 6).
+func TestLearnPersistsSearchSpaceAndDiagnostics(t *testing.T) {
+	ks := walkCandles(1500, 7, "TEST", "15m", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+	res, err := Learn(ks, learnTestConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.SpecJSON == "" {
+		t.Skip("no candidate: nothing to assert on model persistence")
+	}
+	want := learnTestConfig().Search.normalized()
+	m := res.Model
+	if len(m.Search.Modes) != len(want.Modes) ||
+		len(m.Search.Distances) != len(want.Distances) ||
+		len(m.Search.Stops) != len(want.Stops) {
+		t.Fatalf("persisted search does not match the space used: %+v != %+v", m.Search, want)
+	}
+	if m.ConfigsEvaluated != m.Search.Size() {
+		t.Fatalf("configs_evaluated=%d does not match persisted search size %d", m.ConfigsEvaluated, m.Search.Size())
+	}
+	known := map[ConfluenceComponent]bool{
+		ComponentFibonacci: true, ComponentOrderBlock: true,
+		ComponentImbalance: true, ComponentSupplyDemand: true,
+	}
+	if len(m.SetupStats) == 0 {
+		t.Fatal("expected per-setup diagnostics for a candidate")
+	}
+	var setupTrades, componentTrades int
+	for s, st := range m.SetupStats {
+		if !s.Valid() {
+			t.Fatalf("invalid setup key in stats: %q", s)
+		}
+		if st.Trades <= 0 {
+			t.Fatalf("setup %s has %d trades", s, st.Trades)
+		}
+		setupTrades += st.Trades
+	}
+	if setupTrades > m.Trades {
+		t.Fatalf("setup trades %d exceed model trades %d", setupTrades, m.Trades)
+	}
+	if len(m.ComponentStats) == 0 {
+		t.Fatal("expected per-component diagnostics for a candidate")
+	}
+	for c, cs := range m.ComponentStats {
+		parts := strings.Split(c, ",")
+		if len(parts) != cs.ConfluentCount {
+			t.Fatalf("component key %q reports confluent_count=%d", c, cs.ConfluentCount)
+		}
+		for _, p := range parts {
+			if !known[ConfluenceComponent(p)] {
+				t.Fatalf("unknown component in key %q", c)
+			}
+		}
+		if cs.Trades <= 0 {
+			t.Fatalf("components %q have %d trades", c, cs.Trades)
+		}
+		componentTrades += cs.Trades
+	}
+	if componentTrades != m.Trades {
+		t.Fatalf("component trades %d must equal model trades %d (all trades record their evidence)", componentTrades, m.Trades)
+	}
+}
+
+func TestStatsByComponentGroupsByComponents(t *testing.T) {
+	trades := []LearnedTrade{
+		{PnL: 0.02, Components: "fibonacci,order_block", EntryBar: 1},
+		{PnL: -0.01, Components: "fibonacci,order_block", EntryBar: 2},
+		{PnL: 0.03, Components: "fibonacci,order_block", EntryBar: 3},
+		{PnL: 0.01, Components: "fibonacci", EntryBar: 4},
+		{Components: "", EntryBar: 5},
+	}
+	stats := statsByComponent(trades, 100)
+	if len(stats) != 2 {
+		t.Fatalf("expected 2 groups, got %d", len(stats))
+	}
+	both := stats["fibonacci,order_block"]
+	if both.Trades != 3 || both.ConfluentCount != 2 {
+		t.Fatalf("unexpected group stats: %+v", both)
+	}
+	if both.WinRate != 2.0/3.0 {
+		t.Fatalf("unexpected win rate: %.4f", both.WinRate)
+	}
+	if both.TotalReturn <= 0 {
+		t.Fatalf("expected positive total return, got %.4f", both.TotalReturn)
+	}
+	fib := stats["fibonacci"]
+	if fib.Trades != 1 || fib.ConfluentCount != 1 {
+		t.Fatalf("unexpected fibonacci group: %+v", fib)
+	}
+	if _, ok := stats[""]; ok {
+		t.Fatal("trades without components must not produce a group")
+	}
+}
+
 // El datasetHash identifica el histórico con el que se midió una candidata: es
 // lo que permite comprobar que un modelo se aplica al dataset correcto.
 func TestDatasetHashIdentifiesCandles(t *testing.T) {
@@ -310,7 +407,7 @@ func TestDecisionPointsDoNotLookAhead(t *testing.T) {
 		if p.entryBar != p.index+1 {
 			t.Fatalf("entry must be the following open, got bar %d after %d", p.entryBar, p.index)
 		}
-		if p.evidence.Index != p.index || p.levels.SetupIndex != p.index {
+		if p.evidences[0].Index != p.index || p.evidences[1].Index != p.index || p.levels.SetupIndex != p.index {
 			t.Fatalf("decision levels were resolved for another bar: %+v", p)
 		}
 	}
@@ -335,6 +432,26 @@ func TestDecisionPointsDoNotLookAhead(t *testing.T) {
 	for i := range beforeCut {
 		if beforeCut[i] != afterCut[i] {
 			t.Fatalf("decision at bar %d changed after mutating candles from %d on", beforeCut[i].index, cut)
+		}
+	}
+}
+
+// El learner mide AMBAS zonas Fibonacci en cada punto de decisión: la elección
+// de zona es una decisión por configuración, no una consecuencia de dónde cayó
+// el precio cuando se recolectó la evidencia.
+func TestLearnDecisionPointsMeasureBothZones(t *testing.T) {
+	ks := walkCandles(600, 13, "TEST", "15m", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), 15*time.Minute)
+	cfg := normalizeLearnConfig(learnTestConfig())
+	points := collectDecisionPoints(ks, cfg, 0, nil)
+	if len(points) == 0 {
+		t.Skip("this synthetic walk produced no decision points")
+	}
+	for _, p := range points {
+		if p.evidences[0].FibZone != 1 || p.evidences[1].FibZone != 2 {
+			t.Fatalf("both zones must be measured, got %d and %d", p.evidences[0].FibZone, p.evidences[1].FibZone)
+		}
+		if p.evidences[0].Index != p.index || p.evidences[1].Index != p.index {
+			t.Fatalf("evidence measured at the wrong bar: %+v", p)
 		}
 	}
 }
@@ -389,4 +506,134 @@ func TestTradePlanGridTradeoffIsMeaningful(t *testing.T) {
 	if _, ok := buildPlan(noOB, tight); !ok {
 		t.Fatal("without a structural anchor the profile stop must apply")
 	}
+}
+
+// longSim crea el estado de un long abierto a 100 con stop 97 y objetivo dado,
+// sin slippage, para aislar la operativa del TP parcial del simulador.
+func longSim(target float64) *tradeSim {
+	return &tradeSim{
+		open:     LearnedTrade{Direction: domain.DirectionBuy, EntryPrice: 100, FeePct: 0.001},
+		stop:     97,
+		target:   target,
+		fraction: PartialCloseFractionDefault,
+	}
+}
+
+// partialLearnConfig aísla la operativa del simulador: sin slippage y con fees
+// pequeños fijos para que los cálculos de PnL sean exactos.
+func partialLearnConfig() LearnConfig {
+	cfg := DefaultLearnConfig()
+	cfg.Symbol = "TEST"
+	cfg.Timeframe = "15m"
+	cfg.FeePct = 0.001
+	cfg.SlippagePct = 0
+	return cfg
+}
+
+// TestSimPartialTPClosesFractionAndProtectsRest comprueba la paridad con PAPER:
+// el primer toque del objetivo cierra la mitad, protege el resto a breakeven y
+// NO cierra el resto en la misma vela.
+func TestSimPartialTPClosesFractionAndProtectsRest(t *testing.T) {
+	cfg := partialLearnConfig()
+	sim := longSim(105)
+
+	if _, done := sim.onCandle(domain.Kline{Low: 100.5, High: 106}, 0, cfg); done {
+		t.Fatal("el primer toque del objetivo no debe cerrar la operación")
+	}
+	if !sim.partialDone || sim.stop != 100 {
+		t.Fatalf("tras parcial: partialDone=%v stop=%v, want true/100", sim.partialDone, sim.stop)
+	}
+
+	trade, done := sim.onCandle(domain.Kline{Low: 99.5, High: 100.5}, 1, cfg)
+	if !done {
+		t.Fatal("el resto debe cerrarse al tocar el breakeven")
+	}
+	if trade.Reason != "stop" || trade.ExitPrice != 100 {
+		t.Errorf("exits: reason=%s price=%v, want stop/100", trade.Reason, trade.ExitPrice)
+	}
+	want := 0.5*(105-100)/100 + 0.5*(100-100)/100 - 2*0.001
+	if mathAbs(trade.PnL-want) > 1e-9 {
+		t.Errorf("pnl = %.6f, want %.6f (parcial+resto-fees)", trade.PnL, want)
+	}
+	if trade.PartialBar != 0 || trade.PartialExitPrice != 105 {
+		t.Errorf("parcial = bar %d price %v, want 0/105", trade.PartialBar, trade.PartialExitPrice)
+	}
+}
+
+// TestSimPartialTPRemainderClosesAtTakeProfit comprueba que el resto puede volver
+// a tocar el objetivo en una vela posterior y salir completo (misma dinámica
+// que PAPER).
+func TestSimPartialTPRemainderClosesAtTakeProfit(t *testing.T) {
+	cfg := partialLearnConfig()
+	sim := longSim(105)
+	if _, done := sim.onCandle(domain.Kline{Low: 100.5, High: 106}, 0, cfg); done {
+		t.Fatal("no debe cerrar en el primer toque")
+	}
+	trade, done := sim.onCandle(domain.Kline{Low: 104, High: 106}, 1, cfg)
+	if !done || trade.Reason != "take" || trade.ExitPrice != 105 {
+		t.Fatalf("resto debe salir en el objetivo: done=%v reason=%s exit=%v", done, trade.Reason, trade.ExitPrice)
+	}
+	want := 2*(0.5*(105-100)/100) - 2*0.001
+	if mathAbs(trade.PnL-want) > 1e-9 {
+		t.Errorf("pnl = %.6f, want %.6f", trade.PnL, want)
+	}
+}
+
+// TestSimAmbiguousBarPrefersStopWithoutPartial comprueba la paridad con PAPER en
+// vela ambigua: si la vela toca stop y objetivo a la vez, se cierra todo al stop
+// y NO se registra parcial.
+func TestSimAmbiguousBarPrefersStopWithoutPartial(t *testing.T) {
+	cfg := partialLearnConfig()
+	sim := longSim(105)
+	trade, done := sim.onCandle(domain.Kline{Low: 96, High: 106}, 0, cfg)
+	if !done || trade.Reason != "stop" || trade.ExitPrice != 97 {
+		t.Fatalf("vela ambigua debe cerrar todo al stop: done=%v reason=%s exit=%v", done, trade.Reason, trade.ExitPrice)
+	}
+	if trade.PartialBar != 0 {
+		t.Errorf("no debe registrarse parcial en vela ambigua: %+v", trade)
+	}
+	want := (97.0-100)/100 - 2*0.001
+	if mathAbs(trade.PnL-want) > 1e-9 {
+		t.Errorf("pnl = %.6f, want %.6f", trade.PnL, want)
+	}
+}
+
+// TestSimPartialNotTriggeredBelowTarget comprueba que hasta el objetivo no hay
+// cierre parcial (ni cierre del resto) y que el stop original sigue vigente.
+func TestSimPartialNotTriggeredBelowTarget(t *testing.T) {
+	cfg := partialLearnConfig()
+	sim := longSim(105)
+	if _, done := sim.onCandle(domain.Kline{Low: 100.5, High: 104}, 0, cfg); done {
+		t.Fatal("sin tocar el objetivo no puede haber cierre")
+	}
+	if sim.partialDone || sim.stop != 97 {
+		t.Errorf("sin parcial: partialDone=%v stop=%v, want false/97", sim.partialDone, sim.stop)
+	}
+}
+
+// TestPartialCloseFractionDefaultAndNormalize comprueba que la fracción parcial
+// del learner coincide con la del motor PAPER y que valores inválidos vuelven
+// al default.
+func TestPartialCloseFractionDefaultAndNormalize(t *testing.T) {
+	if DefaultLearnConfig().PartialCloseFraction != PartialCloseFractionDefault {
+		t.Fatalf("default = %v, want %v", DefaultLearnConfig().PartialCloseFraction, PartialCloseFractionDefault)
+	}
+	cfg := normalizeLearnConfig(LearnConfig{})
+	if cfg.PartialCloseFraction != PartialCloseFractionDefault {
+		t.Fatalf("normalized zero = %v", cfg.PartialCloseFraction)
+	}
+	cfg.PartialCloseFraction = 0.25
+	cfg = normalizeLearnConfig(cfg)
+	if cfg.PartialCloseFraction != 0.25 {
+		t.Fatalf("normalized 0.25 = %v", cfg.PartialCloseFraction)
+	}
+	cfg.PartialCloseFraction = 1.5
+	cfg = normalizeLearnConfig(cfg)
+	if cfg.PartialCloseFraction != PartialCloseFractionDefault {
+		t.Fatalf("invalid >=1 must reset to default, got %v", cfg.PartialCloseFraction)
+	}
+}
+
+func mathAbs(v float64) float64 {
+	return math.Abs(v)
 }
