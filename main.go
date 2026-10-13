@@ -1178,7 +1178,34 @@ func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.Lear
 			limit = n
 		}
 	}
-	telegram.SendMessage(chatID, "🔬 Validando candidato MTF con walk-forward OOS (reentrenando cada fold)...")
+	// Preflight informativo: mostramos el histórico disponible por timeframe antes
+	// de validar. ValidateMultiTimeframeCandidate vuelve a cargar y validar los
+	// datos; este bloque no cambia los criterios ni los datos de la estrategia.
+	dataNote := "Velas disponibles: no se pudo obtener el resumen previo."
+	if st, getErr := store.GetStrategy(ctx, parts[0]); getErr == nil {
+		if model, modelErr := investingbulls.LoadMultiTimeframeModel(st.Spec); modelErr == nil {
+			var lines []string
+			for _, tf := range []string{model.Timeframes.MainTimeframe, model.Timeframes.EntryTimeframe, model.Timeframes.ConfirmTimeframe} {
+				if tf == "" || (tf == model.Timeframes.ConfirmTimeframe && !model.Timeframes.RequireConfirm) {
+					continue
+				}
+				ks, candleErr := store.RecentCandles(ctx, parts[1], tf, limit)
+				if candleErr != nil {
+					lines = append(lines, fmt.Sprintf("%s: error (%v)", tf, candleErr))
+					continue
+				}
+				if len(ks) == 0 {
+					lines = append(lines, fmt.Sprintf("%s: 0 velas", tf))
+					continue
+				}
+				lines = append(lines, fmt.Sprintf("%s: %d velas · %s → %s", tf, len(ks), ks[0].Start.UTC().Format("2006-01-02 15:04"), ks[len(ks)-1].Start.UTC().Format("2006-01-02 15:04")))
+			}
+			if len(lines) > 0 {
+				dataNote = strings.Join(lines, "\\n")
+			}
+		}
+	}
+	telegram.SendMessage(chatID, "🔬 Validando candidato MTF con walk-forward OOS (reentrenando cada fold)...\\n\\n📚 <b>Histórico disponible (UTC)</b>\\n"+dataNote)
 	wcfg := investingbulls.DefaultWalkForwardConfig()
 	if appCfg != nil {
 		if appCfg.IBWFFolds > 0 {
@@ -1238,11 +1265,12 @@ func runInvestingBullsValidateMTF(ctx context.Context, store investingbulls.Lear
 	}
 	telegram.SendMessage(chatID, fmt.Sprintf("🔬 <b>Validación MTF</b> %s\n\n"+
 		"Estado: ACTIVE — PAPER en observación\n"+
-		"OOS histórico: %d trades | WinRate %.1f%% | PF %.2f | Return %.2f%% | DD %.2f%%\n\n"+
+		"OOS histórico: %d trades | WinRate %.1f%% | PF %.2f | Return %.2f%% | DD %.2f%%\n"+
+		"Folds configurados: %d · mira los logs de Actions para el resultado y motivo de cada fold\n\n"+
 		"📊 <b>Validación PAPER actual</b>\n"+
 		"Operaciones: %d/%d\nWin rate: %.2f%%\n\n"+
 		"⏳ La decisión definitiva se toma al cerrar %d operaciones. Si el win rate es menor de %.0f%%, la sesión se detiene y el candidato se rechaza.",
-		parts[0], bt.Trades, bt.WinRate*100, bt.ProfitFactor, bt.TotalReturn*100, bt.MaxDrawdown*100,
+		parts[0], bt.Trades, bt.WinRate*100, bt.ProfitFactor, bt.TotalReturn*100, bt.MaxDrawdown*100, bt.Folds,
 		paperTrades, minTrades, paperWR, minTrades, minWR))
 }
 
