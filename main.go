@@ -1073,7 +1073,11 @@ func runInvestingBullsLearnMTF(ctx context.Context, store investingbulls.Learner
 	telegram.SendMessage(chatID, fmt.Sprintf("🧠 Aprendiendo Investing Bulls MTF: %s (%s→%s→%s=%v)...", symbol, mtf.MainTimeframe, mtf.EntryTimeframe, mtf.ConfirmTimeframe, require5m))
 	st, learned, err := investingbulls.LearnMultiTimeframeAndPersist(ctx, store, symbol, limit, learnCfg, mtf)
 	if err != nil {
-		telegram.SendMessage(chatID, "❌ Learn MTF: "+err.Error())
+		msg := "❌ Learn MTF: " + err.Error()
+		if learned.Diagnostics.EntryCandles > 0 || learned.Diagnostics.ConfigsEvaluated > 0 {
+			msg += "\n\n<pre>" + learned.Diagnostics.Summary() + "</pre>"
+		}
+		telegram.SendMessage(chatID, msg)
 		return
 	}
 	// El motivo de omisión de 5m debe verse en Telegram: si el modelo se aprendió
@@ -1082,7 +1086,7 @@ func runInvestingBullsLearnMTF(ctx context.Context, store investingbulls.Learner
 	if learned.Model.ConfirmSkipReason != "" {
 		confirmNote = "\n⚠️ " + learned.Model.ConfirmSkipReason
 	}
-	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nConfluencia: %s | componentes: %s | zona: %.2f%% | stop: %.2f%%\nSetups: %v%s\nUsa /validateibmtf %s %s", st.ID, len(learned.Trades), learned.Model.Base.ProfitFactor, learned.Model.Base.TotalReturn*100, learned.Model.Base.MaxDrawdown*100, learned.Model.Base.Confluence.Mode, learned.Model.Base.ConfluenceComponents, learned.Model.Base.Confluence.MaxZoneDistancePct*100, learned.Model.Base.TradePlan.MaxStopPct*100, learned.Model.AllowedSetups, confirmNote, st.ID, symbol))
+	telegram.SendMessage(chatID, fmt.Sprintf("✅ Candidato MTF: %s\nTrades: %d | PF: %.2f | Return: %.2f%% | DD: %.2f%%\nConfluencia: %s | componentes: %s | zona: %.2f%% | stop: %.2f%%\nSetups: %v%s\n\n<pre>%s</pre>\nUsa /validateibmtf %s %s", st.ID, len(learned.Trades), learned.Model.Base.ProfitFactor, learned.Model.Base.TotalReturn*100, learned.Model.Base.MaxDrawdown*100, learned.Model.Base.Confluence.Mode, learned.Model.Base.ConfluenceComponents, learned.Model.Base.Confluence.MaxZoneDistancePct*100, learned.Model.Base.TradePlan.MaxStopPct*100, learned.Model.AllowedSetups, confirmNote, learned.Diagnostics.Summary(), st.ID, symbol))
 }
 
 // runInvestingBullsDiag explica las decisiones del pipeline para las últimas
