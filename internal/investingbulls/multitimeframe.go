@@ -158,6 +158,9 @@ func LearnMultiTimeframe(main, entry, confirm []domain.Kline, cfg LearnConfig, m
 	}
 	cfg.Timeframe = mtf.EntryTimeframe
 	result, err := learnMultiTimeframeWindow(main, entry, confirm, cfg, mtf, 0, confirmSkipReason)
+	result.Diagnostics.MainCandles = len(main)
+	result.Diagnostics.EntryCandles = len(entry)
+	result.Diagnostics.ConfirmCandles = len(confirm)
 	if err != nil {
 		return MultiTimeframeLearnResult{}, err
 	}
