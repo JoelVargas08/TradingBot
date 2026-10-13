@@ -10,8 +10,13 @@ import (
 
 	"tradingview-bot/internal/domain"
 	"tradingview-bot/models"
-	"tradingview-bot/services"
 )
+
+// MessageSender envía texto a Telegram. Al depender de esta interfaz el
+// handler puede probarse sin un bot real.
+type MessageSender interface {
+	SendMessage(chatID int64, text string) error
+}
 
 // SessionController expone el control de sesión de trading al handler.
 type SessionController interface {
@@ -39,21 +44,21 @@ type WorkflowController interface {
 
 type CommandsHandler struct {
 	userManager *models.UserManager
-	telegram    *services.TelegramService
+	telegram    MessageSender
 	positions   domain.PositionStore
 	session     SessionController
 	performance PerformanceProvider
-	workflow WorkflowController
+	workflow    WorkflowController
 }
 
-func NewCommandsHandler(um *models.UserManager, tg *services.TelegramService, positions domain.PositionStore, session SessionController, performance PerformanceProvider, workflow WorkflowController) *CommandsHandler {
+func NewCommandsHandler(um *models.UserManager, tg MessageSender, positions domain.PositionStore, session SessionController, performance PerformanceProvider, workflow WorkflowController) *CommandsHandler {
 	return &CommandsHandler{
 		userManager: um,
 		telegram:    tg,
 		positions:   positions,
 		session:     session,
 		performance: performance,
-		workflow: workflow,
+		workflow:    workflow,
 	}
 }
 func (ch *CommandsHandler) HandleStart(chatID int64, args string) {
@@ -187,7 +192,9 @@ func (ch *CommandsHandler) HandleSessionSchedule(chatID int64) {
 func (ch *CommandsHandler) HandleHelp(chatID int64) {
 	text := "📚 <b>Comandos disponibles:</b>\n\n" +
 		"/ping - Comprobar conexión con el bot\n" +
-		"/start <chat_id> - Activar alertas\n" +
+		"/start - Arrancar el workflow PAPER (alias de /session_start)\n" +
+		"/start <chat_id> - Activar alertas para un chat\n" +
+		"/stop - Apagar el workflow PAPER (alias de /session_stop)\n" +
 		"/close - Desactivar alertas\n" +
 		"/myid - Obtener tu chat ID\n" +
 		"/positions - Posiciones abiertas\n" +

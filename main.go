@@ -748,7 +748,7 @@ func main() {
 				commandsHandler.HandleSession(chatID)
 			case "session_start":
 				commandsHandler.HandleSessionStart(chatID)
-			case "session_stop":
+			case "session_stop", "stop":
 				commandsHandler.HandleSessionStop(chatID)
 			case "session_schedule":
 				commandsHandler.HandleSessionSchedule(chatID)

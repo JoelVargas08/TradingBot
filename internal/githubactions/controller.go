@@ -20,17 +20,29 @@ type Controller struct {
 	runID      string
 	workflow   string
 	ref        string
+	baseURL    string
 	client     *http.Client
 }
 
 func NewFromEnv() *Controller {
+	return newController(
+		strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		strings.TrimSpace(os.Getenv("GITHUB_REPOSITORY")),
+		strings.TrimSpace(os.Getenv("GITHUB_RUN_ID")),
+		"https://api.github.com",
+		&http.Client{Timeout: 15 * time.Second},
+	)
+}
+
+func newController(token, repository, runID, baseURL string, client *http.Client) *Controller {
 	return &Controller{
-		token:      strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
-		repository: strings.TrimSpace(os.Getenv("GITHUB_REPOSITORY")),
-		runID:      strings.TrimSpace(os.Getenv("GITHUB_RUN_ID")),
+		token:      token,
+		repository: repository,
+		runID:      runID,
 		workflow:   "paper-session.yml",
 		ref:        "main",
-		client:     &http.Client{Timeout: 15 * time.Second},
+		baseURL:    baseURL,
+		client:     client,
 	}
 }
 
@@ -50,7 +62,7 @@ func (c *Controller) CancelCurrent(ctx context.Context) error {
 	if !c.Available() {
 		return fmt.Errorf("control de GitHub Actions no disponible: GITHUB_TOKEN/GITHUB_REPOSITORY/GITHUB_RUN_ID incompletos")
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/actions/runs/%s/cancel", c.repository, c.runID)
+	url := fmt.Sprintf("%s/repos/%s/actions/runs/%s/cancel", c.baseURL, c.repository, c.runID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader([]byte{}))
 	if err != nil {
 		return err
@@ -97,7 +109,7 @@ func (c *Controller) DispatchPaper(ctx context.Context, strategyID string, resto
 	if err != nil {
 		return err
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/actions/workflows/%s/dispatches", c.repository, c.workflow)
+	url := fmt.Sprintf("%s/repos/%s/actions/workflows/%s/dispatches", c.baseURL, c.repository, c.workflow)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return err

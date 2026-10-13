@@ -50,8 +50,8 @@ jobs:
       WATCH_TRADES: "false"
 
       TRADING_SESSION_ENABLED: "true"
-      TRADING_SESSION_START_ACTIVE: \${{ inputs.manual_session == true && 'true' || 'false' }}
-      TRADING_SESSION_SCHEDULE_ENABLED: \${{ inputs.manual_session == true && 'false' || 'true' }}
+      TRADING_SESSION_START_ACTIVE: ${{ inputs.manual_session == true && 'true' || 'false' }}
+      TRADING_SESSION_SCHEDULE_ENABLED: ${{ inputs.manual_session == true && 'false' || 'true' }}
       TRADING_SESSION_START: "08:00"
       TRADING_SESSION_END: "14:00"
       TRADING_SESSION_TIMEZONE: America/New_York
@@ -116,6 +116,10 @@ jobs:
           go build -o bot .
 
       - name: Run paper session
+        env:
+          # Permite que el propio runner cancele su ejecución al recibir
+          # /session_stop o /stop desde Telegram (githubactions.NewFromEnv).
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ./bot
 
