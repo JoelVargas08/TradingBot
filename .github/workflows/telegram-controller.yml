@@ -19,13 +19,21 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 10
     env:
-      TELEGRAM_BOT_TOKEN: \${{ secrets.TELEGRAM_BOT_TOKEN }}
-      GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-      GITHUB_REPOSITORY: \${{ github.repository }}
-      TELEGRAM_ADMIN_CHAT_ID: \${{ vars.TELEGRAM_ADMIN_CHAT_ID }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      # El token integrado GITHUB_TOKEN sirve para listar, despachar y cancelar
+      # ejecuciones con el permiso actions: write. Si se define el secreto
+      # opcional TRADINGBOT_ACTIONS_TOKEN, se prefiere ese token dedicado.
+      GH_TOKEN: ${{ secrets.TRADINGBOT_ACTIONS_TOKEN || secrets.GITHUB_TOKEN }}
+      GITHUB_REPOSITORY: ${{ github.repository }}
+      TELEGRAM_ADMIN_CHAT_ID: ${{ vars.TELEGRAM_ADMIN_CHAT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+      - name: Run controller unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s .github/scripts -p "test_*.py"
       - name: Poll Telegram and control paper workflow
         shell: bash
         run: |
