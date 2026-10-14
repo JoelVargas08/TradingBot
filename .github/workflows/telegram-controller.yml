@@ -26,6 +26,8 @@ jobs:
       GH_TOKEN: ${{ secrets.TRADINGBOT_ACTIONS_TOKEN || secrets.GITHUB_TOKEN }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       TELEGRAM_ADMIN_CHAT_ID: ${{ vars.TELEGRAM_ADMIN_CHAT_ID }}
+      # Escucha continua en reposo para que los comandos no dependan de un instante del cron.
+      CONTROLLER_POLL_WINDOW_SECONDS: "240"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
