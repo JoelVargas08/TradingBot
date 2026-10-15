@@ -1,11 +1,11 @@
 name: TradingBot - Paper Session
 
 on:
-  # 08:00 New York de lunes a viernes. La ventana real del bot termina a las 14:00.
-  # El workflow puede arrancar con unos minutos de retraso sin cambiar la zona horaria.
+  # Arranque automático a las 08:00, hora de Cuba, de lunes a viernes.
+  # El workflow vive como máximo 6 horas; la sesión PAPER empieza detenida y se controla por Telegram.
   schedule:
     - cron: "0 8 * * 1-5"
-      timezone: "America/New_York"
+      timezone: "America/Havana"
   workflow_dispatch:
     inputs:
       restore_state:
@@ -50,12 +50,15 @@ jobs:
       WATCH_TRADES: "false"
 
       TRADING_SESSION_ENABLED: "true"
-      TRADING_SESSION_START_ACTIVE: ${{ inputs.manual_session == true && 'true' || 'false' }}
-      TRADING_SESSION_SCHEDULE_ENABLED: ${{ inputs.manual_session == true && 'false' || 'true' }}
+      # El workflow se inicia automáticamente a las 08:00 Cuba, pero el motor
+      # de trading queda detenido hasta /session_start o /start en Telegram.
+      # La duración máxima del runner la controla timeout-minutes: 360.
+      TRADING_SESSION_START_ACTIVE: "false"
+      TRADING_SESSION_SCHEDULE_ENABLED: "false"
       TRADING_SESSION_START: "08:00"
       TRADING_SESSION_END: "14:00"
-      TRADING_SESSION_TIMEZONE: America/New_York
-      TRADING_SESSION_EXIT_AFTER_WINDOW: "true"
+      TRADING_SESSION_TIMEZONE: America/Havana
+      TRADING_SESSION_EXIT_AFTER_WINDOW: "false"
 
       INVESTING_BULLS_MAIN_TIMEFRAME: 1h
       INVESTING_BULLS_ENTRY_TIMEFRAME: 15m
