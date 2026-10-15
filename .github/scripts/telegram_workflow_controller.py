@@ -44,6 +44,7 @@ COMMANDS = {
     "/start": "session_start",
     "/session_start": "session_start",
     "/session": "session",
+    "/help": "help",
     "/stop": "session_stop",
     "/session_stop": "session_stop",
 }
@@ -301,6 +302,17 @@ class Controller:
     def _handle(self, action, chat_id, pending):
         if action == "session":
             self.telegram.send_message(chat_id, self._status_text(pending))
+        elif action == "help":
+            self.telegram.send_message(
+                chat_id,
+                "<b>🤖 AquaTrade — comandos</b>\\n\\n"
+                "/session — estado del workflow PAPER\\n"
+                "/session_start — iniciar sesión PAPER y conectar WEEX\\n"
+                "/session_stop — detener la sesión PAPER\\n"
+                "/help — mostrar esta ayuda\\n\\n"
+                "La sesión es simulada (PAPER); no envía órdenes reales. "
+                "Mientras PAPER está activo, usa los comandos del runner.",
+            )
         elif action == "session_start":
             self._start(chat_id, pending)
         elif action == "session_stop":
