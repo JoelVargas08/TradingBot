@@ -203,6 +203,13 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.run(), 0)
         self.assertTrue(any("no hay comandos" in log for log in logs))
 
+    def test_idle_controller_can_wait_for_telegram_command(self):
+        controller, logs = build_controller(FakeGitHubOpener(), FakeTelegramOpener())
+        controller.poll_window_seconds = 1
+        with mock.patch.object(ctl.time, "monotonic", side_effect=[10.0, 12.0]):
+            self.assertEqual(controller.run(), 0)
+        self.assertTrue(any("ventana de escucha finalizada" in log for log in logs))
+
     def test_session_reports_stopped(self):
         tg = FakeTelegramOpener()
         tg.updates = [message(42, "/session")]

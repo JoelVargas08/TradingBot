@@ -24,6 +24,7 @@ import html
 import json
 import os
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -221,11 +222,12 @@ class Controller:
     """Orchestrates one controller cycle."""
 
     def __init__(self, github: GitHubClient, telegram: TelegramClient,
-                 admin_chat_id: str, log=print):
+                 admin_chat_id: str, log=print, poll_window_seconds: int = 0):
         self.github = github
         self.telegram = telegram
         self.admin_chat_id = str(admin_chat_id).strip()
         self.log = log
+        self.poll_window_seconds = max(0, min(int(poll_window_seconds), 260))
 
     def authorized(self, chat_id) -> bool:
         return bool(self.admin_chat_id) and str(chat_id) == self.admin_chat_id
@@ -307,44 +309,68 @@ class Controller:
     def run(self) -> int:
         active, pending = self.github.paper_state()
         if active:
+            # Mientras el runner está activo, el proceso Go es el único
+            # consumidor de Telegram y puede cancelar su propio workflow.
             self.log(
                 "paper workflow activo: run="
-                f"{active[0].get('id')}; el runner gestiona Telegram, no se consume"
+                f"{active[0].get('id')}; el runner gestiona Telegram"
             )
             return 0
 
-        try:
-            updates = self.telegram.get_updates(limit=100)
-        except ControllerError as exc:
-            if "Conflict" in str(exc):
-                self.log("otro consumidor de Telegram está activo; se cede")
+        # En reposo, mantener este job escuchando en long-poll. Un único
+        # getUpdates inmediato cada cinco minutos hacía que /session_start
+        # dependiera demasiado del instante exacto del cron y de carreras.
+        deadline = time.monotonic() + self.poll_window_seconds
+        first_poll = True
+        while True:
+            try:
+                updates = self.telegram.get_updates(
+                    limit=100,
+                    timeout=25 if self.poll_window_seconds > 0 else 0,
+                )
+            except ControllerError as exc:
+                if "Conflict" in str(exc):
+                    self.log("otro consumidor de Telegram está activo; se cede")
+                    return 0
+                raise
+
+            if updates:
+                selection = self._select_command(updates)
+                if selection is not None:
+                    update_id, chat_id, action = selection
+                    try:
+                        # Recheck before dispatch/cancel to avoid duplicate
+                        # sessions if another run was queued meanwhile.
+                        _, pending = self.github.paper_state()
+                        self._handle(action, chat_id, pending)
+                    except GitHubError as exc:
+                        self.log(f"ERROR: {exc}")
+                        self.telegram.send_message(
+                            chat_id,
+                            "❌ <b>GitHub rechazó la operación</b>\n\n"
+                            f"<code>{html.escape(str(exc))}</code>",
+                        )
+                        self.telegram.confirm(update_id)
+                        return 1
+                    self.telegram.confirm(update_id)
+                    return 0
+
+                # Acknowledge unrelated/unauthorized updates so they do not
+                # remain queued and get reconsidered on every scheduled run.
+                latest_id = max(int(u.get("update_id", -1)) for u in updates)
+                if latest_id >= 0:
+                    self.telegram.confirm(latest_id)
+                self.log("actualizaciones sin comandos de control autorizados")
+
+            elif first_poll:
+                self.log("sin sesión activa; escuchando comandos de Telegram")
+            first_poll = False
+
+            if time.monotonic() >= deadline:
+                self.log("ventana de escucha finalizada; no hay comandos de control")
                 return 0
-            raise
-
-        if not updates:
-            self.log("sin sesión activa; no hay comandos nuevos")
-            return 0
-
-        selection = self._select_command(updates)
-        if selection is None:
-            self.log("sin comandos de control autorizados")
-            return 0
-
-        update_id, chat_id, action = selection
-        try:
-            self._handle(action, chat_id, pending)
-        except GitHubError as exc:
-            self.log(f"ERROR: {exc}")
-            self.telegram.send_message(
-                chat_id,
-                "❌ <b>GitHub rechazó la operación</b>\n\n"
-                f"<code>{html.escape(str(exc))}</code>",
-            )
-            self.telegram.confirm(update_id)
-            return 1
-        self.telegram.confirm(update_id)
-        return 0
-
+            if self.poll_window_seconds <= 0:
+                return 0
 
 def _validate_env() -> dict:
     values = {
@@ -377,7 +403,10 @@ def main() -> int:
         return 2
     github = GitHubClient(env["gh_token"], env["repository"])
     telegram = TelegramClient(env["tg_token"])
-    controller = Controller(github, telegram, env["admin_chat_id"])
+    controller = Controller(
+        github, telegram, env["admin_chat_id"],
+        poll_window_seconds=int(os.environ.get("CONTROLLER_POLL_WINDOW_SECONDS", "240")),
+    )
     try:
         return controller.run()
     except ControllerError as exc:
