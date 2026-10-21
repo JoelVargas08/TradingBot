@@ -58,10 +58,32 @@ exponencial, sin perder ningún mensaje.
 
 ## Arranque automático a las 08:00 (America/Havana)
 
-- El **controlador es el único dispatcher** de `paper-session.yml`: el
-  `on.schedule` se eliminó del workflow del runner para que no puedan coexistir
-  dos sesiones PAPER (el grupo de concurrencia `tradingbot-paper-session`
-  dejaría la segunda en cola, no la impediría).
+Hay **dos disparadores** con la misma semántica (la sesión arranca y **opera**
+sola dentro de la ventana 08:00–14:00):
+
+1. **El controlador** (`.github/workflows/telegram-controller.yml`): cada ciclo
+   comprueba `AutoStartPolicy.is_due()` y despacha `paper-session.yml` si
+   toca. Es el dispatcher principal porque además **vigila** el estado, avisa
+   al admin y reintenta.
+2. **El `schedule` del propio runner** (`cron: "0 8 * * 1-5"`,
+   `timezone: America/Havana`): disparo redundante.
+
+El segundo existe por una razón medida: **los cron de GitHub Actions se
+ejecutan con retraso**. En este repositorio el cron `*/5` del controlador se
+ha ejecutado en la práctica **cada 4–6 horas**, con huecos de hasta ~10 h. Un
+único disparador no garantiza que el día tenga sesión, así que hay dos
+oportunidades.
+
+Es seguro que convivan:
+
+- el gate usa la misma ventana 08:00–14:00 y el grupo de concurrencia
+  `tradingbot-paper-session` (`cancel-in-progress: false`) impide **dos runners
+  a la vez**;
+- un run que arranque fuera de la ventana se cierra solo
+  (`TRADING_SESSION_EXIT_AFTER_WINDOW`);
+- el controlador no duplica: antes de despachar comprueba los runs del día y
+  los estados activo/en cola.
+
 - Cada ciclo (5 min) comprueba `AutoStartPolicy.is_due()`: día laborable
   (lunes–viernes) y hora local entre las 08:00 y las 13:00. La zona se calcula
   con `zoneinfo`, de modo que el cambio de horario de verano de Cuba se respeta
@@ -188,11 +210,15 @@ Go, incluido `internal/telegram`). No requieren tokens reales ni envían
 - El runner es efímero: si arranca fuera de la ventana 08:00–14:00 con
   `manual_session=false` se apaga limpiamente. El arranque automático está
   limitado a la ventana 08:00–13:00 para que siempre haya margen.
-- GitHub Actions no garantiza la hora exacta de los `schedule`: el reloj de
-  la interfaz puede retrasarse varios minutos. La ventana de 08:00–13:00
-  absorbe ese margen, pero no lo elimina.
-- Los cron de GitHub Actions se interpretan en UTC. El controlador no usa
-  cron para la sesión diaria: calcula la hora local con `zoneinfo`.
+- GitHub Actions no garantiza la hora exacta de los `schedule`: en este repo
+  el cron `*/5` del controlador se ha ejecutado en la práctica cada 4–6 horas
+  (huecos de hasta ~10 h). Por eso hay **dos disparadores** (controlador +
+  `schedule` del runner) y la ventana de arranque es de 5 horas. Aun así, un
+  retraso mayor puede dejar el día sin sesión: es un límite de la
+  infraestructura, no del bot.
+- Los cron de GitHub Actions se interpretan en **UTC**, salvo que se declare
+  `timezone:` (el `schedule` del runner la declara; el controlador no usa cron
+  para la sesión diaria: calcula la hora local con `zoneinfo`).
 - **Latencia:** con la ventana de escucha de 240 s, un comando que llega
   entre ciclos espera como mucho ~1 minuto más el arranque del runner de
   GitHub Actions (que puede tardar 30–60 s en llegar a `in_progress`).

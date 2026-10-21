@@ -1,11 +1,22 @@
 name: TradingBot - Paper Session
 
 on:
-  # El disparo diario NO vive en este workflow: lo orchestra el controlador
-  # Telegram (telegram-controller.yml), que es el único dispatcher. Así solo
-  # puede existir una sesión PAPER a la vez y el arranque es autosuficiente:
-  # si el trigger se retrasa o se pierde, el controlador la relanza dentro de
-  # la ventana de recuperación (08:00-13:00, hora de Cuba).
+  # Disparo redundante del disparo diario.  El dispatcher principal es el
+  # controlador (telegram-controller.yml), que arranca la sesión dentro de la
+  # ventana 08:00-13:00 y garantiza la recuperación; pero los cron de GitHub
+  # Actions se ejecutan con retraso (en este repo se han medido retrasos de
+  # 4-6 h), así que un segundo disparador con la misma semántica da otra
+  # oportunidad dentro del día.
+  #
+  # Es seguro que convivan los dos:
+  #  - el gate usa la misma ventana 08:00-14:00 y el grupo de concurrencia
+  #    (cancel-in-progress: false) impide dos runners a la vez;
+  #  - un run que arranque fuera de la ventana se cierra solo;
+  #  - el controlador no duplica: comprueba los runs del día y los estados
+  #    activo/en cola antes de despachar.
+  schedule:
+    - cron: "0 8 * * 1-5"
+      timezone: "America/Havana"
   workflow_dispatch:
     inputs:
       restore_state:

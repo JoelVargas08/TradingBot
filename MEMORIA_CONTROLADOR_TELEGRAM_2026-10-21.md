@@ -126,19 +126,45 @@ commits posteriores) que tocaban el mismo terreno:
 | `497cdbd` | `on.schedule` a las 08:00 Cuba en `paper-session.yml`, con la sesión **detenida** hasta `/session_start` | **Descartado**: el arranque diario lo hace el controlador y la sesión **opera** sola |
 | `67eed89` | `/help` con el workflow en reposo | **Ya cubierto**: el controlador responde `/help` sin runner |
 
-Motivo de descartar el `schedule` del runner: con él el workflow arrancaba a
-las 08:00 pero el motor de trading quedaba **detenido** hasta que el usuario
-mandaba `/session_start`, lo que contradice el encargo (la sesión arranca
-sola, trabaja sola y avisa). Además coexistirían dos disparadores (cron del
-runner + autoarranque del controlador) y el grupo de concurrencia
-`cancel-in-progress: false` dejaría la segunda sesión **en cola**, no la
-impediría.
+Motivo de descartar el `schedule` del runner en el merge: con él el workflow
+arrancaba a las 08:00 pero el motor de trading quedaba **detenido** hasta que
+el usuario mandaba `/session_start`, lo que contradice el encargo (la sesión
+arranca sola, trabaja sola y avisa).
 
 La ventana de escucha sí se adopta porque mejora la latencia sin tocar la
 arquitectura: el job pasa de terminar en ~10 s a escuchar 240 s, con lo que un
 comando espera como mucho ~1 minuto en vez de hasta 5. El ciclo sigue
 terminando antes si atiende un comando, si el runner toma el token (409) o si
 GitHub cancela el workflow.
+
+### 3.5 Hallazgo de campo: GitHub Actions ejecuta los cron con retraso de horas
+
+Al revisar las ejecuciones reales del repositorio (72 runs del controlador
+entre el 8 y el 21 de octubre) se midió que el cron `*/5` **no** se ejecutaba
+cada 5 minutos: los huecos reales fueron de 76 a 587 minutos (media ~4–5 h).
+Los `schedule` de las sesiones PAPER tampoco arrancaban a las 08:00: se
+observaron inicios entre las 12:02 y las 13:58 de La Habana.
+
+Consecuencia directa: **un solo disparador no garantiza que el día tenga
+sesión**. Por eso se mantendrán **dos disparadores con la misma semántica**
+(el controlador y el `schedule` del runner), con la condición de que el
+segundo **opere** la sesión automáticamente (la variante de `main` la dejaba
+detenida hasta `/session_start`).
+
+Es seguro porque:
+
+- el grupo de concurrencia `tradingbot-paper-session` con
+  `cancel-in-progress: false` impide dos runners simultáneos;
+- un run que arranque fuera de la ventana 08:00–14:00 se cierra solo
+  (`TRADING_SESSION_EXIT_AFTER_WINDOW`);
+- el controlador no duplica: antes de despachar mira los runs del día y los
+  estados activo/en cola.
+
+El último fallo real del controlador en `main` (15:38 UTC del 21/10) fue
+`controller error: The read operation timed out`: el código anterior hacía
+long poll de 25 s con timeout HTTP de 20 s. La versión nueva usa long poll de
+15 s con timeout HTTP de 25 s, y la ventana de escucha añade hasta 240 s de
+long poll por ciclo.
 
 ## 4. Validación
 
