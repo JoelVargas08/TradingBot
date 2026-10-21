@@ -84,6 +84,11 @@ class FakeTelegramOpener:
         self.server_error = False
         self.timeout_calls = 0
         self.get_updates_calls = 0
+        self.poll_calls = 0
+        # Lotes opcionales: cada long poll devuelve el lote siguiente; el
+        # último se repite.  Sirve para simular que un comando llega tarde
+        # dentro de la ventana de escucha.
+        self.batches = None
 
     def __call__(self, request, timeout):
         params = urllib.parse.parse_qs(request.data.decode())
@@ -105,6 +110,10 @@ class FakeTelegramOpener:
             if "offset" in params:
                 self.offsets.append(int(params["offset"][0]))
                 return 200, _json_body({"ok": True, "result": []})
+            self.poll_calls += 1
+            if self.batches is not None:
+                index = min(self.poll_calls - 1, len(self.batches) - 1)
+                return 200, _json_body({"ok": True, "result": self.batches[index]})
             return 200, _json_body({"ok": True, "result": self.updates})
         if method == "sendMessage":
             self.sent.append({k: v[0] for k, v in params.items()})
@@ -120,16 +129,20 @@ def run(run_id, status, created_at="2026-01-15T13:00:00Z"):
     return {"id": run_id, "status": status, "created_at": created_at}
 
 
-def build_controller(gh_opener, tg_opener, admin=ADMIN, now=None, policy=None):
+def build_controller(gh_opener, tg_opener, admin=ADMIN, now=None, policy=None,
+                    poll_window_seconds=0):
     github = ctl.GitHubClient("ghtoken", "owner/repo", opener=gh_opener)
     telegram = ctl.TelegramClient("tgtoken", opener=tg_opener)
     logs = []
     # La hora por defecto queda fuera de la ventana de arranque automático para
     # que los tests no despachen sesiones PAPER por accidente.
+    # poll_window_seconds=0: los tests terminan el ciclo en una vuelta; la
+    # ventana continua se cubre en PollWindowTests.
     controller = ctl.Controller(
         github, telegram, admin, log=logs.append,
         now=now or (lambda: _utc(2026, 1, 15, 20, 0)),
         policy=policy or ctl.AutoStartPolicy(),
+        poll_window_seconds=poll_window_seconds,
     )
     return controller, logs
 
@@ -564,6 +577,62 @@ class AutoStartTests(unittest.TestCase):
         controller = self._controller(gh, tg, lambda: now, policy=policy)
         controller.run()
         self.assertEqual(len(gh.dispatches), 1)
+
+
+class PollWindowTests(unittest.TestCase):
+    """Ventana de escucha continua dentro de un ciclo del controlador."""
+
+    @staticmethod
+    def _clock(step=100.0):
+        state = {"t": 0.0}
+
+        def monotonic():
+            state["t"] += step
+            return state["t"]
+
+        return monotonic
+
+    def test_window_keeps_polling_until_the_deadline(self):
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller, logs = build_controller(gh, tg, poll_window_seconds=240)
+        with mock.patch.object(ctl.time, "monotonic", self._clock()):
+            self.assertEqual(controller.run(), 0)
+        # Varias vueltas de long poll dentro de la misma ventana.
+        self.assertGreaterEqual(tg.poll_calls, 3)
+        self.assertTrue(any("ventana de escucha" in line for line in logs))
+
+    def test_command_arriving_later_in_the_window_is_answered(self):
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        tg.batches = [[], [], [message(7, "/ping")]]
+        controller, logs = build_controller(gh, tg, poll_window_seconds=240)
+        with mock.patch.object(ctl.time, "monotonic", self._clock()):
+            self.assertEqual(controller.run(), 0)
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("Pong", tg.sent[0]["text"])
+
+    def test_window_is_clamped(self):
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller, _ = build_controller(gh, tg, poll_window_seconds=10_000)
+        self.assertEqual(controller.poll_window_seconds, ctl.MAX_POLL_WINDOW_SECONDS)
+
+    def test_window_env_is_read(self):
+        env = {"TELEGRAM_BOT_TOKEN": "t", "GH_TOKEN": "g",
+               "GITHUB_REPOSITORY": "o/r", "TELEGRAM_ADMIN_CHAT_ID": ADMIN,
+               "CONTROLLER_POLL_WINDOW_SECONDS": "120"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            values = ctl._validate_env()
+        self.assertEqual(values["poll_window_seconds"], 120)
+
+    def test_invalid_window_falls_back_to_the_default(self):
+        env = {"TELEGRAM_BOT_TOKEN": "t", "GH_TOKEN": "g",
+               "GITHUB_REPOSITORY": "o/r", "TELEGRAM_ADMIN_CHAT_ID": ADMIN,
+               "CONTROLLER_POLL_WINDOW_SECONDS": "no-es-un-numero"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            values = ctl._validate_env()
+        self.assertEqual(values["poll_window_seconds"], ctl.DEFAULT_POLL_WINDOW_SECONDS)
 
 
 if __name__ == "__main__":

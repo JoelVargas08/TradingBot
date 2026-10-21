@@ -108,6 +108,11 @@ Detalle en `MEMORIA_CONTROLADOR_TELEGRAM_2026-10-21.md` y
 - **Comandos:** `/ping` y `/help` responden también sin runner activo;
   `/session_start`, `/session_stop` y `/session` reescritos según el gate real.
 - **Zona horaria** por defecto corregida a `America/Havana`.
+- **Ventana de escucha continua** de 240 s por ciclo del controlador (adoptada
+  del `main`): la latencia de un comando baja de "hasta 5 min" a "hasta ~1 min".
+- **Merge con `main`:** se adopta la ventana de escucha y se descarta el
+  `on.schedule` del runner (dejaba la sesión detenida hasta `/session_start`);
+  el autoarranque lo hace el controlador. Detalle en la memoria.
 
 ---
 

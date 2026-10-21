@@ -108,18 +108,44 @@ otra rama.
 ### 3.3 Workflows
 
 - `telegram-controller.yml`: `ubuntu-latest` (ubuntu-slim puede no existir en
-  repos privados), `cancel-in-progress: false`, `timeout-minutes: 4` (menor
-  que la cadencia de 5 min), tests solo en `workflow_dispatch` y variables de
-  zona/ventana.
+  repos privados), `cancel-in-progress: false`, `timeout-minutes: 6` (el job
+  escucha 240 s y debe terminar antes del siguiente ciclo de 5 min), tests
+  solo en `workflow_dispatch` y variables de zona/ventana.
 - `paper-session.yml`: sin `schedule`, `manual_session` gobierna el gate
   (horario 08:00–14:00 o sesión manual de 6 h), `America/Havana` y
   `TELEGRAM_ADMIN_CHAT_ID`.
 
+### 3.4 Merge con `main` y ventana de escucha
+
+`main` había avanzado con tres commits del 15 de octubre (PR #21 y dos
+commits posteriores) que tocaban el mismo terreno:
+
+| Commit de `main` | Qué aportaba | Resolución |
+| --- | --- | --- |
+| `a0173a0` | Escucha continua en reposo (`CONTROLLER_POLL_WINDOW_SECONDS`) | **Adoptado**: el controlador ahora escucha 240 s por ciclo |
+| `497cdbd` | `on.schedule` a las 08:00 Cuba en `paper-session.yml`, con la sesión **detenida** hasta `/session_start` | **Descartado**: el arranque diario lo hace el controlador y la sesión **opera** sola |
+| `67eed89` | `/help` con el workflow en reposo | **Ya cubierto**: el controlador responde `/help` sin runner |
+
+Motivo de descartar el `schedule` del runner: con él el workflow arrancaba a
+las 08:00 pero el motor de trading quedaba **detenido** hasta que el usuario
+mandaba `/session_start`, lo que contradice el encargo (la sesión arranca
+sola, trabaja sola y avisa). Además coexistirían dos disparadores (cron del
+runner + autoarranque del controlador) y el grupo de concurrencia
+`cancel-in-progress: false` dejaría la segunda sesión **en cola**, no la
+impediría.
+
+La ventana de escucha sí se adopta porque mejora la latencia sin tocar la
+arquitectura: el job pasa de terminar en ~10 s a escuchar 240 s, con lo que un
+comando espera como mucho ~1 minuto en vez de hasta 5. El ciclo sigue
+terminando antes si atiende un comando, si el runner toma el token (409) o si
+GitHub cancela el workflow.
+
 ## 4. Validación
 
-- `python3 -m unittest discover -s .github/scripts -p "test_*.py"` → **45
+- `python3 -m unittest discover -s .github/scripts -p "test_*.py"` → **50
   casos OK** (arranque a las 08:00, DST, fin de semana, idempotencia,
-  reintentos, 409/401/red, ownership del polling, `/ping`, `/help`).
+  reintentos, 409/401/red, ownership del polling, `/ping`, `/help`, ventana de
+  escucha).
 - `go build ./... && go vet ./... && go test ./...` → **OK** (incluye
   `internal/telegram` y los handlers reescritos).
 

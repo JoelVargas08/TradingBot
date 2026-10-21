@@ -23,9 +23,9 @@ jobs:
   control:
     name: Telegram → GitHub Actions control plane
     runs-on: ubuntu-latest
-    # Menor que la cadencia de 5 minutos: el ciclo termina antes de que
-    # GitHub Actions programe el siguiente.
-    timeout-minutes: 4
+    # El job escucha 240 s (ventana de escucha) más el margen de arranque:
+    # termina antes de que GitHub Actions programe el siguiente ciclo de 5 min.
+    timeout-minutes: 6
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       # El token integrado GITHUB_TOKEN sirve para listar, despachar y cancelar
@@ -41,6 +41,9 @@ jobs:
       TRADINGBOT_AUTO_START_DEADLINE_HOUR: "13"
       # Rama desde la que se despacha el workflow PAPER.
       TRADINGBOT_DISPATCH_REF: ${{ vars.TRADINGBOT_DISPATCH_REF || 'main' }}
+      # Escucha continua en reposo: la latencia de un comando pasa de "hasta
+      # 5 minutos" a "hasta ~1 minuto" sin solapar ciclos.
+      CONTROLLER_POLL_WINDOW_SECONDS: "240"
     steps:
       - name: Checkout
         uses: actions/checkout@v7

@@ -16,8 +16,9 @@ habilita trading real.**
                                     │  1. consulta los runs de paper-session.yml
                                     │  2. arranca la sesión del día si toca
                                     │     (08:00–13:00, America/Havana)
-                                    │  3. si NO hay runner activo: consume
-                                    │     getUpdates y atiende /ping, /help,
+                                    │  3. si NO hay runner activo: escucha
+                                    │     Telegram hasta 240 s (ventana de
+                                    │     escucha) y atiende /ping, /help,
                                     │     /session, /session_start, /session_stop
                                     ▼
                     ┌──────────────────────────────────────────────┐
@@ -28,6 +29,17 @@ habilita trading real.**
                     │  por Telegram que ya está trabajando          │
                     └──────────────────────────────────────────────┘
 ```
+
+### Ventana de escucha y latencia
+
+El cron del controlador dispara cada 5 minutos, así que el job **no termina
+inmediatamente**: se queda en long polling durante
+`CONTROLLER_POLL_WINDOW_SECONDS` (240 s por defecto, máximo 260 s). Con eso la
+latencia de un comando baja de "hasta 5 minutos" a "hasta ~1 minuto" sin
+solapar ciclos (el job dura ~260 s y el siguiente arranca a los 300 s).
+
+El ciclo termina antes si atende un comando de control, si el runner toma el
+token (HTTP 409) o si el propio workflow se cancela.
 
 ### Un solo consumidor de `getUpdates` por token
 
@@ -150,6 +162,7 @@ exponencial, sin perder ningún mensaje.
 | `TRADINGBOT_AUTO_START_HOUR` | controlador | Hora local del arranque automático. |
 | `TRADINGBOT_AUTO_START_DEADLINE_HOUR` | controlador | Fin de la ventana de recuperación. |
 | `TRADINGBOT_DISPATCH_REF` | controlador | Rama desde la que se despacha. |
+| `CONTROLLER_POLL_WINDOW_SECONDS` | controlador | Segundos de escucha continua por ciclo (240 por defecto). |
 | `TRADING_SESSION_TIMEZONE` | runner | Zona de la ventana del gate (`America/Havana`). |
 | `TRADING_SESSION_START` / `_END` | runner | Ventana de la sesión (08:00 / 14:00). |
 | `TRADING_SESSION_EXIT_AFTER_WINDOW` | runner | El runner termina al cerrar la ventana. |
@@ -161,7 +174,7 @@ python3 -m unittest discover -s .github/scripts -p "test_*.py"   # controlador
 go build ./... && go vet ./... && go test ./...                  # bot y runner
 ```
 
-El workflow `CI` ejecuta ambos conjuntos (45 casos del controlador y la suite
+El workflow `CI` ejecuta ambos conjuntos (50 casos del controlador y la suite
 Go, incluido `internal/telegram`). No requieren tokens reales ni envían
 órdenes.
 
@@ -180,8 +193,13 @@ Go, incluido `internal/telegram`). No requieren tokens reales ni envían
   absorbe ese margen, pero no lo elimina.
 - Los cron de GitHub Actions se interpretan en UTC. El controlador no usa
   cron para la sesión diaria: calcula la hora local con `zoneinfo`.
+- **Latencia:** con la ventana de escucha de 240 s, un comando que llega
+  entre ciclos espera como mucho ~1 minuto más el arranque del runner de
+  GitHub Actions (que puede tardar 30–60 s en llegar a `in_progress`).
+  No hay respuesta inmediata garantizada: si el ciclo de 5 min se retrasa o
+  GitHub no agenda el cron, la latencia sube.
 - El `long poll` de Telegram entrega los mensajes aunque el usuario esté
-  desconectado, pero si el usuario los reenvía desde otro cliente se generates
+  desconectado, pero si el usuario los reenvía desde otro cliente se genera
   **otro** `update_id`: el comando se ejecutaría dos veces. El controlador es
   idempotente (no duplica sesiones), pero `/session_start` manual se despacha
   una vez y el runner lo confirma.

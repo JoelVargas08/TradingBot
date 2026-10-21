@@ -69,6 +69,15 @@ AUTO_START_WEEKDAYS = (0, 1, 2, 3, 4)
 # Maximum number of automatic attempts per day (only failed runs are retried).
 MAX_AUTO_ATTEMPTS = 3
 
+# Listening window of a controller cycle.  The cron fires every 5 minutes, so
+# keeping the job in long polling for 240 s makes the latency of a command
+# ~1 min instead of up to 5 min, without overlapping cycles.
+DEFAULT_POLL_WINDOW_SECONDS = 240
+MAX_POLL_WINDOW_SECONDS = 260
+# Long poll timeout per request; the HTTP timeout is always longer.
+POLL_TIMEOUT = 15
+HTTP_TIMEOUT = 25
+
 # Commands understood by the controller.  ``/start`` without arguments means
 # "start the PAPER workflow"; ``/start <chat_id>`` (alerts) is handled by the
 # trading bot, not here.
@@ -94,9 +103,6 @@ HELP_TEXT = (
 )
 
 RETRY_DELAYS = (1.0, 3.0, 7.0)
-# Long poll del controlador: es un proceso corto, así que espera lo justo para
-# recoger un comando sin retener el token del bot más tiempo del necesario.
-POLL_TIMEOUT = 10
 
 
 class ControllerError(RuntimeError):
@@ -349,7 +355,7 @@ class GitHubClient:
 class TelegramClient:
     """Minimal Telegram Bot API client (polling + sendMessage)."""
 
-    def __init__(self, token: str, opener=_default_opener, timeout: int = 20):
+    def __init__(self, token: str, opener=_default_opener, timeout: int = HTTP_TIMEOUT):
         self.token = token
         self.opener = opener
         self.timeout = timeout
@@ -434,13 +440,18 @@ class Controller:
 
     def __init__(self, github: GitHubClient, telegram: TelegramClient,
                  admin_chat_id: str, log=print, policy: AutoStartPolicy | None = None,
-                 now=None):
+                 now=None, poll_window_seconds: int = DEFAULT_POLL_WINDOW_SECONDS):
         self.github = github
         self.telegram = telegram
         self.admin_chat_id = str(admin_chat_id).strip()
         self.log = log
         self.policy = policy or AutoStartPolicy()
         self._now = now or (lambda: datetime.now(timezone.utc))
+        try:
+            window = int(poll_window_seconds)
+        except (TypeError, ValueError):
+            window = DEFAULT_POLL_WINDOW_SECONDS
+        self.poll_window_seconds = max(0, min(window, MAX_POLL_WINDOW_SECONDS))
 
     # ------------------------------------------------------------------
     # Helpers
@@ -629,7 +640,12 @@ class Controller:
                 time.sleep(delay)
         raise last_error
 
-    def _process(self, updates, state: PaperState) -> int:
+    def _process(self, updates, state: PaperState):
+        """Process a batch of updates.
+
+        Returns ``(failures, commands)`` where ``commands`` counts the
+        authorized control commands actually executed.
+        """
         handled = 0
         failures = 0
         last_id = None
@@ -687,7 +703,7 @@ class Controller:
                 self.log(f"aviso: no se pudo confirmar el offset: {exc}")
         if not handled:
             self.log("sin comandos de control autorizados")
-        return 1 if failures else 0
+        return failures, handled
 
     # ------------------------------------------------------------------
     # Cycle
@@ -724,22 +740,38 @@ class Controller:
         if self._auto_start(state):
             return 0
 
-        try:
-            updates = self._poll()
-        except TelegramConflictError as exc:
-            self.log(f"409 de Telegram; otro consumidor está activo: {exc}")
-            return 0
-        except TelegramAuthError as exc:
-            self.log(f"ERROR: {exc}")
-            return 1
-        except ControllerError as exc:
-            self.log(f"ERROR: {exc}")
-            return 1
+        # Ventana de escucha: el cron dispara cada 5 minutos, así que el job
+        # se queda en long polling un rato.  La latencia de un comando pasa de
+        # "hasta 5 minutos" a "hasta ~1 minuto" sin solapar ciclos.
+        deadline = time.monotonic() + self.poll_window_seconds
+        while True:
+            try:
+                updates = self._poll()
+            except TelegramConflictError as exc:
+                # El runner ya tomó el token: el controlador cede el polling.
+                self.log(f"409 de Telegram; otro consumidor está activo: {exc}")
+                return 0
+            except TelegramAuthError as exc:
+                self.log(f"ERROR: {exc}")
+                return 1
+            except ControllerError as exc:
+                self.log(f"ERROR: {exc}")
+                return 1
 
-        if not updates:
-            self.log("no hay comandos nuevos")
-            return 0
-        return self._process(updates, state)
+            if updates:
+                failures, commands = self._process(updates, state)
+                if failures:
+                    return 1
+                if commands:
+                    # Un comando de control ya se atendió: no hace falta
+                    # seguir escuchando en este ciclo.
+                    return 0
+            else:
+                self.log("no hay comandos nuevos")
+
+            if self.poll_window_seconds <= 0 or time.monotonic() >= deadline:
+                self.log("ventana de escucha finalizada; sin comandos de control")
+                return 0
 
 
 def _int_env(name: str, fallback: int) -> int:
@@ -766,6 +798,9 @@ def _validate_env() -> dict:
         ),
         "dispatch_ref": os.environ.get("TRADINGBOT_DISPATCH_REF", DEFAULT_BRANCH).strip()
         or DEFAULT_BRANCH,
+        "poll_window_seconds": _int_env(
+            "CONTROLLER_POLL_WINDOW_SECONDS", DEFAULT_POLL_WINDOW_SECONDS
+        ),
     }
     if not values["tg_token"]:
         raise ControllerError("TELEGRAM_BOT_TOKEN no configurado")
@@ -807,7 +842,8 @@ def main() -> int:
         start_hour=env["auto_start_hour"],
         deadline_hour=env["auto_start_deadline_hour"],
     )
-    controller = Controller(github, telegram, env["admin_chat_id"], policy=policy)
+    controller = Controller(github, telegram, env["admin_chat_id"], policy=policy,
+                            poll_window_seconds=env["poll_window_seconds"])
     try:
         return controller.run()
     except ControllerError as exc:
