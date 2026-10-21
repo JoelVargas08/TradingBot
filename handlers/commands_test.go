@@ -75,25 +75,44 @@ func (f *fakeSession) StatusText() string {
 func (f *fakeSession) ScheduleText() string { return "Sin horario" }
 func (f *fakeSession) TimezoneName() string { return "-" }
 
+// fakeSessionWithWindow implementa la interfaz opcional RemainingWindowProvider.
+type fakeSessionWithWindow struct {
+	fakeSession
+	remaining time.Duration
+}
+
+func (f *fakeSessionWithWindow) RemainingWindow() time.Duration { return f.remaining }
+
 func newTestHandler(sender MessageSender, session SessionController, workflow WorkflowController) *CommandsHandler {
 	return NewCommandsHandler(models.NewUserManager(), sender, nil, session, nil, workflow)
 }
 
-func TestHandleSessionReportsWorkflowActive(t *testing.T) {
+func TestHandleSessionReportsActiveSession(t *testing.T) {
 	sender := &fakeSender{}
 	h := newTestHandler(sender, &fakeSession{active: true}, &fakeWorkflow{available: true, runID: "99"})
 	h.HandleSession(42)
-	if !strings.Contains(sender.last(), "ACTIVO") || !strings.Contains(sender.last(), "99") {
-		t.Fatalf("esperaba estado ACTIVO con run id, got %q", sender.last())
+	if !strings.Contains(sender.last(), "ACTIVA") || !strings.Contains(sender.last(), "99") {
+		t.Fatalf("esperaba estado ACTIVA con run id, got %q", sender.last())
 	}
 }
 
-func TestHandleSessionReportsWorkflowStopped(t *testing.T) {
+func TestHandleSessionReportsStoppedSession(t *testing.T) {
 	sender := &fakeSender{}
 	h := newTestHandler(sender, &fakeSession{}, &fakeWorkflow{available: true})
 	h.HandleSession(42)
-	if !strings.Contains(sender.last(), "DETENIDO") {
-		t.Fatalf("esperaba estado DETENIDO, got %q", sender.last())
+	if !strings.Contains(sender.last(), "DETENIDA") {
+		t.Fatalf("esperaba estado DETENIDA, got %q", sender.last())
+	}
+}
+
+func TestHandleSessionReportsRemainingWindow(t *testing.T) {
+	sender := &fakeSender{}
+	session := &fakeSessionWithWindow{remaining: 2*time.Hour + 15*time.Minute}
+	session.active = true
+	h := newTestHandler(sender, session, nil)
+	h.HandleSession(42)
+	if !strings.Contains(sender.last(), "2h 15m") {
+		t.Fatalf("esperaba la ventana restante, got %q", sender.last())
 	}
 }
 
@@ -110,6 +129,17 @@ func TestHandleSessionStopCancelsWorkflow(t *testing.T) {
 	}
 }
 
+func TestHandleSessionStopStopsGateBeforeCancelling(t *testing.T) {
+	sender := &fakeSender{}
+	workflow := &fakeWorkflow{available: true}
+	session := &fakeSession{active: true}
+	h := newTestHandler(sender, session, workflow)
+	h.HandleSessionStop(42)
+	if !session.stopped {
+		t.Fatal("el gate interno debe detenerse aunque la cancelación del workflow falle")
+	}
+}
+
 func TestHandleSessionStopReportsCancelError(t *testing.T) {
 	sender := &fakeSender{}
 	workflow := &fakeWorkflow{available: true, cancelErr: errors.New("HTTP 403")}
@@ -120,16 +150,44 @@ func TestHandleSessionStopReportsCancelError(t *testing.T) {
 	}
 }
 
-func TestHandleSessionStartWhenWorkflowAvailableDoesNotRestart(t *testing.T) {
+func TestHandleSessionStopWithoutWorkflowStopsGate(t *testing.T) {
+	sender := &fakeSender{}
+	session := &fakeSession{active: true}
+	h := newTestHandler(sender, session, nil)
+	h.HandleSessionStop(42)
+	if !session.stopped {
+		t.Fatal("esperaba que el gate interno quedara detenido")
+	}
+	if !strings.Contains(sender.last(), "DETENIDA") {
+		t.Fatalf("esperaba confirmación de parada, got %q", sender.last())
+	}
+}
+
+// La presencia del workflow ya no bloquea el arranque: el estado real lo
+// gobierna el gate interno de la sesión.
+func TestHandleSessionStartStartsGateWhenInactive(t *testing.T) {
 	sender := &fakeSender{}
 	session := &fakeSession{}
 	h := newTestHandler(sender, session, &fakeWorkflow{available: true})
 	h.HandleSessionStart(42)
-	if session.started {
-		t.Fatal("no debe reiniciar el gate interno si el runner ya está activo")
+	if !session.started {
+		t.Fatal("esperaba que el gate interno se activara")
 	}
-	if !strings.Contains(sender.last(), "ya está activo") {
-		t.Fatalf("esperaba aviso de workflow ya activo, got %q", sender.last())
+	if !strings.Contains(sender.last(), "INICIADA") {
+		t.Fatalf("esperaba confirmación de inicio, got %q", sender.last())
+	}
+}
+
+func TestHandleSessionStartDoesNotRestartActiveSession(t *testing.T) {
+	sender := &fakeSender{}
+	session := &fakeSession{active: true}
+	h := newTestHandler(sender, session, &fakeWorkflow{available: true})
+	h.HandleSessionStart(42)
+	if session.started {
+		t.Fatal("no debe reiniciar el gate interno si la sesión ya está activa")
+	}
+	if !strings.Contains(sender.last(), "ya está ACTIVA") {
+		t.Fatalf("esperaba aviso de sesión ya activa, got %q", sender.last())
 	}
 }
 

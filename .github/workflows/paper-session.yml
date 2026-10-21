@@ -1,11 +1,11 @@
 name: TradingBot - Paper Session
 
 on:
-  # 08:00 New York de lunes a viernes. La ventana real del bot termina a las 14:00.
-  # El workflow puede arrancar con unos minutos de retraso sin cambiar la zona horaria.
-  schedule:
-    - cron: "0 8 * * 1-5"
-      timezone: "America/New_York"
+  # El disparo diario NO vive en este workflow: lo orchestra el controlador
+  # Telegram (telegram-controller.yml), que es el único dispatcher. Así solo
+  # puede existir una sesión PAPER a la vez y el arranque es autosuficiente:
+  # si el trigger se retrasa o se pierde, el controlador la relanza dentro de
+  # la ventana de recuperación (08:00-13:00, hora de Cuba).
   workflow_dispatch:
     inputs:
       restore_state:
@@ -34,7 +34,7 @@ permissions:
 
 jobs:
   paper-session:
-    name: WEEX paper trading - sesión NY
+    name: WEEX paper trading - sesión La Habana
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
@@ -49,12 +49,16 @@ jobs:
       INGEST_ENABLED: "false"
       WATCH_TRADES: "false"
 
+      # La ventana real de la sesión es 08:00 → 14:00 hora de Cuba. Con
+      # manual_session=false el gate sigue el horario y el runner termina solo
+      # al cerrar la ventana; con manual_session=true la sesión dura las 6 horas
+      # del timeout del workflow.
       TRADING_SESSION_ENABLED: "true"
       TRADING_SESSION_START_ACTIVE: ${{ inputs.manual_session == true && 'true' || 'false' }}
       TRADING_SESSION_SCHEDULE_ENABLED: ${{ inputs.manual_session == true && 'false' || 'true' }}
       TRADING_SESSION_START: "08:00"
       TRADING_SESSION_END: "14:00"
-      TRADING_SESSION_TIMEZONE: America/New_York
+      TRADING_SESSION_TIMEZONE: America/Havana
       TRADING_SESSION_EXIT_AFTER_WINDOW: "true"
 
       INVESTING_BULLS_MAIN_TIMEFRAME: 1h
@@ -70,6 +74,8 @@ jobs:
       PORT: "8080"
 
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      # Chat al que el runner avisa de que ha arrancado y de que se detiene.
+      TELEGRAM_ADMIN_CHAT_ID: ${{ vars.TELEGRAM_ADMIN_CHAT_ID }}
 
     steps:
       - name: Checkout

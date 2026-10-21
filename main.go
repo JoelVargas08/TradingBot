@@ -38,6 +38,7 @@ import (
 	"tradingview-bot/internal/session"
 	"tradingview-bot/internal/store"
 	"tradingview-bot/internal/strategymanager"
+	tginternal "tradingview-bot/internal/telegram"
 	"tradingview-bot/models"
 	"tradingview-bot/services"
 	"tradingview-bot/storage"
@@ -49,6 +50,13 @@ const (
 	maxWebhookBody  = 64 << 10 // 64KB
 	maxUploadBytes  = 15 << 20 // 15MB
 	downloadTimeout = 60 * time.Second
+	// telegramHTTPTimeout acota cada llamada HTTP a Telegram. Sin timeout el
+	// runner puede quedarse colgado esperando un long poll y la sesión PAPER
+	// no cerraría al final de la ventana.
+	telegramHTTPTimeout = 90 * time.Second
+	// telegramPollTimeout es el long poll de Telegram. Debe ser menor que
+	// telegramHTTPTimeout para que la respuesta llegue antes que el timeout.
+	telegramPollTimeout = 50 * time.Second
 )
 
 func main() {
@@ -73,8 +81,13 @@ func main() {
 	}
 	startupCancel()
 
-	// Bot de Telegram y servicio de envío
-	bot, err := tgbotapi.NewBotAPI(cfg.TelegramBotToken)
+	// Bot de Telegram y servicio de envío. El cliente HTTP lleva timeout
+	// propio para que un long poll bloqueado no deje el runner colgado.
+	bot, err := tgbotapi.NewBotAPIWithClient(
+		cfg.TelegramBotToken,
+		tgbotapi.APIEndpoint,
+		&http.Client{Timeout: telegramHTTPTimeout},
+	)
 	if err != nil {
 		log.Fatalf("Error creando bot: %v", err)
 	}
@@ -90,7 +103,7 @@ func main() {
 			info.URL,
 		)
 		log.Printf(
-			"El bot utiliza long polling; elimina el webhook antes de usar GetUpdatesChan",
+			"El bot utiliza long polling; elimina el webhook antes de usar el listener",
 		)
 	}
 
@@ -638,125 +651,43 @@ func main() {
 	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, positionsStore, tradingSession, paperEngine, workflowController)
 	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret, sqliteStore, sqliteStore, liveEngine)
 
-	// Configurar bot de Telegram para polling
+	// Polling de Telegram. El listener (internal/telegram) conserva el offset
+	// solo cuando el mensaje se ha gestionado con éxito: así ningún comando
+	// se pierde y los errores de red se reintentan con backoff.
+	dispatcher := &telegramDispatcher{
+		commands:         commandsHandler,
+		telegram:         telegram,
+		strategyCommands: strategyCommands,
+		marketCommands:   marketCommands,
+		store:            sqliteStore,
+		session:          tradingSession,
+		cfg:              cfg,
+	}
+	listener := tginternal.New(
+		tginternal.NewBotFetcher(bot),
+		dispatcher,
+		tginternal.Options{
+			PollTimeout: telegramPollTimeout,
+			BaseBackoff: 2 * time.Second,
+			MaxBackoff:  60 * time.Second,
+			MaxAttempts: 3,
+			Logf:        log.Printf,
+		},
+	)
 	log.Println("Telegram polling iniciado; esperando mensajes...")
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
-	updates := bot.GetUpdatesChan(u)
 	go func() {
-		for update := range updates {
-			log.Printf(
-				"Telegram update recibido: update_id=%d",
-				update.UpdateID,
-			)
-			if update.Message == nil {
-				continue
-			}
-			chatID := update.Message.Chat.ID
-
-			// Documento adjunto → aprender la estrategia del PDF
-			if update.Message.Document != nil {
-				if strategyCommands != nil {
-					strategyCommands.HandleDocument(chatID, update.Message.Document, update.Message.Caption)
-				} else {
-					telegram.SendMessage(chatID, "❌ Aprendizaje desde PDF no está habilitado (LLM_ENABLED=false)")
-				}
-				continue
-			}
-			if !update.Message.IsCommand() {
-				continue
-			}
-			switch update.Message.Command() {
-			case "start":
-				if strings.TrimSpace(update.Message.CommandArguments()) == "" {
-					commandsHandler.HandleSessionStart(chatID)
-				} else {
-					commandsHandler.HandleStart(chatID, update.Message.CommandArguments())
-				}
-			case "close":
-				commandsHandler.HandleClose(chatID)
-			case "myid":
-				commandsHandler.HandleMyID(chatID)
-			case "positions":
-				commandsHandler.HandlePositions(chatID)
-			case "risk":
-				commandsHandler.HandleRisk(chatID)
-			case "performance":
-				commandsHandler.HandlePerformance(chatID)
-			case "learn":
-				telegram.SendMessage(chatID, "📥 Envíame el PDF de la estrategia como documento adjunto (opcionalmente con nombre en el caption).")
-			case "learnib":
-				go runInvestingBullsLearn(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
-			case "validateib":
-				go runInvestingBullsValidate(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
-			case "learnibmtf":
-				go runInvestingBullsLearnMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg)
-			case "validateibmtf":
-				go runInvestingBullsValidateMTF(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments(), cfg, tradingSession)
-			case "ibdiag":
-				go runInvestingBullsDiag(ctx, sqliteStore, telegram, chatID, update.Message.CommandArguments())
-			case "strategies":
-				if strategyCommands != nil {
-					strategyCommands.HandleStrategies(chatID)
-				} else {
-					telegram.SendMessage(chatID, "❌ Aprendizaje desde PDF no está habilitado (LLM_ENABLED=false)")
-				}
-			case "strategy":
-				switch {
-				case marketCommands != nil:
-					marketCommands.HandleStrategy(chatID, update.Message.CommandArguments())
-				case strategyCommands != nil:
-					strategyCommands.HandleStrategy(chatID, update.Message.CommandArguments())
-				default:
-					telegram.SendMessage(chatID, "❌ Gestión de estrategias no está habilitado")
-				}
-			case "market":
-				if marketCommands != nil {
-					marketCommands.HandleMarket(chatID)
-				} else {
-					telegram.SendMessage(chatID, "❌ Mercado en vivo no está habilitado (MARKET_DATA_PROVIDER=weex)")
-				}
-			case "symbol":
-				if marketCommands != nil {
-					marketCommands.HandleSymbol(chatID, update.Message.CommandArguments())
-				} else {
-					telegram.SendMessage(chatID, "❌ Mercado en vivo no está habilitado (MARKET_DATA_PROVIDER=weex)")
-				}
-			case "timeframe":
-				if marketCommands != nil {
-					marketCommands.HandleTimeframe(chatID, update.Message.CommandArguments())
-				} else {
-					telegram.SendMessage(chatID, "❌ Mercado en vivo no está habilitado (MARKET_DATA_PROVIDER=weex)")
-				}
-			case "backtest":
-				if strategyCommands != nil {
-					strategyCommands.HandleBacktest(chatID, update.Message.CommandArguments())
-				} else {
-					telegram.SendMessage(chatID, "❌ Aprendizaje desde PDF no está habilitado (LLM_ENABLED=false)")
-				}
-			case "activate":
-				if strategyCommands != nil {
-					strategyCommands.HandleActivate(chatID, update.Message.CommandArguments())
-				} else {
-					telegram.SendMessage(chatID, "❌ Gestión de estrategias no está habilitado (LLM_ENABLED=false)")
-				}
-			case "help":
-				commandsHandler.HandleHelp(chatID)
-			case "ping":
-				commandsHandler.HandlePing(chatID)
-			case "session":
-				commandsHandler.HandleSession(chatID)
-			case "session_start":
-				commandsHandler.HandleSessionStart(chatID)
-			case "session_stop", "stop":
-				commandsHandler.HandleSessionStop(chatID)
-			case "session_schedule":
-				commandsHandler.HandleSessionSchedule(chatID)
-			default:
-				telegram.SendMessage(chatID, "Comando no reconocido. Usa /help")
-			}
+		if err := listener.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("Listener de Telegram finalizado: %v", err)
 		}
 	}()
+
+	// Aviso de arranque: el usuario recibe la confirmación de que el bot está
+	// trabajando aunque no haya conectado con Telegram durante la sesión.
+	runID := ""
+	if workflowController != nil {
+		runID = workflowController.RunID()
+	}
+	notifyAdmin(telegram, cfg.TelegramAdminChatID, startupMessage(cfg, bot, tradingSession, runID))
 
 	// Servidor HTTP para webhooks
 	mux := http.NewServeMux()
@@ -851,7 +782,9 @@ func main() {
 		log.Printf("checkpoint SQLite: %v", err)
 	}
 	checkpointCancel()
-	bot.StopReceivingUpdates()
+	// El listener se detiene con el contexto (cancel) y con el cierre del
+	// servidor HTTP; no hace falta tocar el canal interno del bot.
+	notifyAdmin(telegram, cfg.TelegramAdminChatID, shutdownMessage("fin de la sesión PAPER"))
 }
 
 func monitorInvestingBullsPaperValidation(

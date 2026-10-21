@@ -6,9 +6,11 @@ are replaced by fakes that record the HTTP requests.
 """
 from __future__ import annotations
 
+import datetime as dt
 import io
 import json
 import os
+import socket
 import sys
 import unittest
 import urllib.error
@@ -20,6 +22,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import telegram_workflow_controller as ctl  # noqa: E402
 
 ADMIN = "123456"
+UTC = dt.timezone.utc
+
+
+def _utc(year, month, day, hour=0, minute=0) -> dt.datetime:
+    return dt.datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 def _json_body(payload) -> bytes:
@@ -73,14 +80,28 @@ class FakeTelegramOpener:
         self.sent = []
         self.offsets = []
         self.conflict = False
+        self.auth_error = False
+        self.server_error = False
+        self.timeout_calls = 0
+        self.get_updates_calls = 0
 
     def __call__(self, request, timeout):
         params = urllib.parse.parse_qs(request.data.decode())
         method = request.full_url.rsplit("/", 1)[-1]
         if method == "getUpdates":
+            self.get_updates_calls += 1
+            if self.timeout_calls > 0:
+                self.timeout_calls -= 1
+                raise socket.timeout("timed out")
             if self.conflict:
                 raise _http_error(request.full_url, 409,
                                   {"ok": False, "description": "Conflict: terminated by other getUpdates request"})
+            if self.auth_error:
+                raise _http_error(request.full_url, 401,
+                                  {"ok": False, "description": "Unauthorized"})
+            if self.server_error:
+                raise _http_error(request.full_url, 502,
+                                  {"ok": False, "description": "Bad Gateway"})
             if "offset" in params:
                 self.offsets.append(int(params["offset"][0]))
                 return 200, _json_body({"ok": True, "result": []})
@@ -95,11 +116,21 @@ def message(update_id, text, chat_id=ADMIN):
     return {"update_id": update_id, "message": {"text": text, "chat": {"id": chat_id}}}
 
 
-def build_controller(gh_opener, tg_opener, admin=ADMIN):
+def run(run_id, status, created_at="2026-01-15T13:00:00Z"):
+    return {"id": run_id, "status": status, "created_at": created_at}
+
+
+def build_controller(gh_opener, tg_opener, admin=ADMIN, now=None, policy=None):
     github = ctl.GitHubClient("ghtoken", "owner/repo", opener=gh_opener)
     telegram = ctl.TelegramClient("tgtoken", opener=tg_opener)
     logs = []
-    controller = ctl.Controller(github, telegram, admin, log=logs.append)
+    # La hora por defecto queda fuera de la ventana de arranque automático para
+    # que los tests no despachen sesiones PAPER por accidente.
+    controller = ctl.Controller(
+        github, telegram, admin, log=logs.append,
+        now=now or (lambda: _utc(2026, 1, 15, 20, 0)),
+        policy=policy or ctl.AutoStartPolicy(),
+    )
     return controller, logs
 
 
@@ -138,6 +169,17 @@ class ValidateEnvTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=True):
             values = ctl._validate_env()
         self.assertEqual(values["repository"], "o/r")
+        self.assertEqual(values["timezone"], ctl.DEFAULT_TIMEZONE)
+        self.assertEqual(values["auto_start_hour"], 8)
+
+    def test_invalid_auto_start_window_is_rejected(self):
+        env = {"TELEGRAM_BOT_TOKEN": "t", "GH_TOKEN": "g", "GITHUB_REPOSITORY": "o/r",
+               "TELEGRAM_ADMIN_CHAT_ID": ADMIN,
+               "TRADINGBOT_AUTO_START_HOUR": "10", "TRADINGBOT_AUTO_START_DEADLINE_HOUR": "9"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            with self.assertRaises(ctl.ControllerError) as ctx:
+                ctl._validate_env()
+            self.assertIn("DEADLINE", str(ctx.exception))
 
 
 class GitHubClientTests(unittest.TestCase):
@@ -176,20 +218,21 @@ class GitHubClientTests(unittest.TestCase):
     def test_paper_state_splits_active_and_pending(self):
         opener = FakeGitHubOpener()
         opener.workflow_runs = [
-            {"id": 1, "status": "in_progress"},
-            {"id": 2, "status": "queued"},
-            {"id": 3, "status": "completed"},
+            run(1, "in_progress"),
+            run(2, "queued"),
+            run(3, "completed"),
         ]
         client = ctl.GitHubClient("tok", "owner/repo", opener=opener)
-        active, pending = client.paper_state()
-        self.assertEqual([r["id"] for r in active], [1])
-        self.assertEqual([r["id"] for r in pending], [2])
+        state = client.paper_state()
+        self.assertEqual([r["id"] for r in state.active], [1])
+        self.assertEqual([r["id"] for r in state.pending], [2])
+        self.assertTrue(state.has_session)
 
 
 class ControllerTests(unittest.TestCase):
     def test_active_run_does_not_consume_telegram(self):
         gh = FakeGitHubOpener()
-        gh.workflow_runs = [{"id": 7, "status": "in_progress"}]
+        gh.workflow_runs = [run(7, "in_progress")]
         tg = FakeTelegramOpener()
         tg.updates = [message(1, "/session_start")]
         controller, _ = build_controller(gh, tg)
@@ -198,10 +241,55 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(tg.offsets, [])
         self.assertEqual(gh.dispatches, [])
 
+    def test_pending_run_keeps_controller_owning_telegram(self):
+        """Un run en cola todavía no consume el token: el controlador atiende.
+
+        Es lo que permite cancelar por Telegram una ejecución que aún no ha
+        arrancado (el runner no puede recibir el comando).
+        """
+        gh = FakeGitHubOpener()
+        gh.workflow_runs = [run(7, "queued")]
+        tg = FakeTelegramOpener()
+        tg.updates = [message(1, "/session_stop")]
+        controller, _ = build_controller(gh, tg)
+        self.assertEqual(controller.run(), 0)
+        # 1 poll + 1 confirmación del offset.
+        self.assertEqual(tg.get_updates_calls, 2)
+        self.assertEqual(len(gh.cancels), 1)
+        self.assertIn("/runs/7/cancel", gh.cancels[0])
+
+    def test_pending_run_does_not_duplicate_the_start(self):
+        gh = FakeGitHubOpener()
+        gh.workflow_runs = [run(7, "queued")]
+        tg = FakeTelegramOpener()
+        tg.updates = [message(1, "/session_start")]
+        controller, _ = build_controller(gh, tg)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(gh.dispatches, [])
+        self.assertIn("cola", tg.sent[0]["text"].lower())
+
     def test_no_runs_no_updates_exits_clean(self):
         controller, logs = build_controller(FakeGitHubOpener(), FakeTelegramOpener())
         self.assertEqual(controller.run(), 0)
         self.assertTrue(any("no hay comandos" in log for log in logs))
+
+    def test_ping_is_answered(self):
+        tg = FakeTelegramOpener()
+        tg.updates = [message(11, "/ping")]
+        controller, _ = build_controller(FakeGitHubOpener(), tg)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("Pong", tg.sent[0]["text"])
+        self.assertEqual(tg.offsets, [12])
+
+    def test_help_is_answered(self):
+        tg = FakeTelegramOpener()
+        tg.updates = [message(11, "/help")]
+        controller, _ = build_controller(FakeGitHubOpener(), tg)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("/session_start", tg.sent[0]["text"])
+        self.assertIn("/session_stop", tg.sent[0]["text"])
 
     def test_session_reports_stopped(self):
         tg = FakeTelegramOpener()
@@ -209,17 +297,17 @@ class ControllerTests(unittest.TestCase):
         controller, _ = build_controller(FakeGitHubOpener(), tg)
         self.assertEqual(controller.run(), 0)
         self.assertEqual(len(tg.sent), 1)
-        self.assertIn("DETENIDO", tg.sent[0]["text"])
+        self.assertIn("DETENIDA", tg.sent[0]["text"])
         self.assertEqual(tg.offsets, [43])
 
-    def test_session_reports_queued(self):
-        gh = FakeGitHubOpener()
-        gh.workflow_runs = [{"id": 9, "status": "queued"}]
-        tg = FakeTelegramOpener()
-        tg.updates = [message(5, "/session")]
-        controller, _ = build_controller(gh, tg)
-        self.assertEqual(controller.run(), 0)
-        self.assertIn("EN COLA", tg.sent[0]["text"])
+    def test_status_text_reports_active_and_pending(self):
+        controller, _ = build_controller(FakeGitHubOpener(), FakeTelegramOpener())
+        active = ctl.PaperState(active=[run(11, "in_progress")], pending=[])
+        pending = ctl.PaperState(active=[], pending=[run(12, "queued")])
+        stopped = ctl.PaperState()
+        self.assertIn("ACTIVA", controller._status_text(active))
+        self.assertIn("EN COLA", controller._status_text(pending))
+        self.assertIn("DETENIDA", controller._status_text(stopped))
 
     def test_start_dispatches_workflow(self):
         gh = FakeGitHubOpener()
@@ -241,38 +329,45 @@ class ControllerTests(unittest.TestCase):
 
     def test_start_with_pending_does_not_dispatch_duplicate(self):
         gh = FakeGitHubOpener()
-        gh.workflow_runs = [{"id": 3, "status": "queued"}]
         tg = FakeTelegramOpener()
-        tg.updates = [message(1, "/start")]
         controller, _ = build_controller(gh, tg)
-        self.assertEqual(controller.run(), 0)
+        state = ctl.PaperState(pending=[run(3, "queued")])
+        controller._start(ADMIN, state)
         self.assertEqual(gh.dispatches, [])
         self.assertIn("cola", tg.sent[0]["text"].lower())
 
+    def test_start_with_active_does_not_dispatch_duplicate(self):
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller, _ = build_controller(gh, tg)
+        state = ctl.PaperState(active=[run(4, "in_progress")])
+        controller._start(ADMIN, state)
+        self.assertEqual(gh.dispatches, [])
+        self.assertIn("activa", tg.sent[0]["text"].lower())
+
     def test_stop_cancels_pending_run(self):
         gh = FakeGitHubOpener()
-        gh.workflow_runs = [{"id": 11, "status": "queued"}]
         tg = FakeTelegramOpener()
-        tg.updates = [message(1, "/session_stop")]
         controller, _ = build_controller(gh, tg)
-        self.assertEqual(controller.run(), 0)
+        state = ctl.PaperState(pending=[run(11, "queued")])
+        controller._stop(ADMIN, state)
         self.assertEqual(len(gh.cancels), 1)
         self.assertIn("/runs/11/cancel", gh.cancels[0])
 
-    def test_stop_alias_cancels_pending_run(self):
+    def test_stop_cancels_active_run(self):
         gh = FakeGitHubOpener()
-        gh.workflow_runs = [{"id": 11, "status": "queued"}]
         tg = FakeTelegramOpener()
-        tg.updates = [message(1, "/stop")]
         controller, _ = build_controller(gh, tg)
-        self.assertEqual(controller.run(), 0)
+        state = ctl.PaperState(active=[run(12, "in_progress")])
+        controller._stop(ADMIN, state)
         self.assertEqual(len(gh.cancels), 1)
+        self.assertIn("/runs/12/cancel", gh.cancels[0])
 
     def test_stop_without_pending_informs(self):
         tg = FakeTelegramOpener()
-        tg.updates = [message(1, "/session_stop")]
         controller, _ = build_controller(FakeGitHubOpener(), tg)
-        self.assertEqual(controller.run(), 0)
+        state = ctl.PaperState()
+        controller._stop(ADMIN, state)
         self.assertIn("No hay ninguna sesión", tg.sent[0]["text"])
 
     def test_unauthorized_chat_is_ignored(self):
@@ -284,14 +379,15 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(gh.dispatches, [])
         self.assertEqual(tg.sent, [])
 
-    def test_unknown_command_is_ignored(self):
+    def test_unknown_command_gets_hint(self):
         gh = FakeGitHubOpener()
         tg = FakeTelegramOpener()
-        tg.updates = [message(1, "/deploy")]
+        tg.updates = [message(1, "/positions")]
         controller, _ = build_controller(gh, tg)
         self.assertEqual(controller.run(), 0)
         self.assertEqual(gh.dispatches, [])
-        self.assertEqual(tg.sent, [])
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("/positions", tg.sent[0]["text"])
 
     def test_dispatch_rejected_notifies_and_fails(self):
         gh = FakeGitHubOpener()
@@ -308,17 +404,35 @@ class ControllerTests(unittest.TestCase):
         tg.conflict = True
         controller, logs = build_controller(FakeGitHubOpener(), tg)
         self.assertEqual(controller.run(), 0)
-        self.assertTrue(any("cede" in log for log in logs))
+        self.assertTrue(any("409" in log for log in logs))
+        self.assertEqual(tg.offsets, [])
+
+    def test_telegram_auth_error_is_reported_without_secret(self):
+        tg = FakeTelegramOpener()
+        tg.auth_error = True
+        controller, logs = build_controller(FakeGitHubOpener(), tg)
+        self.assertEqual(controller.run(), 1)
+        self.assertTrue(any("401" in log for log in logs))
+        self.assertFalse(any("tgtoken" in log for log in logs))
+
+    def test_transient_timeout_is_retried(self):
+        tg = FakeTelegramOpener()
+        tg.timeout_calls = 1
+        tg.updates = [message(3, "/ping")]
+        controller, logs = build_controller(FakeGitHubOpener(), tg)
+        with mock.patch("telegram_workflow_controller.time.sleep"):
+            self.assertEqual(controller.run(), 0)
+        # 1 timeout + 1 poll correcto + 1 confirmación del offset.
+        self.assertEqual(tg.get_updates_calls, 3)
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("Pong", tg.sent[0]["text"])
 
     def test_html_is_escaped_in_status(self):
-        gh = FakeGitHubOpener()
-        gh.workflow_runs = [{"id": "<b>x</b>", "status": "queued"}]
-        tg = FakeTelegramOpener()
-        tg.updates = [message(1, "/session")]
-        controller, _ = build_controller(gh, tg)
-        controller.run()
-        self.assertIn("&lt;b&gt;x&lt;/b&gt;", tg.sent[0]["text"])
-        self.assertNotIn("<b>x</b>", tg.sent[0]["text"])
+        controller, _ = build_controller(FakeGitHubOpener(), FakeTelegramOpener())
+        state = ctl.PaperState(pending=[run("<b>x</b>", "queued")])
+        text = controller._status_text(state)
+        self.assertIn("&lt;b&gt;x&lt;/b&gt;", text)
+        self.assertNotIn("<b>x</b>", text)
 
     def test_confirmation_uses_next_offset(self):
         tg = FakeTelegramOpener()
@@ -326,6 +440,130 @@ class ControllerTests(unittest.TestCase):
         controller, _ = build_controller(FakeGitHubOpener(), tg)
         controller.run()
         self.assertEqual(tg.offsets, [101])
+
+    def test_all_commands_in_batch_are_processed_once(self):
+        tg = FakeTelegramOpener()
+        tg.updates = [message(10, "/ping"), message(11, "/session")]
+        controller, _ = build_controller(FakeGitHubOpener(), tg)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(len(tg.sent), 2)
+        # Un único offset: el último update atendido + 1.
+        self.assertEqual(tg.offsets, [12])
+
+
+class AutoStartTests(unittest.TestCase):
+    """Arranque automático de la sesión PAPER a las 08:00 de Cuba."""
+
+    def _controller(self, gh, tg, now, policy=None):
+        return build_controller(gh, tg, now=now, policy=policy)[0]
+
+    def test_does_not_start_before_eight_havana(self):
+        # 07:59 en La Habana (enero, UTC-5) -> 12:59 UTC.
+        now = _utc(2026, 1, 15, 12, 59)
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(gh.dispatches, [])
+
+    def test_starts_at_eight_havana(self):
+        # 08:00 en La Habana (enero, UTC-5) -> 13:00 UTC.
+        now = _utc(2026, 1, 15, 13, 0)
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(len(gh.dispatches), 1)
+        self.assertEqual(gh.dispatches[0]["inputs"]["manual_session"], "false")
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("automático", tg.sent[0]["text"].lower())
+        # Tras despachar, el controlador no consume Telegram: el runner es el dueño.
+        self.assertEqual(tg.get_updates_calls, 0)
+
+    def test_start_follows_daylight_saving(self):
+        # En julio La Habana es UTC-4: 08:00 local -> 12:00 UTC.
+        now = _utc(2026, 7, 15, 12, 0)
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(len(gh.dispatches), 1)
+
+    def test_does_not_start_on_weekend(self):
+        # 2026-01-17 es sábado.
+        now = _utc(2026, 1, 17, 13, 0)
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(gh.dispatches, [])
+
+    def test_is_idempotent_within_the_day(self):
+        now = _utc(2026, 1, 15, 13, 0)
+        gh = FakeGitHubOpener()
+        gh.workflow_runs = [run(99, "in_progress", created_at="2026-01-15T13:00:00Z")]
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(gh.dispatches, [])
+
+    def test_cancelled_session_is_not_restarted(self):
+        now = _utc(2026, 1, 15, 14, 0)
+        gh = FakeGitHubOpener()
+        gh.workflow_runs = [run(99, "cancelled", created_at="2026-01-15T13:00:00Z")]
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(gh.dispatches, [])
+
+    def test_failed_run_is_retried(self):
+        now = _utc(2026, 1, 15, 13, 30)
+        gh = FakeGitHubOpener()
+        gh.workflow_runs = [run(99, "failed", created_at="2026-01-15T13:00:00Z")]
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(len(gh.dispatches), 1)
+
+    def test_gives_up_after_max_attempts(self):
+        now = _utc(2026, 1, 15, 13, 30)
+        gh = FakeGitHubOpener()
+        gh.workflow_runs = [
+            run(1, "failed", created_at="2026-01-15T13:00:00Z"),
+            run(2, "failed", created_at="2026-01-15T13:10:00Z"),
+            run(3, "failed", created_at="2026-01-15T13:20:00Z"),
+        ]
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(gh.dispatches, [])
+        self.assertEqual(len(tg.sent), 1)
+        self.assertIn("no arrancó", tg.sent[0]["text"])
+
+    def test_does_not_start_after_the_catch_up_window(self):
+        # 13:30 en La Habana está fuera de la ventana (08:00-13:00).
+        now = _utc(2026, 1, 15, 18, 30)
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(gh.dispatches, [])
+
+    def test_uses_the_configured_timezone(self):
+        policy = ctl.AutoStartPolicy(tz_name="America/Havana", start_hour=9,
+                                     deadline_hour=14)
+        now = _utc(2026, 1, 15, 13, 30)  # 08:30 en La Habana -> aún no
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now, policy=policy)
+        controller.run()
+        self.assertEqual(gh.dispatches, [])
+        now = _utc(2026, 1, 15, 14, 30)  # 09:30 en La Habana -> sí
+        gh = FakeGitHubOpener()
+        tg = FakeTelegramOpener()
+        controller = self._controller(gh, tg, lambda: now, policy=policy)
+        controller.run()
+        self.assertEqual(len(gh.dispatches), 1)
 
 
 if __name__ == "__main__":

@@ -5,12 +5,13 @@
 > estrategia *Investing Bulls*). El detalle de cada fase vive en los `MEMORIA_*.md`
 > enlazados al final.
 
-- **Fecha:** 2026-10-12
+- **Fecha:** 2026-10-21
 - **Módulo Go:** `tradingview-bot` (Go 1.26.2)
 - **Repositorio:** https://github.com/JoelVargas08/TradingBot
-- **Rama de trabajo:** `main`
+- **Rama de trabajo:** `fix/telegram-controller` (sin fusionar en `main`)
 - **Verificación (última):** `go build ./...`, `go vet ./...` limpios y
-  `go test ./... -count=1` → **31 paquetes OK**, 0 fallos.
+  `go test ./... -count=1` → **32 paquetes OK**, 0 fallos; controlador Python →
+  **45 tests OK**.
 - **Trading real:** **deshabilitado** por defecto (LIVE off); todo corre en PAPER.
 
 ---
@@ -84,6 +85,29 @@ Trabajo posterior sobre el flujo de operación y control (documentado en los
 - Persistencia de entradas PAPER *staged* entre reinicios del runner.
 - Diagnósticos LIVE de Investing Bulls (`/ibdiag`, `PipelineTrace`).
 - Seguridad: se exige el **chat ID de admin** de Telegram para el control de workflows.
+
+### 4.1 Reparación del controlador y arranque automático (2026-10-21)
+
+Detalle en `MEMORIA_CONTROLADOR_TELEGRAM_2026-10-21.md` y
+`PLAN_REPARACION_CONTROLADOR_TELEGRAM.md` (§7).
+
+- **Causa raíz del 401:** `\${{ secrets.GITHUB_TOKEN }}` quedaba *literal* en el
+  YAML (la barra invertida no escapa expresiones en GitHub Actions) → `GH_TOKEN`
+  inválido. Eliminado en los dos workflows.
+- **Arrastre automático** de la sesión PAPER a las **08:00 `America/Havana`**
+  (días laborables, ventana de recuperación 08:00–13:00, sensible al DST).
+- **Un único dispatcher:** `paper-session.yml` ya no tiene `on.schedule`; el
+  controlador es el único que lo despacha → no pueden coexistir dos sesiones.
+- **Un solo consumidor de `getUpdates`:** el runner es dueño del polling cuando
+  el run está `in_progress`; el controlador lo conserva cuando el run está
+  `queued` (para poder cancelarlo) o no hay runs.
+- **Listener Go** (`internal/telegram`) con offset que solo avanza tras
+  gestionar el mensaje, clasificación de errores (409/401/429/5xx/red) y backoff.
+- **Avisos al admin:** el runner anuncia `🟢 Bot PAPER en marcha` y
+  `🔴 Bot PAPER detenido`; el controlador avisa del arranque automático.
+- **Comandos:** `/ping` y `/help` responden también sin runner activo;
+  `/session_start`, `/session_stop` y `/session` reescritos según el gate real.
+- **Zona horaria** por defecto corregida a `America/Havana`.
 
 ---
 
@@ -197,6 +221,12 @@ Verificado contra `api-contract.weex.com`:
    perfil de riesgo como dimensión del `SearchSpace`.
 6. **Historia profunda:** solo se acumula por streaming WS (la API REST no permite
    backfill largo en WEEX).
+7. **Despliegue del controlador Telegram** (2026-10-21): fusionar
+   `fix/telegram-controller` en `main` (el controlador despacha con
+   `ref: main`) y crear la variable de Actions `TELEGRAM_ADMIN_CHAT_ID`.
+8. **Prueba real del ciclo** (Pruebas 2, 3 y 5 del plan de reparación): ejecutar
+   el controlador manualmente y validar inicio → `/session` → `/session_stop`
+   desde Telegram contra GitHub Actions.
 
 ---
 
@@ -205,8 +235,9 @@ Verificado contra `api-contract.weex.com`:
 ```powershell
 go build ./...
 go vet ./...
-go test ./... -count=1        # 31 paquetes OK
+go test ./... -count=1        # 32 paquetes OK
 gofmt -l <archivos nuevos>    # limpio (varios .go pre-existentes son CRLF: no reformatear)
+py -3 -m unittest discover -s .github/scripts -p "test_*.py"   # 45 tests del controlador
 ```
 
 Validación IB end-to-end sin Telegram:
@@ -231,5 +262,9 @@ go run ./cmd/ibvalidate -db <db-temporal> -symbol BTCUSDT -timeframes 1h,15m,5m 
   `TradingBot_Fase_D_E_F_Cambios.md`, `TradingBot_Fase_A1_Telegram_Cambios.md`,
   `TRADINGBOT_CAMBIOS_LEARN_MTF.md`, `TRADINGBOT_CORRECCION_HEALTH_TIMESTAMPS.md`,
   `TRADINGBOT_PLAN_COMPLETO_CAMBIOS.md`.
+- **Controlador Telegram (2026-10-21):** `docs/TELEGRAM_CONTROLLER.md` (uso y
+  operación), `PLAN_REPARACION_CONTROLADOR_TELEGRAM.md` (plan + estado),
+  `MEMORIA_CONTROLADOR_TELEGRAM_2026-10-21.md` (memoria de la sesión),
+  `solicitud_opencode_correccion_telegram.md` (encargo original).
 - **Despliegue:** `DEPLOYMENT.md`, `TRADINGVIEW_WEBHOOK_SETUP.md`.
 - **Bitácoras de sesión:** `Bitacora_Sesion_*.md`.

@@ -1,66 +1,96 @@
 # Controlador de Telegram ↔ GitHub Actions (sesiones PAPER)
 
-Este documento describe cómo iniciar, consultar y detener la sesión PAPER de
-TradingBot desde Telegram sin depender de que el ordenador personal esté
-encendido. **Todo el flujo permanece en modo PAPER: ningún comando habilita
-trading real.**
+Este documento describe cómo la sesión PAPER de TradingBot **arranca sola** a las
+08:00 de Cuba (incluso con el usuario sin conectar a Telegram) y cómo se
+controla desde el chat. **Todo el flujo permanece en modo PAPER: ningún comando
+habilita trading real.**
 
 ## Arquitectura
 
 ```text
-Telegram (chat admin)
-        │
-        ▼
-.github/workflows/telegram-controller.yml   (cada 5 min / manual)
-        │  .github/scripts/telegram_workflow_controller.py
-        │
-        ├─ si hay un run PAPER in_progress → NO consume Telegram (el runner es el dueño del polling)
-        ├─ si no hay run            → responde /session y arranca con /start | /session_start
-        └─ si hay un run en cola     → informa "EN COLA" y cancela con /stop | /session_stop
-        │
-        ▼
-.github/workflows/paper-session.yml         (runner PAPER, WEEX, estado persistido)
-        │  el propio bot procesa Telegram mientras está activo
-        └─ /session_stop o /stop cancela su propia ejecución (GITHUB_TOKEN)
+                    ┌──────────────────────────────────────────────┐
+                    │  .github/workflows/telegram-controller.yml   │
+                    │  (cada 5 min · cron sin zona horaria)        │
+                    │  .github/scripts/telegram_workflow_controller.py
+                    └───────────────┬──────────────────────────────┘
+                                    │  1. consulta los runs de paper-session.yml
+                                    │  2. arranca la sesión del día si toca
+                                    │     (08:00–13:00, America/Havana)
+                                    │  3. si NO hay runner activo: consume
+                                    │     getUpdates y atiende /ping, /help,
+                                    │     /session, /session_start, /session_stop
+                                    ▼
+                    ┌──────────────────────────────────────────────┐
+                    │  .github/workflows/paper-session.yml         │
+                    │  (runner PAPER · WEEX · estado persistido)   │
+                    │  main.go → internal/telegram.Listener         │
+                    │  el runner es el dueño de getUpdates y avisa │
+                    │  por Telegram que ya está trabajando          │
+                    └──────────────────────────────────────────────┘
 ```
 
-El traspaso de `getUpdates` es estricto: mientras el runner PAPER está
-`in_progress`, el controlador no llama a `getUpdates`; cuando el runner no
-existe, solo el controlador consume Telegram para comandos de ciclo de vida.
+### Un solo consumidor de `getUpdates` por token
 
-## Causa raíz del error 401
+Telegram permite un único `getUpdates` activo por token: dos consumidores
+provocan `HTTP 409 Conflict` y Updates se pierden. La regla del diseño es:
 
-El workflow usaba, de forma literal en el YAML:
+| Estado de GitHub Actions | Dueño de `getUpdates` | Quién responde |
+| --- | --- | --- |
+| Run `in_progress` | **el runner** (Go) | `/ping`, `/help`, `/session`, `/positions`, `/risk`, … |
+| Run `queued` (sin runner aún) | **el controlador** (Python) | `/session_stop` cancela la ejecución en cola por API |
+| Sin runs | **el controlador** (Python) | `/ping`, `/help`, `/session`, `/session_start`, `/session_stop` |
 
-```yaml
-GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-```
+El runner, al arrancar, puede encontrar un `409` si el controlador tenía el
+token en ese instante: el listener lo clasifica y reintenta con backoff
+exponencial, sin perder ningún mensaje.
 
-La barra invertida no escapa expresiones en GitHub Actions: el valor de
-`GH_TOKEN` quedaba como `\<token>`, por lo que el encabezado
-`Authorization: Bearer \<token>` era inválido y la API respondía **401**.
-El mismo defecto afectaba a `GITHUB_REPOSITORY` y, en `paper-session.yml`, a
-`TRADING_SESSION_START_ACTIVE` (una sesión arrancada desde Telegram no abría el
-gate interno). Se eliminaron las barras invertidas.
+## Arranque automático a las 08:00 (America/Havana)
 
-`GITHUB_TOKEN` integrado **sí** autentica los endpoints usados
-(`listar runs`, `dispatches`, `cancel`) gracias a `permissions: actions: write`.
-No es obligatorio un PAT. Opcionalmente puede definirse el secreto
-`TRADINGBOT_ACTIONS_TOKEN` y el workflow lo preferirá.
+- El **controlador es el único dispatcher** de `paper-session.yml`: el
+  `on.schedule` se eliminó del workflow del runner para que no puedan coexistir
+  dos sesiones PAPER (el grupo de concurrencia `tradingbot-paper-session`
+  dejaría la segunda en cola, no la impediría).
+- Cada ciclo (5 min) comprueba `AutoStartPolicy.is_due()`: día laborable
+  (lunes–viernes) y hora local entre las 08:00 y las 13:00. La zona se calcula
+  con `zoneinfo`, de modo que el cambio de horario de verano de Cuba se respeta
+  sin ajustar nada a mano.
+- **Ventana de recuperación:** si el trigger se retrasa o se pierde, el ciclo
+  siguiente arranca la sesión dentro de la ventana. Por eso la ventana acaba a
+  las 13:00 y no a las 08:05.
+- **Idempotencia:** si hoy ya existe un run creado desde la medianoche local
+  que no esté `failed`, no se despacha otro.
+- **Reintentos:** los runs `failed` sí cuentan como intento fallido y se
+  reintentan hasta `MAX_AUTO_ATTEMPTS = 3` por día. Al agotarlos, el
+  controlador avisa al administrador y no insiste más.
+- Un run `cancelled` **no** se relanza: el operador lo detuvo a propósito.
+
+### Variantes de sesión
+
+| Disparador | `manual_session` | Gate interno | Duración |
+| --- | --- | --- | --- |
+| Automático (08:00) | `false` | horario 08:00–14:00 `America/Havana` | hasta las 14:00 |
+| Manual (`/session_start`) | `true` | activo desde el arranque | 6 h (`timeout-minutes: 360`) |
+
+## Avisos al administrador
+
+- **Controlador**: avisa cuando el arranque automático dispara el workflow y
+  cuando un fallo impide hacerlo.
+- **Runner**: al arrancar envía `🟢 Bot PAPER en marcha` (con estado de la
+  sesión, zona horaria y `GITHUB_RUN_ID`) y al terminar `🔴 Bot PAPER
+  detenido`. Telegram entrega el mensaje aunque el usuario esté desconectado:
+  queda en cola y se ve al volver a abrir el cliente.
 
 ## Comandos (solo el chat admin `TELEGRAM_ADMIN_CHAT_ID`)
 
-| Comando | Comportamiento |
-| --- | --- |
-| `/session` | Estado real de GitHub Actions: `🔴 DETENIDO`, `🟡 EN COLA` o `🟢 ACTIVO`. |
-| `/session_start` | Lanza el workflow PAPER si no hay sesión activa ni en cola. |
-| `/start` (sin args) | Alias de `/session_start`. |
-| `/session_stop` | Cancela el workflow PAPER (en cola o activo). |
-| `/stop` | Alias de `/session_stop`. |
-| `/start <chat_id>` | Activar alertas para ese chat (función original conservada). |
-
-Otros comandos del bot (`/ping`, `/positions`, `/risk`, `/performance`, etc.)
-siguen operando igual dentro del runner.
+| Comando | Quién responde | Comportamiento |
+| --- | --- | --- |
+| `/session` | controlador o runner | Estado real: `🔴 DETENIDA`, `🟡 EN COLA` o `🟢 ACTIVA`. |
+| `/session_start` | controlador | Lanza el workflow PAPER si no hay sesión activa ni en cola. |
+| `/start` (sin args) | controlador | Alias de `/session_start`. |
+| `/session_stop` | controlador o runner | Cancela el workflow PAPER (en cola o activo). |
+| `/stop` | controlador o runner | Alias de `/session_stop`. |
+| `/ping`, `/help` | controlador o runner | Estado del bot. |
+| `/start <chat_id>` | runner | Activar alertas para ese chat (función original conservada). |
 
 ## Iniciar / detener
 
@@ -71,7 +101,9 @@ siguen operando igual dentro del runner.
   - si la sesión está **en cola**, el controlador llama a
     `POST /repos/{repo}/actions/runs/{id}/cancel`;
   - si está **activa**, el propio runner cancela su ejecución
-    (`GITHUB_RUN_ID`) usando `internal/githubactions`.
+    (`GITHUB_RUN_ID`) usando `internal/githubactions` y cierra antes el gate
+    interno, de modo que ninguna operación nueva se abre aunque la cancelación
+    falle.
   - La confirmación se envía solo cuando GitHub aceptó la operación; la
     cancelación es asíncrona y se comprueba con `/session`.
 
@@ -87,35 +119,69 @@ siguen operando igual dentro del runner.
   runs activos o en cola, y el grupo de concurrencia `tradingbot-paper-session`
   evita solapamientos.
 
-## Configuración manual en GitHub (una sola vez)
+## Configuración en GitHub (una sola vez)
 
-1. **Settings → Secrets and variables → Actions → Variables**, crear
-   `TELEGRAM_ADMIN_CHAT_ID` con el chat ID del administrador. Sin esta variable
-   el controlador se bloquea por seguridad.
+1. **Settings → Secrets and variables → Actions → Variables**:
+   - `TELEGRAM_ADMIN_CHAT_ID` (obligatoria): chat ID del administrador. Sin
+     esta variable el controlador se bloquea por seguridad.
+   - `TRADINGBOT_DISPATCH_REF` (opcional): rama desde la que se despacha el
+     workflow PAPER. Por defecto `main`.
 2. **Secrets**: `TELEGRAM_BOT_TOKEN` (ya existente). Opcional
    `TRADINGBOT_ACTIONS_TOKEN` (PAT con permiso `Actions: read and write` sobre
    el repositorio) si se quiere usar un token dedicado en lugar del integrado.
-3. Asegurar que **Actions** está habilitado y que el workflow
-   `TradingBot - Telegram Workflow Controller` puede ejecutarse (schedule y
-   `workflow_dispatch`).
+3. **Variables de entorno del controlador** (editables en el workflow):
+   `TRADINGBOT_TIMEZONE` (por defecto `America/Havana`),
+   `TRADINGBOT_AUTO_START_HOUR` (`8`) y
+   `TRADINGBOT_AUTO_START_DEADLINE_HOUR` (`13`).
+4. **Variables del runner**: `TELEGRAM_ADMIN_CHAT_ID` (misma variable de
+   Actions) para que el bot pueda avisar de su arranque.
+
+> El workflow se despacha con `ref: main`. Hasta que los cambios no estén
+> fusionados en `main`, el runner seguirá ejecutando el código anterior.
+
+## Variables de entorno (resumen)
+
+| Variable | Dónde | Para qué |
+| --- | --- | --- |
+| `TELEGRAM_BOT_TOKEN` | ambos | Token del bot. |
+| `TELEGRAM_ADMIN_CHAT_ID` | ambos | Único chat autorizado a controlar. |
+| `GH_TOKEN` / `GITHUB_TOKEN` | controlador / runner | Permisos `actions: write`. |
+| `TRADINGBOT_TIMEZONE` | controlador | Zona de la sesión y de los avisos. |
+| `TRADINGBOT_AUTO_START_HOUR` | controlador | Hora local del arranque automático. |
+| `TRADINGBOT_AUTO_START_DEADLINE_HOUR` | controlador | Fin de la ventana de recuperación. |
+| `TRADINGBOT_DISPATCH_REF` | controlador | Rama desde la que se despacha. |
+| `TRADING_SESSION_TIMEZONE` | runner | Zona de la ventana del gate (`America/Havana`). |
+| `TRADING_SESSION_START` / `_END` | runner | Ventana de la sesión (08:00 / 14:00). |
+| `TRADING_SESSION_EXIT_AFTER_WINDOW` | runner | El runner termina al cerrar la ventana. |
 
 ## Tests
 
 ```bash
-python -m unittest discover -s .github/scripts -p "test_*.py"   # controlador
+python3 -m unittest discover -s .github/scripts -p "test_*.py"   # controlador
 go build ./... && go vet ./... && go test ./...                  # bot y runner
 ```
 
-El workflow `CI` ejecuta ambos conjuntos. No requieren tokens reales ni envían
+El workflow `CI` ejecuta ambos conjuntos (45 casos del controlador y la suite
+Go, incluido `internal/telegram`). No requieren tokens reales ni envían
 órdenes.
 
 ## Limitaciones conocidas
 
-- El controlador y el bot comparten un único token de Telegram. Si ambos
-  hicieran polling a la vez habría conflicto; por diseño el controlador cede
-  cuando detecta un runner activo o un `409 Conflict`. Usar un bot de Telegram
-  exclusivo para el controlador eliminaría cualquier carrera residual.
-- Para reconocer un comando, `getUpdates` con `offset` confirma también los
-  updates anteriores (semántica de Telegram). El controlador confirma
-  exactamente hasta el comando atendido y no avanza más, de modo que los
-  updates posteriores quedan disponibles para el runner.
+- El controlador y el runner comparten un único token de Telegram. La regla de
+  propiedad del polling elimina la carrera habitual, pero en el instante en que
+  el runner arranca puede heredar un `409`; el listener lo reintenta con
+  backoff. Usar un bot de Telegram exclusivo para el controlador eliminaría
+  cualquier carrera residual.
+- El runner es efímero: si arranca fuera de la ventana 08:00–14:00 con
+  `manual_session=false` se apaga limpiamente. El arranque automático está
+  limitado a la ventana 08:00–13:00 para que siempre haya margen.
+- GitHub Actions no garantiza la hora exacta de los `schedule`: el reloj de
+  la interfaz puede retrasarse varios minutos. La ventana de 08:00–13:00
+  absorbe ese margen, pero no lo elimina.
+- Los cron de GitHub Actions se interpretan en UTC. El controlador no usa
+  cron para la sesión diaria: calcula la hora local con `zoneinfo`.
+- El `long poll` de Telegram entrega los mensajes aunque el usuario esté
+  desconectado, pero si el usuario los reenvía desde otro cliente se generates
+  **otro** `update_id`: el comando se ejecutaría dos veces. El controlador es
+  idempotente (no duplica sesiones), pero `/session_start` manual se despacha
+  una vez y el runner lo confirma.

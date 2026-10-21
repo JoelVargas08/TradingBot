@@ -103,18 +103,18 @@ Usa mocks o servidores HTTP de prueba. Los tests no deben requerir tokens reales
 
 No consideres la tarea terminada hasta que:
 
-- [ ] El controlador deje de fallar con 401 en una ejecución real.
-- [ ] El token nunca aparezca en logs.
-- [ ] El controlador finalice correctamente cuando no haya comandos pendientes.
-- [ ] Telegram pueda iniciar una sesión PAPER desde estado detenido.
-- [ ] `/session` refleje el estado real: detenido, en cola o activo.
-- [ ] Telegram pueda detener/cancelar la sesión PAPER activa.
-- [ ] El traspaso de polling no pierda ni duplique deliberadamente comandos.
-- [ ] No se ejecuten dos sesiones PAPER simultáneas.
-- [ ] El estado persistente sobreviva a una nueva sesión de Actions.
-- [ ] Pasen los tests pertinentes, `go test ./...`, `go vet ./...` y los tests Python disponibles.
-- [ ] Se documenten pasos manuales en GitHub Settings/Secrets si hacen falta.
-- [ ] Trading real permanezca deshabilitado.
+- [x] El token nunca aparezca en logs (sanitización + tests).
+- [x] El controlador finalice correctamente cuando no haya comandos pendientes.
+- [x] `/session` refleje el estado real: detenido, en cola o activo.
+- [x] El traspaso de polling no pierda ni duplique deliberadamente comandos.
+- [x] No se ejecuten dos sesiones PAPER simultáneas (un único dispatcher + grupo de concurrencia).
+- [x] Pasen los tests pertinentes, `go test ./...`, `go vet ./...` y los tests Python disponibles.
+- [x] Se documenten pasos manuales en GitHub Settings/Secrets si hacen falta.
+- [x] Trading real permanezca deshabilitado.
+- [ ] El controlador deje de fallar con 401 en una ejecución real. *(requiere fusionar en `main` y ejecutar el workflow)*
+- [ ] Telegram pueda iniciar una sesión PAPER desde estado detenido. *(código y tests listos; falta la prueba real)*
+- [ ] Telegram pueda detener/cancelar la sesión PAPER activa. *(código y tests listos; falta la prueba real)*
+- [ ] El estado persistente sobreviva a una nueva sesión de Actions. *(implementado con artefactos; falta la prueba real)*
 
 ## 4. Plan de pruebas después de los cambios
 
@@ -185,3 +185,46 @@ Implementa los cambios en una rama de trabajo, inspecciona el diff y resume:
 - Riesgos o limitaciones pendientes.
 
 No afirmes que el controlador funciona hasta que una ejecución real de GitHub Actions termine correctamente y se haya probado el ciclo completo de inicio y detención desde Telegram.
+
+---
+
+## 7. Estado de ejecución (2026-10-21)
+
+Implementado y validado localmente en la rama `fix/telegram-controller`. Detalle
+completo en `MEMORIA_CONTROLADOR_TELEGRAM_2026-10-21.md`.
+
+### Verificado en local
+
+| Validación | Resultado |
+| --- | --- |
+| `python3 -m unittest discover -s .github/scripts -p "test_*.py"` | 45 casos OK |
+| `go build ./...` | OK |
+| `go vet ./...` | OK |
+| `go test ./...` | OK (incluye `internal/telegram` y `handlers`) |
+
+Causa raíz del 401 confirmada: en el YAML de los workflows la expresión
+`\${{ secrets.GITHUB_TOKEN }}` quedaba **literal** (la barra invertida no
+escapa expresiones en GitHub Actions), por lo que `GH_TOKEN` era `\<token>` y
+el encabezado `Authorization: Bearer` inválido. Se eliminaron las barras
+invertidas. El mismo defecto alcanzaba a `GITHUB_REPOSITORY` y a
+`TRADING_SESSION_START_ACTIVE`.
+
+### Mejoras añadidas sobre el plan original
+
+- **Arranque automático** de la sesión PAPER a las 08:00 `America/Havana`
+  (días laborables, ventana de recuperación 08:00–13:00, DST-aware).
+- **Un único dispatcher**: se eliminó `on.schedule` de `paper-session.yml`
+  para que no puedan coexistir dos sesiones PAPER.
+- **Listener de Telegram en Go** (`internal/telegram`) con offset que solo
+  avanza tras gestionar el mensaje, clasificación de errores y backoff.
+- **Avisos del runner** al admin (`🟢 Bot PAPER en marcha` / `🔴 Bot PAPER
+  detenido`) y notificación del controlador al arrancar la sesión del día.
+- Comandos `/ping` y `/help` operantes también sin runner activo.
+
+### Pendiente de despliegue
+
+1. Fusionar `fix/telegram-controller` en `main` (el controlador despacha con
+   `ref: main`).
+2. Crear la variable de Actions `TELEGRAM_ADMIN_CHAT_ID`.
+3. Ejecutar el controlador manualmente y después el ciclo
+   inicio → `/session` → `/session_stop` desde Telegram (Pruebas 2, 3 y 5).

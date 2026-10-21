@@ -297,6 +297,30 @@ func (m *Manager) ActiveInWindow(now time.Time) bool {
 	return m.inWindow(now)
 }
 
+// RemainingWindow devuelve el tiempo que falta para el cierre de la ventana
+// programada. Si no hay horario devuelve 0. Es la información que el bot
+// necesita para informar cuánto tiempo queda de sesión.
+func (m *Manager) RemainingWindow() time.Duration {
+	m.mu.RLock()
+	s := m.schedule
+	m.mu.RUnlock()
+	if !s.Enabled {
+		return 0
+	}
+	loc := s.Location
+	if loc == nil {
+		loc = time.Local
+	}
+	now := time.Now().In(loc)
+	endMinutes := minutesOf(s.End)
+	end := time.Date(now.Year(), now.Month(), now.Day(), endMinutes/60, endMinutes%60, 0, 0, loc)
+	if !end.After(now) {
+		// Ventana que cruza la medianoche (22:00 → 06:00).
+		end = end.Add(24 * time.Hour)
+	}
+	return end.Sub(now)
+}
+
 func (m *Manager) inWindow(now time.Time) bool {
 	if !m.schedule.Enabled {
 		return true

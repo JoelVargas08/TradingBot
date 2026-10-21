@@ -10,31 +10,34 @@ import (
 )
 
 type Config struct {
-	TelegramBotToken  string
-	WebhookSecret     string
-	Port              string
-	StorageFile       string
-	DBFile            string
-	Mode              string // paper | live
-	Symbols           []string
-	Timeframes        []string
-	IngestEnabled     bool
-	WatchTrades       bool
-	WhaleUSD          float64
-	BinanceWSURL      string
-	BinanceRestURL    string
-	SentimentEnabled  bool
-	SentimentInterval time.Duration
-	CoinGeckoKey      string
-	RiskEnabled       bool
-	RiskPct           float64
-	MinRR             float64
-	MaxOpenPositions  int
-	KillSwitchPct     float64
-	StartingBalance   float64
-	DefaultStopPct    float64
-	DominanceEnabled  bool
-	DominanceBTCFloor float64
+	TelegramBotToken string
+	// TelegramAdminChatID es el chat al que el runner avisa de su arranque y
+	// de los errores de control. 0 = sin notificaciones de administración.
+	TelegramAdminChatID int64
+	WebhookSecret       string
+	Port                string
+	StorageFile         string
+	DBFile              string
+	Mode                string // paper | live
+	Symbols             []string
+	Timeframes          []string
+	IngestEnabled       bool
+	WatchTrades         bool
+	WhaleUSD            float64
+	BinanceWSURL        string
+	BinanceRestURL      string
+	SentimentEnabled    bool
+	SentimentInterval   time.Duration
+	CoinGeckoKey        string
+	RiskEnabled         bool
+	RiskPct             float64
+	MinRR               float64
+	MaxOpenPositions    int
+	KillSwitchPct       float64
+	StartingBalance     float64
+	DefaultStopPct      float64
+	DominanceEnabled    bool
+	DominanceBTCFloor   float64
 
 	// Aprendizaje desde PDF (Fase 4)
 	LLMEnabled      bool
@@ -90,19 +93,19 @@ type Config struct {
 	WeexBackfillBars   int
 
 	// Investing Bulls multi-timeframe (configuración centralizada).
-	IBMainTimeframe    string
-	IBEntryTimeframe   string
-	IBConfirmTimeframe string
-	IBConfirm5M        bool
-	IBMinTrades        int
-	IBValidationMinTrades int
+	IBMainTimeframe        string
+	IBEntryTimeframe       string
+	IBConfirmTimeframe     string
+	IBConfirm5M            bool
+	IBMinTrades            int
+	IBValidationMinTrades  int
 	IBValidationMinWinRate float64
-	IBMaxStopPct       float64
-	IBWFFolds          int
-	IBWFTrainPct       float64
-	IBWFOOSPct         float64
-	IBWFStepPct        float64
-	IBRetrainHours     int
+	IBMaxStopPct           float64
+	IBWFFolds              int
+	IBWFTrainPct           float64
+	IBWFOOSPct             float64
+	IBWFStepPct            float64
+	IBRetrainHours         int
 }
 
 func Load() (*Config, error) {
@@ -168,7 +171,7 @@ func Load() (*Config, error) {
 		TradingSessionScheduleEnabled: getEnvBool("TRADING_SESSION_SCHEDULE_ENABLED", false),
 		TradingSessionStart:           getEnv("TRADING_SESSION_START", "09:00"),
 		TradingSessionEnd:             getEnv("TRADING_SESSION_END", "17:00"),
-		TradingSessionTimezone:        getEnv("TRADING_SESSION_TIMEZONE", "America/New_York"),
+		TradingSessionTimezone:        getEnv("TRADING_SESSION_TIMEZONE", "America/Havana"),
 		TradingSessionExitAfterWindow: getEnvBool("TRADING_SESSION_EXIT_AFTER_WINDOW", false),
 
 		// Fuente de mercado WEEX (Fase 2)
@@ -186,19 +189,19 @@ func Load() (*Config, error) {
 		WeexBackfillBars:   getEnvInt("WEEX_BACKFILL_BARS", 1000),
 
 		// Investing Bulls multi-timeframe (Fase 7)
-		IBMainTimeframe:    getEnv("INVESTING_BULLS_MAIN_TIMEFRAME", "1h"),
-		IBEntryTimeframe:   getEnv("INVESTING_BULLS_ENTRY_TIMEFRAME", "15m"),
-		IBConfirmTimeframe: getEnv("INVESTING_BULLS_CONFIRM_TIMEFRAME", "5m"),
-		IBConfirm5M:        getEnvBool("INVESTING_BULLS_CONFIRM_5M", true),
-		IBMinTrades:        getEnvInt("INVESTING_BULLS_MIN_TRADES", 8),
-		IBValidationMinTrades: getEnvInt("INVESTING_BULLS_VALIDATION_MIN_TRADES", 100),
+		IBMainTimeframe:        getEnv("INVESTING_BULLS_MAIN_TIMEFRAME", "1h"),
+		IBEntryTimeframe:       getEnv("INVESTING_BULLS_ENTRY_TIMEFRAME", "15m"),
+		IBConfirmTimeframe:     getEnv("INVESTING_BULLS_CONFIRM_TIMEFRAME", "5m"),
+		IBConfirm5M:            getEnvBool("INVESTING_BULLS_CONFIRM_5M", true),
+		IBMinTrades:            getEnvInt("INVESTING_BULLS_MIN_TRADES", 8),
+		IBValidationMinTrades:  getEnvInt("INVESTING_BULLS_VALIDATION_MIN_TRADES", 100),
 		IBValidationMinWinRate: getEnvFloat("INVESTING_BULLS_VALIDATION_MIN_WIN_RATE", 0.75),
-		IBMaxStopPct:       getEnvFloat("INVESTING_BULLS_MAX_STOP", 0.02),
-		IBWFFolds:          getEnvInt("INVESTING_BULLS_WF_FOLDS", 4),
-		IBWFTrainPct:       getEnvFloat("INVESTING_BULLS_WF_TRAIN_PCT", 0.60),
-		IBWFOOSPct:         getEnvFloat("INVESTING_BULLS_WF_OOS_PCT", 0.10),
-		IBWFStepPct:        getEnvFloat("INVESTING_BULLS_WF_STEP_PCT", 0.10),
-		IBRetrainHours:     getEnvInt("INVESTING_BULLS_RETRAIN_HOURS", 24),
+		IBMaxStopPct:           getEnvFloat("INVESTING_BULLS_MAX_STOP", 0.02),
+		IBWFFolds:              getEnvInt("INVESTING_BULLS_WF_FOLDS", 4),
+		IBWFTrainPct:           getEnvFloat("INVESTING_BULLS_WF_TRAIN_PCT", 0.60),
+		IBWFOOSPct:             getEnvFloat("INVESTING_BULLS_WF_OOS_PCT", 0.10),
+		IBWFStepPct:            getEnvFloat("INVESTING_BULLS_WF_STEP_PCT", 0.10),
+		IBRetrainHours:         getEnvInt("INVESTING_BULLS_RETRAIN_HOURS", 24),
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "paper"
@@ -206,6 +209,11 @@ func Load() (*Config, error) {
 	if cfg.Mode != "paper" && cfg.Mode != "live" {
 		return nil, fmt.Errorf("TRADING_MODE/MODE inválido: use paper o live (dado %q)", cfg.Mode)
 	}
+	adminChatID, err := getEnvInt64("TELEGRAM_ADMIN_CHAT_ID", 0)
+	if err != nil {
+		return nil, fmt.Errorf("TELEGRAM_ADMIN_CHAT_ID inválido: %w", err)
+	}
+	cfg.TelegramAdminChatID = adminChatID
 	if cfg.Mode == "live" {
 		if !cfg.LiveTradingConfirm {
 			return nil, errors.New("TRADING_MODE=LIVE exige LIVE_TRADING_CONFIRM=true")
@@ -304,4 +312,19 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 	return parsed
+}
+
+// getEnvInt64 lee un entero de 64 bits. A diferencia de getEnvInt, un valor
+// mal formado es un error: un chat id corrupto desactivaría en silencio las
+// notificaciones de administración.
+func getEnvInt64(key string, fallback int64) (int64, error) {
+	value, exists := os.LookupEnv(key)
+	if !exists || value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s=%q no es un entero válido", key, value)
+	}
+	return parsed, nil
 }

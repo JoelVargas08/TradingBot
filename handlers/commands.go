@@ -30,12 +30,21 @@ type SessionController interface {
 	TimezoneName() string
 }
 
+// RemainingWindowProvider es opcional: si el control de sesión lo implementa,
+// el bot informa del tiempo que falta para el cierre de la ventana.
+type RemainingWindowProvider interface {
+	RemainingWindow() time.Duration
+}
+
 // PerformanceProvider ofrece métricas de paper trading al handler.
 type PerformanceProvider interface {
 	Performance(ctx context.Context) (domain.Performance, error)
 }
 
 // WorkflowController controls the lifecycle of the GitHub Actions runner.
+// Available() indica que el bot se está ejecutando dentro de un workflow, no
+// que exista una sesión de trading activa: el estado real de la sesión lo
+// gobierna SessionController.
 type WorkflowController interface {
 	Available() bool
 	CancelCurrent(context.Context) error
@@ -104,24 +113,15 @@ func (ch *CommandsHandler) HandlePing(chatID int64) {
 	)
 }
 func (ch *CommandsHandler) HandleSession(chatID int64) {
-	if ch.workflow != nil && ch.workflow.Available() {
-		if ch.session != nil && ch.session.IsActive() {
-			started := ch.session.StartedAt()
-			startText := "-"
-			if !started.IsZero() {
-				startText = started.Format("2006-01-02 15:04:05")
-			}
-			ch.telegram.SendMessage(chatID, fmt.Sprintf(
-				"🟢 <b>Workflow PAPER ACTIVO</b>\n\nRun: <code>%s</code>\nIniciada: %s\nWEEX: runner activo\nNuevas operaciones: habilitadas",
-				ch.workflow.RunID(), startText))
-			return
-		}
-		ch.telegram.SendMessage(chatID, "🔴 <b>Workflow PAPER DETENIDO</b>\n\nRunner: apagado\nWEEX: desconectado\nUsa /session_start para iniciar una nueva sesión.")
-		return
-	}
 	if ch.session == nil {
 		ch.telegram.SendMessage(chatID, "❌ Control de sesión no disponible")
 		return
+	}
+	runText := ""
+	if ch.workflow != nil {
+		if runID := ch.workflow.RunID(); runID != "" {
+			runText = fmt.Sprintf("\nRun: <code>%s</code>", runID)
+		}
 	}
 	if ch.session.IsActive() {
 		started := ch.session.StartedAt()
@@ -129,40 +129,56 @@ func (ch *CommandsHandler) HandleSession(chatID int64) {
 		if !started.IsZero() {
 			startText = started.Format("2006-01-02 15:04:05")
 		}
-		ch.telegram.SendMessage(chatID, fmt.Sprintf("🟢 <b>Sesión de trading ACTIVA</b>\n\nIniciada: %s\nNuevas operaciones: habilitadas", startText))
+		ch.telegram.SendMessage(chatID, fmt.Sprintf(
+			"🟢 <b>Sesión PAPER ACTIVA</b>%s\n\n"+
+				"Iniciada: %s%s\n"+
+				"Nuevas operaciones: habilitadas",
+			runText, startText, ch.remainingWindowText()))
 		return
 	}
-	ch.telegram.SendMessage(chatID, "🔴 <b>Sesión de trading DETENIDA</b>\n\nNuevas operaciones: deshabilitadas")
+	ch.telegram.SendMessage(chatID, "🔴 <b>Sesión PAPER DETENIDA</b>\n\n"+
+		"Nuevas operaciones: deshabilitadas\n"+
+		"Usa /session_start para arrancarla.")
 }
 
 func (ch *CommandsHandler) HandleSessionStart(chatID int64) {
-	if ch.workflow != nil && ch.workflow.Available() {
-		ch.telegram.SendMessage(chatID, "ℹ️ El workflow PAPER ya está activo; /session_start no cambia el gate interno.")
-		return
-	}
 	if ch.session == nil {
 		ch.telegram.SendMessage(chatID, "❌ Control de sesión no disponible")
+		return
+	}
+	// El estado de la sesión lo gobierna el gate interno, no la presencia del
+	// workflow:.available() solo indica que el bot corre dentro de Actions.
+	if ch.session.IsActive() {
+		ch.telegram.SendMessage(chatID, "ℹ️ La sesión PAPER ya está ACTIVA; no se arranca otra.\n"+
+			"Usa /session_stop para detenerla.")
 		return
 	}
 	ch.session.Start()
-	ch.telegram.SendMessage(chatID, "🟢 <b>Sesión de trading INICIADA</b>\n\nModo: PAPER\nNuevas operaciones: habilitadas")
+	ch.telegram.SendMessage(chatID, "🟢 <b>Sesión PAPER INICIADA</b>\n\n"+
+		"Nuevas operaciones: habilitadas\n"+
+		"Las posiciones abiertas no se cierran automáticamente.")
 }
 
 func (ch *CommandsHandler) HandleSessionStop(chatID int64) {
+	// Primero se cierra el gate interno: así ninguna operación nueva se abre
+	// aunque la cancelación del workflow tarde o falle.
+	if ch.session != nil {
+		ch.session.Stop()
+	}
 	if ch.workflow != nil && ch.workflow.Available() {
 		if err := ch.workflow.CancelCurrent(context.Background()); err != nil {
-			ch.telegram.SendMessage(chatID, "❌ No pude cancelar el workflow PAPER: "+err.Error())
+			ch.telegram.SendMessage(chatID, "🔴 <b>Sesión PAPER DETENIDA</b>\n\n"+
+				"No se abrirán nuevas posiciones.\n\n"+
+				"⚠️ No pude cancelar la ejecución del workflow: "+err.Error())
 			return
 		}
-		ch.telegram.SendMessage(chatID, "🔴 <b>Apagado solicitado</b>\n\nGitHub Actions está cancelando el runner. WEEX se desconectará durante el shutdown. Las posiciones abiertas no se cierran automáticamente.")
+		ch.telegram.SendMessage(chatID, "🔴 <b>Sesión PAPER DETENIDA</b>\n\n"+
+			"No se abrirán nuevas posiciones. Las posiciones existentes no se cierran automáticamente.\n\n"+
+			"GitHub Actions está cancelando la ejecución del runner.")
 		return
 	}
-	if ch.session == nil {
-		ch.telegram.SendMessage(chatID, "❌ Control de sesión no disponible")
-		return
-	}
-	ch.session.Stop()
-	ch.telegram.SendMessage(chatID, "🔴 <b>Sesión de trading DETENIDA</b>\n\nNo se abrirán nuevas posiciones. Las posiciones existentes no se cierran automáticamente.")
+	ch.telegram.SendMessage(chatID, "🔴 <b>Sesión PAPER DETENIDA</b>\n\n"+
+		"No se abrirán nuevas posiciones. Las posiciones existentes no se cierran automáticamente.")
 }
 
 func (ch *CommandsHandler) HandleSessionSchedule(chatID int64) {
@@ -181,13 +197,42 @@ func (ch *CommandsHandler) HandleSessionSchedule(chatID int64) {
 				"Estado: %s\n"+
 				"Horario: %s\n"+
 				"Zona: %s\n"+
+				"%s"+
 				"Cierre al terminar: %s",
 			ch.session.StatusText(),
 			ch.session.ScheduleText(),
 			ch.session.TimezoneName(),
+			ch.remainingWindowText(),
 			closeText,
 		),
 	)
+}
+
+// remainingWindowText describe el tiempo restante de la ventana programada
+// cuando el control de sesión lo expone.
+func (ch *CommandsHandler) remainingWindowText() string {
+	provider, ok := ch.session.(RemainingWindowProvider)
+	if !ok {
+		return ""
+	}
+	remaining := provider.RemainingWindow()
+	if remaining <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("Ventana restante: %s\n", formatRemaining(remaining))
+}
+
+// formatRemaining formatea una duración como "2h 15m".
+func formatRemaining(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	hours := int(d / time.Hour)
+	minutes := int((d % time.Hour) / time.Minute)
+	if hours == 0 {
+		return fmt.Sprintf("%dm", minutes)
+	}
+	return fmt.Sprintf("%dh %dm", hours, minutes)
 }
 func (ch *CommandsHandler) HandleHelp(chatID int64) {
 	text := "📚 <b>Comandos disponibles:</b>\n\n" +

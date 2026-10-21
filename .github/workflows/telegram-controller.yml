@@ -1,13 +1,19 @@
 name: TradingBot - Telegram Workflow Controller
 
 on:
+  # Ciclo cada 5 minutos: comprueba el estado de la sesión PAPER y arranca la
+  # del día dentro de la ventana de 08:00-13:00 (hora de Cuba). El ciclo es
+  # corto y sin estado, así que una ejecución perdida se recupera en el
+  # siguiente ciclo.
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
 concurrency:
   group: tradingbot-telegram-controller
-  cancel-in-progress: true
+  # Nunca se cancela un ciclo en curso: podría cortar entre el despacho del
+  # workflow y la notificación al usuario.
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -16,8 +22,10 @@ permissions:
 jobs:
   control:
     name: Telegram → GitHub Actions control plane
-    runs-on: ubuntu-slim
-    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    # Menor que la cadencia de 5 minutos: el ciclo termina antes de que
+    # GitHub Actions programe el siguiente.
+    timeout-minutes: 4
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       # El token integrado GITHUB_TOKEN sirve para listar, despachar y cancelar
@@ -25,11 +33,19 @@ jobs:
       # opcional TRADINGBOT_ACTIONS_TOKEN, se prefiere ese token dedicado.
       GH_TOKEN: ${{ secrets.TRADINGBOT_ACTIONS_TOKEN || secrets.GITHUB_TOKEN }}
       GITHUB_REPOSITORY: ${{ github.repository }}
+      # Único chat autorizado a controlar el workflow.
       TELEGRAM_ADMIN_CHAT_ID: ${{ vars.TELEGRAM_ADMIN_CHAT_ID }}
+      # Hora local de la sesión PAPER y ventana de arranque automático.
+      TRADINGBOT_TIMEZONE: America/Havana
+      TRADINGBOT_AUTO_START_HOUR: "8"
+      TRADINGBOT_AUTO_START_DEADLINE_HOUR: "13"
+      # Rama desde la que se despacha el workflow PAPER.
+      TRADINGBOT_DISPATCH_REF: ${{ vars.TRADINGBOT_DISPATCH_REF || 'main' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Run controller unit tests
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         run: |
           set -euo pipefail

@@ -1,0 +1,144 @@
+# MEMORIA CONTROLADOR TELEGRAM - Arranque automático de la sesión PAPER (2026-10-21)
+
+Estado: **implementado y validado en la rama `fix/telegram-controller`**. Pendiente
+de despliegue: fusionar en `main` y crear la variable de Actions
+`TELEGRAM_ADMIN_CHAT_ID`.
+
+---
+
+## 1. El encargo y la causa raíz real
+
+El encargo: que la sesión PAPER **arranque sola a las 08:00 (America/Havana)**
+aunque el usuario no esté conectado a Telegram, y que el bot avise por
+Telegram que ya está trabajando. Todo en modo PAPER.
+
+La primera hipótesis (timeouts de red) era **falsa**: `tgbotapi.NewBotAPI` usa
+`&http.Client{}` sin timeout y `GetUpdatesChan` reintenta cada 3 s sin morir.
+La causa raíz eran varias, todas estructurales:
+
+1. **`\${{ ... }}` literal en el YAML de `main`** → `GH_TOKEN` inválido → **401**
+   de la API de GitHub. Afectaba a `telegram-controller.yml` y a
+   `paper-session.yml`.
+2. **El controlador no implementaba `/ping` ni `/help`** y solo consume Telegram
+   cuando no hay runner: sin sesión activa nadie respondía nada.
+3. **`confirm(offset=update_id+1)`** descartaba updates pendientes no
+   gestionados (se confirmaban comandos ajenos al controlador).
+4. **Dos consumidores de `getUpdates`**: el controlador seguía consultando
+   Telegram con el run PAPER *en cola*; solo `in_progress` cedía el polling →
+   carreras `409` y Updates perdidos.
+5. **El runner nunca notificaba su arranque** y `TELEGRAM_ADMIN_CHAT_ID` no
+   llegaba a `paper-session.yml`.
+6. **`HandleSessionStart` respondía siempre "workflow ya activo"**, porque
+   `workflow.Available()` solo comprueba variables de GitHub, no el gate de
+   sesión. Y `HandleSessionStop` no detenía el gate interno.
+7. **Zona horaria `America/New_York`** en lugar de `America/Havana`.
+8. **`cancel-in-progress: true`** en el controlador: podía cortar un ciclo
+   entre el despacho del workflow y la notificación al usuario.
+
+## 2. Decisiones de diseño
+
+### 2.1 Un único dispatcher
+
+Se **eliminó `on.schedule` de `paper-session.yml`**: el controlador pasa a ser
+el único que despacha el workflow PAPER. Con `schedule` en el runner, el grupo
+de concurrencia `tradingbot-paper-session` (`cancel-in-progress: false`) no
+impedía una segunda sesión PAPER: la dejaba **en cola**, con dos runners
+vivos y el doble de exposición simulada. Con un solo dispatcher esa situación
+es imposible por construcción.
+
+### 2.2 Propiedad del polling por estado
+
+| Estado | Dueño de `getUpdates` |
+| --- | --- |
+| Run `in_progress` | el runner (Go) |
+| Run `queued` | el controlador (Python) |
+| Sin runs | el controlador (Python) |
+
+El caso `queued` es la clave: el runner todavía no existe, así que nadie
+contesta; el controlador atiende `/session_stop` y cancela la ejecución en cola
+por la API de GitHub. En cuanto el runner entra en `in_progress`, el
+controlador cede el token.
+
+### 2.3 Ventana de arranque y zona horaria
+
+`AutoStartPolicy` calcula la hora local con `zoneinfo` (`America/Havana`), de
+modo que el DST cubano se respeta sinIntervention manual. La ventana es
+**08:00–13:00** (no 08:00–08:05) para que un trigger retrasado —GitHub no
+garantiza la hora exacta— todavía encuentre la sesión dentro del rango, y para
+que el runner siempre arranque antes de las 14:00 (fin de su propia ventana).
+
+Idempotencia: si hoy ya existe un run creado desde la medianoche local que no
+esté `failed`, no se despacha otro. Los `failed` sí se reintentan (máximo 3 por
+día) y los `cancelled` **no** se relanzan: el operador los paró a propósito.
+
+## 3. Cambios implementados
+
+### 3.1 Controlador (`.github/scripts/telegram_workflow_controller.py`)
+
+Reescrito como una clase `Controller` con dependencias inyectables
+(`GitHubClient`, `TelegramClient`, `AutoStartPolicy`, reloj). Piezas nuevas:
+`PaperState`, `GitHubError`, `TelegramConflictError`/`TelegramAuthError`/
+`TelegramServerError`/`TelegramNetworkError`, `_auto_start()`, `_status_text()`
+y `_poll()` con reintentos acotados. Los secretos nunca se registran y los
+cuerpos de error se sanean. `TRADINGBOT_DISPATCH_REF` permite despachar desde
+otra rama.
+
+### 3.2 Runner Go
+
+- **`internal/telegram/listener.go`** (nuevo): listener de long polling con
+  `Message`, `Fetcher`, `Handler`, clasificación de errores de Telegram
+  (409/401/429/5xx/red) y backoff exponencial con jitter. **El offset solo
+  avanza cuando el mensaje se ha gestionado**: un comando fallido se reintenta
+  y no se pierde; tras `MaxAttempts` se descarta para no bloquear la cola.
+- **`internal/session.Manager.RemainingWindow()`**: tiempo restante de la
+  ventana, para que el bot informe de cuánto queda.
+- **`handlers/commands.go`**: `HandleSession`/`HandleSessionStart`/
+  `HandleSessionStop` reescritos. El estado lo gobierna el gate interno
+  (`session.IsActive()`), no `workflow.Available()`; `/session_stop` cierra el
+  gate **antes** de cancelar el workflow.
+- **`telegram_dispatch.go`** (nuevo): el `switch` de comandos sale de `main.go`
+  a un despachador propio, testeable y desacoplado.
+- **`telegram_notify.go`** (nuevo): `🟢 Bot PAPER en marcha` al arrancar y
+  `🔴 Bot PAPER detenido` al terminar, enviados a `TELEGRAM_ADMIN_CHAT_ID`.
+- **`config`**: `TelegramAdminChatID` (validado: un chat id corrupto es error,
+  no un silencio) y zona por defecto `America/Havana`.
+- **`main.go`**: `NewBotAPIWithClient` con **timeout HTTP de 90 s** y long poll
+  de 50 s; el listener sustituye a `GetUpdatesChan`.
+
+### 3.3 Workflows
+
+- `telegram-controller.yml`: `ubuntu-latest` (ubuntu-slim puede no existir en
+  repos privados), `cancel-in-progress: false`, `timeout-minutes: 4` (menor
+  que la cadencia de 5 min), tests solo en `workflow_dispatch` y variables de
+  zona/ventana.
+- `paper-session.yml`: sin `schedule`, `manual_session` gobierna el gate
+  (horario 08:00–14:00 o sesión manual de 6 h), `America/Havana` y
+  `TELEGRAM_ADMIN_CHAT_ID`.
+
+## 4. Validación
+
+- `python3 -m unittest discover -s .github/scripts -p "test_*.py"` → **45
+  casos OK** (arranque a las 08:00, DST, fin de semana, idempotencia,
+  reintentos, 409/401/red, ownership del polling, `/ping`, `/help`).
+- `go build ./... && go vet ./... && go test ./...` → **OK** (incluye
+  `internal/telegram` y los handlers reescritos).
+
+## 5. Pendiente de despliegue
+
+1. Fusionar la rama en `main`: el controlador despacha con `ref: main`, así
+   que hasta la fusión el runner ejecuta el código anterior.
+2. Crear la variable de Actions `TELEGRAM_ADMIN_CHAT_ID` (obligatoria; sin ella
+   el controlador se bloquea por seguridad).
+3. Opcional: `TRADINGBOT_DISPATCH_REF` si se quiere despachar desde otra rama.
+4. Comprobar en la primera sesión que llegan los dos avisos (controlador:
+   "inicio automático"; runner: "Bot PAPER en marcha").
+
+## 6. Límites reales que conviene recordar
+
+- GitHub Actions no garantiza la hora exacta del `schedule`; la ventana
+  08:00–13:00 lo absorbe, no lo elimina.
+- Un solo `getUpdates` por token: la regla de propiedad lo resuelve, pero en el
+  instante en que arranca el runner puede aparecer un `409`; el listener lo
+  reintenta con backoff. Un bot exclusivo para el controlador lo elimina.
+- Los cron de GitHub Actions se interpretan en **UTC**: el horario de la
+  sesión diaria no se implementa con cron, se calcula con `zoneinfo`.
