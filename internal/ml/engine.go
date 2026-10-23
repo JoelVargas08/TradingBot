@@ -71,7 +71,17 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) ([]domain.SignalE
 	key := keyOf(k.Symbol, k.Timeframe)
 
 	e.mu.Lock()
-	rows := append(e.rows[key], k)
+	rows := e.rows[key]
+	// El seed puede incluir la vela actual si el store la guardó antes de
+	// notificar al sink; reemplazarla evita duplicar el mismo timestamp.
+	if len(rows) > 0 && rows[len(rows)-1].Start.Equal(k.Start) {
+		rows = append(rows[:len(rows)-1:len(rows)-1], k)
+	} else if len(rows) > 0 && k.Start.Before(rows[len(rows)-1].Start) {
+		e.mu.Unlock()
+		return nil, nil
+	} else {
+		rows = append(rows, k)
+	}
 	if len(rows) > e.cfg.Window {
 		rows = rows[len(rows)-e.cfg.Window:]
 	}
@@ -125,12 +135,13 @@ func (e *Engine) buildEvent(k domain.Kline, p Prediction) (domain.SignalEvent, b
 		BarTS:      k.Start,
 		ReceivedAt: time.Now(),
 		Meta: map[string]any{
-			domain.MetaKeyConfidence:  p.Confidence,
-			domain.MetaKeyRSI:         p.RSI,
-			domain.MetaKeyVolumeR:     p.VolumeRatio,
-			domain.MetaKeyStopLoss:    stop,
-			domain.MetaKeyTakeProfit:  target,
-			domain.MetaKeyProbability: fmt.Sprintf("%.0f%%/%.0f%%", p.ProbUp*100, p.ProbDown*100),
+			domain.MetaKeyConfidence:   p.Confidence,
+			domain.MetaKeyRSI:          p.RSI,
+			domain.MetaKeyVolumeR:      p.VolumeRatio,
+			domain.MetaKeyStopLoss:     stop,
+			domain.MetaKeyTakeProfit:   target,
+			domain.MetaKeyProbability:  fmt.Sprintf("%.0f%%/%.0f%%", p.ProbUp*100, p.ProbDown*100),
+			domain.MetaKeyModelVersion: p.ModelVersion,
 		},
 	}
 	return ev, true

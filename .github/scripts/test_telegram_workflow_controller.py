@@ -401,6 +401,34 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(gh.dispatches, [])
         self.assertEqual(len(tg.sent), 1)
         self.assertIn("/positions", tg.sent[0]["text"])
+        self.assertIn("necesita una sesión PAPER activa", tg.sent[0]["text"])
+
+    def test_unknown_command_with_pending_run_points_to_runner(self):
+        """Con un run en cola no se le dice al usuario que falta una sesión."""
+        gh = FakeGitHubOpener()
+        gh.workflow_runs = [run(11, "queued")]
+        tg = FakeTelegramOpener()
+        tg.updates = [message(1, "/positions")]
+        controller, _ = build_controller(gh, tg)
+        self.assertEqual(controller.run(), 0)
+        self.assertEqual(gh.dispatches, [])
+        self.assertEqual(len(tg.sent), 1)
+        text = tg.sent[0]["text"]
+        self.assertIn("lo atiende el runner", text)
+        self.assertNotIn("necesita una sesión PAPER activa", text)
+        # El update queda confirmado: no debe volver a entregarse.
+        self.assertEqual(tg.offsets, [2])
+
+    def test_unknown_command_with_active_run_points_to_runner(self):
+        tg = FakeTelegramOpener()
+        controller, _ = build_controller(FakeGitHubOpener(), tg)
+        state = ctl.PaperState(active=[run(12, "in_progress")])
+        controller._process([message(1, "/positions")], state)
+        self.assertEqual(len(tg.sent), 1)
+        text = tg.sent[0]["text"]
+        self.assertIn("lo atiende el runner", text)
+        self.assertNotIn("necesita una sesión PAPER activa", text)
+        self.assertIn("/session", text)
 
     def test_dispatch_rejected_notifies_and_fails(self):
         gh = FakeGitHubOpener()

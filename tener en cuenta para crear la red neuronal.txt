@@ -1,0 +1,32 @@
+﻿Exacto quiero entrenar una red neuronal para hacer trading y como la tengo alojada en un servidor de GitHub no quiero consumir tantos recursos como no quiero saturar el servidor puedo limitar los análisis a cada 15 minutos o más tiempo o algún otro truco?
+
+Sí, tu instinto es correcto. En GitHub Actions, el recurso crítico no es tanto la "RAM del servidor" en el sentido tradicional, sino los minutos de ejecución y la memoria disponible en el runner (que suele ser limitada, alrededor de 7 GB en los planes gratuitos). Si entrenas un modelo pesado cada 15 minutos, agotarás tu cuota gratuita rápidamente y es muy probable que el job falle por falta de memoria (OOM).
+
+Aquí tienes las estrategias clave para limitar el consumo y evitar saturar el servicio:
+
+⏱️ 1. Controla la frecuencia: Cada 15 minutos es demasiado
+
+Aunque técnicamente puedes programar un cron cada 15 minutos (*/15 * * * *) , no es nada recomendable para entrenamiento. Entrenar una red neuronal toma tiempo; si el job de las 12:00 aún no termina y ya se lanzó el de las 12:15, se acumularán ejecuciones y consumirás minutos de golpe.
+
+· Mejor enfoque: Programa el reentrenamiento una vez al día (ej. 0 3 * * *) o cada varias horas. Para trading, el reentrenamiento intradía agresivo rara vez es necesario y es costoso.
+· Truco de eficiencia: Separa la inferencia (predecir) del entrenamiento. Puedes hacer inferencia cada 15 minutos (es muy ligera) y reentrenar solo una vez al día o a la semana.
+
+💾 2. Optimiza el uso de RAM en el runner
+
+Los runners estándar de GitHub tienen poca RAM (≈7 GB). Si tu modelo es grande o usas lotes (batches) grandes, fallará.
+
+· Usa "Memory Constrained Preset": Si usas algoritmos evolutivos o configuraciones personalizadas, limita el tamaño de la población y los hilos de ejecución. Por ejemplo, reduce threads a 2 y batch_size a valores pequeños para evitar picos de memoria .
+· Gradient Checkpointing: Si usas PyTorch/TensorFlow, activa esta opción. Intercambia un poco más de cómputo (tiempo) por un uso mucho menor de memoria, lo cual es ideal para entornos con RAM limitada .
+· Streaming de datos: No cargues todo el CSV histórico en memoria de golpe. Usa tf.data.Dataset o IterableDataset para leer los datos desde el disco en lotes pequeños a medida que se necesitan .
+
+🧠 3. Trucos específicos para Trading
+
+· Cuantización (Quantization): Si tu modelo es de redes neuronales profundas, considera entrenar o convertir los pesos a precisión de 8 bits (FP8/INT8). Esto reduce el uso de memoria a la mitad o más con una pérdida mínima de precisión .
+· Usa ventanas de tiempo más largas: En lugar de analizar cada tick o minuto, entrena con velas de 15 minutos o 1 hora. Esto reduce drásticamente la cantidad de datos y el costo computacional por época.
+
+⚠️ 4. Límites de GitHub Actions que debes conocer
+
+· Tiempo máximo: Un job puede correr hasta 6 horas (en cuentas gratuitas). Si tu entrenamiento es más largo, tendrás que dividirlo o usar un runner propio .
+· Cuota gratuita: Tienes 2,000 minutos al mes en repositorios privados (los públicos son gratis). Un entrenamiento pesado cada 15 minutos te consumirá la cuota en pocos días .
+
+En resumen: Cambia el cron a diario, reduce el batch_size, activa el checkpointing de gradientes y asegúrate de que el script de entrenamiento libere la memoria correctamente al terminar. Si el modelo es muy grande, la mejor opción es usar un runner autoalojado (self-hosted) en tu propia PC o servidor, ya que GitHub no está diseñado para entrenamiento intensivo de IA.

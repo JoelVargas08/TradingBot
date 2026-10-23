@@ -24,7 +24,7 @@ Bot de trading algorítmico en Go con:
 - Detección de movimientos y **4 componentes de confluencia** (Fibonacci, Order Block,
   Imbalance/desbalance, Supply & Demand).
 - Aprendizaje de estrategias **desde PDF** y desde **datos históricos** (learner + walk-forward).
-- Motor de señales con **IA (baseline XGBoost, sidecar Python)**.
+- Motor de señales con **IA (baseline XGBoost y red neuronal MLP, sidecar Python)**.
 - Ejecución **PAPER** (simulada) con contabilidad, TP parcial, recuperación de órdenes y
   reconciliación; puente a **Telegram** para control y notificaciones.
 - Estrategia insignia: **Investing Bulls** (asimilación fiel desde el material fuente).
@@ -45,7 +45,7 @@ Bot de trading algorítmico en Go con:
 | Riesgo | `internal/risk` | Riesgo genérico + `IBRiskProfile` |
 | PAPER | `internal/paper` | Motor simulado (TP parcial, reconcile) |
 | Ejecución | `internal/execution` | Órdenes, recuperación, reconciliación |
-| IA / ML | `internal/ml`, `ml/` | Cliente Go + sidecar Python (XGBoost) |
+| IA / ML | `internal/ml`, `ml/`, `ml/nn/` | Cliente Go + sidecar Python (XGBoost + MLP NumPy) |
 | Aprendizaje PDF | `internal/pdf`, `internal/jobqueue`, `internal/llm`, `internal/strategymanager` | Extracción → cola → LLM → estrategia |
 | Backtesting | `internal/backtest`, `internal/benchmark` | Comparativas buy&hold / Chandelier / IA |
 | Observabilidad | `internal/health`, `internal/observability`, `internal/notifier` | Salud, métricas, avisos |
@@ -63,7 +63,7 @@ Bot de trading algorítmico en Go con:
 | **2** | Ingesta de datos y detección de movimientos | ✅ |
 | **3** | Estrategia *Chandelier Multi-Confirm* + gestión de riesgo | ✅ |
 | **4** | Aprendizaje de estrategias desde PDF (pdf/llm/jobqueue/strategymanager) | ✅ |
-| **5** | Motor de señales con IA (baseline XGBoost, sidecar Python) | ✅ |
+| **5** | Motor de señales con IA (baseline XGBoost, sidecar Python) + MLP experimental (Fase 9) | ✅ |
 | **6** | Backtesting + KPIs + despliegue | ✅ |
 | **7** | Bot de Telegram listo para PDF + reparación de errores del pipeline | ✅ |
 | **8** | Ampliar el aprendizaje *Investing Bulls* sin rebajar sus reglas (learner MTF) | ✅ |
@@ -273,3 +273,11 @@ go run ./cmd/ibvalidate -db <db-temporal> -symbol BTCUSDT -timeframes 1h,15m,5m 
   `solicitud_opencode_correccion_telegram.md` (encargo original).
 - **Despliegue:** `DEPLOYMENT.md`, `TRADINGVIEW_WEBHOOK_SETUP.md`.
 - **Bitácoras de sesión:** `Bitacora_Sesion_*.md`.
+
+---
+
+## 10. Fase 9 - Red neuronal experimental (2026-10-23)
+
+Implementado un MLP NumPy pequeño con entrenamiento manual, promoción manual y inferencia dentro
+de la sesión PAPER. No hay trading real ni promoción automática. Detalle completo en
+`MEMORIA_FASE_9_RED_NEURONAL.md`.

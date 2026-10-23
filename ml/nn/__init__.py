@@ -1,0 +1,1 @@
+"""Red neuronal NumPy para trading."""

@@ -168,22 +168,21 @@ long poll por ciclo.
 
 ## 4. Validación
 
-- `python3 -m unittest discover -s .github/scripts -p "test_*.py"` → **50
-  casos OK** (arranque a las 08:00, DST, fin de semana, idempotencia,
-  reintentos, 409/401/red, ownership del polling, `/ping`, `/help`, ventana de
-  escucha).
-- `go build ./... && go vet ./... && go test ./...` → **OK** (incluye
-  `internal/telegram` y los handlers reescritos).
+- **Python**: `py -3 -m unittest discover -s .github/scripts -p "test_*.py"` → **Ran 52 tests OK** (añadidos tests para comandos desconocidos con run en cola/activo).
+- **Go**: `go build ./...` OK; `go vet ./...` OK; `go test ./...` OK (**todos los paquetes en verde**). Añadidos `telegram_notify_test.go` (startupMessage/marketLine/feed/waitForFeed/notifyAdmin).
+- **Validación en GitHub**: CI (push a `fix/telegram-controller`/`main`) en verde; ejecución real en curso `paper-session.yml` run 39611237997 (workflow_dispatch) con pasos 1-5 OK. Rama activa `fix/telegram-controller`.
+- **Evidencia de campo**: consulta pública de la API de Actions → 8 runs `schedule` de `paper-session.yml`: en todos ellos **"Restore persisted state" aparece `skipped`** (bug de coerción laxa: `inputs.restore_state != false` evalúa mal cuando `inputs` es null). En 3 runs `workflow_dispatch` completados/cancelados aparece **`success`**. Corregido en el workflow (comparación con `github.event_name` + `github.event.inputs`). Logs completos de runs antiguos requieren auth/download con permisos (no accesibles desde esta máquina; webfetch a API logs devuelve 403, `gh` no instalado).
+- **Hallazgos API GitHub**: `timezone` sí es soportado en `schedule` (docs oficiales vía webfetch). `websearch` devuelve 403.
+- **Correcciones aplicadas en esta sesión**: aviso de arranque fiel al estado real (sesión ACTIVA/INACTIVA/fuera de ventana) + notificación de feed WEEX conectado/no conectado con test; controlador Python actualiza docstring (doble disparador) y respuesta a comandos desconocidos cuando hay run en cola/activo (confirma offset); nuevos tests Python y Go.
 
 ## 5. Pendiente de despliegue
 
-1. Fusionar la rama en `main`: el controlador despacha con `ref: main`, así
-   que hasta la fusión el runner ejecuta el código anterior.
-2. Crear la variable de Actions `TELEGRAM_ADMIN_CHAT_ID` (obligatoria; sin ella
-   el controlador se bloquea por seguridad).
+1. Fusionar la rama en `main`: el controlador despacha con `ref: main`, así que hasta la fusión el runner ejecuta el código anterior (o usar `TRADINGBOT_DISPATCH_REF`).
+2. Crear la variable de Actions `TELEGRAM_ADMIN_CHAT_ID` (obligatoria; sin ella el controlador se bloquea por seguridad y el runner solo loguea las notificaciones).
 3. Opcional: `TRADINGBOT_DISPATCH_REF` si se quiere despachar desde otra rama.
-4. Comprobar en la primera sesión que llegan los dos avisos (controlador:
-   "inicio automático"; runner: "Bot PAPER en marcha").
+4. Comprobar en la primera sesión que llegan los dos avisos (controlador: "inicio automático"; runner: aviso con estado real + feed).
+5. **Importante**: tras el merge de estos cambios del workflow, el `schedule` del runner arranca con `restore_state` correcto (antes se omitía). Si se desea asegurar restauración inmediata, el controlador ya lo gestiona; con los arreglos de `inputs` el disparo automático restaurará siempre.
+
 
 ## 6. Límites reales que conviene recordar
 

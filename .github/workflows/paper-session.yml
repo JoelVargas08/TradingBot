@@ -60,13 +60,34 @@ jobs:
       INGEST_ENABLED: "false"
       WATCH_TRADES: "false"
 
+      # Inferencia ML: solo se activa si el paso "Restore approved ML model"
+      # encuentra un artefacto ml-approved. Sin modelo, la sesión PAPER sigue
+      # funcionando exactamente igual que antes.
+      ML_ENABLED: "false"
+      ML_URL: "http://127.0.0.1:8099"
+      ML_STRATEGY_ID: ml-nn
+      ML_WINDOW: "64"
+      ML_CONFIDENCE: "0.6"
+      ML_COOLDOWN_HOURS: "4"
+      ML_TIMEOUT_SECONDS: "5"
+      ML_MAX_STALENESS_SECONDS: "7200"
+      ML_PREDICTION_LOG: data/ml_predictions.jsonl
+
       # La ventana real de la sesión es 08:00 → 14:00 hora de Cuba. Con
       # manual_session=false el gate sigue el horario y el runner termina solo
       # al cerrar la ventana; con manual_session=true la sesión dura las 6 horas
       # del timeout del workflow.
+      #
+      # OJO con el contexto `inputs`: en el disparo `schedule` no existe (es
+      # null) y la comparación laxa de GitHub resuelve "null != false" como
+      # FALSO, porque null y false se coer ambos a 0.  Con "inputs.manual_session
+      # == true" el disparo automático caía siempre en la rama de sesión
+      # manual/horario según el valor, no según la intención.
+      # `github.event.inputs` es siempre texto y `github.event_name` dice de
+      # dónde viene el disparo, así que la decisión es explícita.
       TRADING_SESSION_ENABLED: "true"
-      TRADING_SESSION_START_ACTIVE: ${{ inputs.manual_session == true && 'true' || 'false' }}
-      TRADING_SESSION_SCHEDULE_ENABLED: ${{ inputs.manual_session == true && 'false' || 'true' }}
+      TRADING_SESSION_START_ACTIVE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.manual_session == 'true' && 'true' || 'false' }}
+      TRADING_SESSION_SCHEDULE_ENABLED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.manual_session == 'true' && 'false' || 'true' }}
       TRADING_SESSION_START: "08:00"
       TRADING_SESSION_END: "14:00"
       TRADING_SESSION_TIMEZONE: America/Havana
@@ -94,6 +115,46 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Restore approved ML model
+        id: ml_model
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ml/models data
+          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.name == "ml-approved" and .expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
+          if [[ -z "${artifact_run_id}" ]]; then
+            echo "Sin modelo ML aprobado; la sesión PAPER arranca sin inferencia ML."
+            exit 0
+          fi
+          rm -rf restore_ml
+          gh run download "${artifact_run_id}" --repo "${GITHUB_REPOSITORY}" --name ml-approved --dir restore_ml
+          test -f restore_ml/neural_model.json || { echo "::error::El artefacto ml-approved no contiene neural_model.json"; exit 1; }
+          cp restore_ml/neural_model.json ml/models/neural_model.json
+          if [[ -f restore_ml/neural_meta.json ]]; then
+            cp restore_ml/neural_meta.json ml/models/neural_meta.json
+          fi
+          if [[ -f restore_ml/promotion.json ]]; then
+            cp restore_ml/promotion.json ml/models/promotion.json
+            cat restore_ml/promotion.json
+          fi
+          echo "ML_ENABLED=true" >> "$GITHUB_ENV"
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "Modelo ML aprobado restaurado desde la ejecución ${artifact_run_id}."
+
+      - name: Setup Python (ML inference)
+        if: steps.ml_model.outputs.enabled == 'true'
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ml/requirements-inference.txt
+
+      - name: Install ML inference dependencies
+        if: steps.ml_model.outputs.enabled == 'true'
+        run: python -m pip install -r ml/requirements-inference.txt
+
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
@@ -101,7 +162,12 @@ jobs:
           cache: true
 
       - name: Restore persisted state
-        if: ${{ inputs.restore_state != false }}
+        # En el disparo `schedule` no hay `inputs` (es null) y "null != false"
+        # se evalúa como FALSO: la restauración se omitía y la sesión arrancaba
+        # con la base vacía (balance reiniciado e historial perdido).  El
+        # disparo automático restaura siempre; el manual solo si no se pidió
+        # explícitamente lo contrario.
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.restore_state != 'false' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
@@ -132,6 +198,36 @@ jobs:
           go test ./...
           go build -o bot .
 
+      - name: Start ML sidecar
+        if: steps.ml_model.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          set -uo pipefail
+          mkdir -p data
+          nohup python ml/api.py > data/ml_sidecar.log 2>&1 &
+          echo $! > data/ml_sidecar.pid
+          healthy=false
+          for _ in {1..30}; do
+            if curl -fsS "${ML_URL}/health" -o data/ml_health.json; then
+              healthy=true
+              break
+            fi
+            sleep 1
+          done
+          if [[ "${healthy}" != "true" ]]; then
+            echo "::warning::El sidecar ML no respondió; la sesión PAPER seguirá sin ML."
+            cat data/ml_sidecar.log || true
+            if [[ -f data/ml_sidecar.pid ]]; then kill "$(cat data/ml_sidecar.pid)" 2>/dev/null || true; fi
+            echo "ML_ENABLED=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          cat data/ml_health.json
+          if ! python -c "import json; d=json.load(open('data/ml_health.json')); raise SystemExit(0 if d.get('model_loaded') else 1)"; then
+            echo "::warning::El sidecar no cargó el modelo; la sesión PAPER seguirá sin ML."
+            if [[ -f data/ml_sidecar.pid ]]; then kill "$(cat data/ml_sidecar.pid)" 2>/dev/null || true; fi
+            echo "ML_ENABLED=false" >> "$GITHUB_ENV"
+          fi
+
       - name: Run paper session
         env:
           # Permite que el propio runner cancele su ejecución al recibir
@@ -146,8 +242,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p data
+          if [[ -f data/ml_sidecar.pid ]]; then
+            kill "$(cat data/ml_sidecar.pid)" 2>/dev/null || true
+          fi
           if [[ -f data/bot.db ]]; then
-            tar -czf tradingbot-state.tgz data/bot.db* data/users.json 2>/dev/null || true
+            extra=()
+            for f in data/users.json data/ml_predictions.jsonl data/ml_predictions.jsonl.1 data/ml_sidecar.log data/ml_health.json; do
+              [[ -f "$f" ]] && extra+=("$f")
+            done
+            tar -czf tradingbot-state.tgz data/bot.db* "${extra[@]}" 2>/dev/null || true
             ls -lh tradingbot-state.tgz
           else
             echo "No existe data/bot.db; no se sube estado."

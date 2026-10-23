@@ -13,11 +13,21 @@ Architecture: a single consumer of ``getUpdates`` per bot token
   answers the lifecycle commands, dispatching or cancelling the PAPER workflow
   through the GitHub Actions API.
 
-The daily start is orchestrated by the controller, which makes it the only
-dispatcher of ``paper-session.yml``.  That avoids duplicated PAPER sessions
-(two concurrent paper runners would double the simulated exposure) and makes
-the start self-healing: if the scheduled trigger is skipped or delayed, the
-next cycle starts the session inside the catch-up window.
+Daily start (two triggers, one session)
+--------------------------------------
+``paper-session.yml`` can be started by two places, and that is intentional:
+
+1. the schedule trigger ``0 8 * * 1-5`` (``America/Havana``), which is the
+   primary alarm; and
+2. this controller, whose auto-start catches up any day in which the cron is
+   skipped or delayed (GitHub crons can be delayed by hours, and the
+   controller needs the session up by ``AUTO_START_DEADLINE_HOUR``).
+
+They cannot produce two concurrent PAPER sessions: the workflow's
+``concurrency`` group serialises runs, and this controller never dispatches
+while a run is ``queued`` or ``in_progress`` (see ``_auto_start``).  A
+duplicate run, if it ever happened, would start outside the window and stop
+immediately (``TRADING_SESSION_EXIT_AFTER_WINDOW``).
 
 The Telegram user does not need the app open: the Bot API delivers messages
 independently of the client, and notifications sent while the user is offline
@@ -640,6 +650,29 @@ class Controller:
                 time.sleep(delay)
         raise last_error
 
+    def _unknown_hint(self, token: str, state: PaperState) -> str:
+        """Respuesta para un comando que este controlador no gestiona.
+
+        Los comandos de trading (/positions, /risk, /performance, ...) los
+        atiende el runner, no el controlador.  Si ya hay un run en cola o en
+        marcha, decirle al usuario que "falta una sesión PAPER activa" sería
+        falso: la sesión ya se está poniendo en marcha y el comando le llegará
+        al runner en cuanto esté escuchando.
+        """
+        escaped = html.escape(token)
+        if state.active or state.pending:
+            return (
+                "ℹ️ El comando <code>" + escaped + "</code> lo atiende el runner "
+                "de PAPER, que ya se está poniendo en marcha.\n"
+                "Espérate ~1 minuto y vuelve a intentarlo; si no responde, "
+                "consulta el estado con /session."
+            )
+        return (
+            "ℹ️ El comando <code>" + escaped + "</code> necesita una sesión PAPER "
+            "activa.\nUsa /session_start para arrancarla y /help para ver los "
+            "comandos."
+        )
+
     def _process(self, updates, state: PaperState):
         """Process a batch of updates.
 
@@ -669,13 +702,7 @@ class Controller:
             if action is None:
                 if token.startswith("/"):
                     try:
-                        self.telegram.send_message(
-                            chat_id,
-                            "ℹ️ El comando <code>" + html.escape(token) + "</code> "
-                            "necesita una sesión PAPER activa.\n"
-                            "Usa /session_start para arrancarla y /help para ver "
-                            "los comandos.",
-                        )
+                        self.telegram.send_message(chat_id, self._unknown_hint(token, state))
                     except ControllerError as exc:
                         self.log(f"aviso: no se pudo responder al comando: {exc}")
                 continue

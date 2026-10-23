@@ -36,3 +36,22 @@ jobs:
         uses: actions/checkout@v7
       - name: Run controller unit tests
         run: python3 -m unittest discover -s .github/scripts -p "test_*.py" -v
+
+  ml:
+    name: ML unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            ml/requirements-inference.txt
+            ml/requirements-train.txt
+      - name: Install ML dependencies
+        run: python -m pip install -r ml/requirements-train.txt -r ml/requirements-inference.txt
+      - name: Run ML unit tests
+        run: python -m unittest discover -s tests/ml -p "test_*.py" -v

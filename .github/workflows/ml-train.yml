@@ -1,0 +1,166 @@
+name: TradingBot - ML Train (candidate)
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Símbolo a entrenar"
+        required: true
+        default: "BTCUSDT"
+        type: string
+      timeframe:
+        description: "Timeframe (1m, 5m, 15m, 30m, 1h, 4h, 1d)"
+        required: true
+        default: "1h"
+        type: string
+      source:
+        description: "Origen de datos"
+        required: true
+        default: "db"
+        type: choice
+        options: [db, csv]
+      csv_path:
+        description: "Ruta del CSV si source=csv"
+        required: false
+        default: ""
+        type: string
+      epochs:
+        description: "Épocas máximas (con early stopping)"
+        required: true
+        default: "80"
+        type: string
+      max_bars:
+        description: "Máximo de velas de entrada (recorte reciente)"
+        required: true
+        default: "8000"
+        type: string
+      max_ram_mb:
+        description: "Límite de RAM en MB"
+        required: true
+        default: "512"
+        type: string
+      max_time_sec:
+        description: "Límite de tiempo interno en segundos"
+        required: true
+        default: "1200"
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tradingbot-ml-train
+  cancel-in-progress: false
+
+jobs:
+  train:
+    name: Entrenamiento NN (manual, candidato)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    env:
+      SYMBOL: ${{ inputs.symbol }}
+      TIMEFRAME: ${{ inputs.timeframe }}
+      SOURCE: ${{ inputs.source }}
+      CSV_PATH: ${{ inputs.csv_path }}
+      EPOCHS: ${{ inputs.epochs }}
+      MAX_BARS: ${{ inputs.max_bars }}
+      MAX_RAM_MB: ${{ inputs.max_ram_mb }}
+      MAX_TIME_SEC: ${{ inputs.max_time_sec }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ml/requirements-train.txt
+
+      - name: Install training dependencies
+        run: python -m pip install -r ml/requirements-train.txt
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SYMBOL" =~ ^[A-Z0-9]{3,24}$ ]] || { echo "símbolo inválido: $SYMBOL"; exit 2; }
+          [[ "$TIMEFRAME" =~ ^(1m|5m|15m|30m|1h|4h|1d)$ ]] || { echo "timeframe inválido: $TIMEFRAME"; exit 2; }
+          [[ "$EPOCHS" =~ ^[0-9]+$ ]] && (( EPOCHS > 0 && EPOCHS <= 300 )) || { echo "epochs inválido"; exit 2; }
+          [[ "$MAX_BARS" =~ ^[0-9]+$ ]] && (( MAX_BARS >= 200 )) || { echo "max_bars inválido"; exit 2; }
+          [[ "$MAX_RAM_MB" =~ ^[0-9]+$ ]] || { echo "max_ram_mb inválido"; exit 2; }
+          [[ "$MAX_TIME_SEC" =~ ^[0-9]+$ ]] || { echo "max_time_sec inválido"; exit 2; }
+          if [[ "$SOURCE" == "csv" ]]; then
+            [[ -n "$CSV_PATH" && -f "$CSV_PATH" ]] || { echo "CSV no encontrado: $CSV_PATH"; exit 2; }
+          fi
+
+      - name: Restore latest market database
+        if: ${{ inputs.source == 'db' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p data restore
+          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.name == "tradingbot-state" and .expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
+          if [[ -z "$artifact_run_id" ]]; then
+            echo "::error::No hay artefacto tradingbot-state. Ejecuta una sesión PAPER o usa source=csv."
+            exit 1
+          fi
+          gh run download "$artifact_run_id" --repo "$GITHUB_REPOSITORY" --name tradingbot-state --dir restore
+          if [[ ! -f restore/tradingbot-state.tgz ]]; then
+            echo "::error::El artefacto no contiene tradingbot-state.tgz"
+            exit 1
+          fi
+          tar -xzf restore/tradingbot-state.tgz
+          test -f data/bot.db || { echo "::error::No se restauró data/bot.db"; exit 1; }
+          echo "DB restaurada ($(du -h data/bot.db | cut -f1)) de la ejecución $artifact_run_id"
+
+      - name: Train candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p ml/models/candidates
+          args=(
+            python ml/nn_train.py
+            --symbol "$SYMBOL"
+            --timeframe "$TIMEFRAME"
+            --epochs "$EPOCHS"
+            --max-bars "$MAX_BARS"
+            --max-ram-mb "$MAX_RAM_MB"
+            --max-time-sec "$MAX_TIME_SEC"
+            --out ml/models/candidates/candidate.json
+            --report ml/models/candidates/report.json
+            --verbose
+          )
+          if [[ "$SOURCE" == "db" ]]; then
+            args+=(--db data/bot.db)
+          else
+            args+=(--csv "$CSV_PATH")
+          fi
+          "${args[@]}"
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f ml/models/candidates/report.json ]]; then
+            python ml/nn_report.py --report ml/models/candidates/report.json >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Sin informe de entrenamiento (fallo temprano)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload candidate artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ml-candidate
+          path: ml/models/candidates/
+          if-no-files-found: warn
+          retention-days: 30

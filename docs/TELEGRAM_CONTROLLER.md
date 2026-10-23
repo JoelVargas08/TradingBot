@@ -109,10 +109,19 @@ Es seguro que convivan:
 
 - **Controlador**: avisa cuando el arranque automático dispara el workflow y
   cuando un fallo impide hacerlo.
-- **Runner**: al arrancar envía `🟢 Bot PAPER en marcha` (con estado de la
-  sesión, zona horaria y `GITHUB_RUN_ID`) y al terminar `🔴 Bot PAPER
-  detenido`. Telegram entrega el mensaje aunque el usuario esté desconectado:
-  queda en cola y se ve al volver a abrir el cliente.
+- **Runner**: al arrancar envía el aviso con el estado real, sin adornos:
+  - `🟢 Bot PAPER en marcha` cuando la sesión está ACTIVA;
+  - `⚠️ Bot PAPER en marcha (sesión detenida)` cuando arrancó fuera de la
+    ventana 08:00–14:00 (el propio runner se cerrará al terminar);
+  - en todos los casos: horario, modo PAPER, `GITHUB_RUN_ID`, `@usuario` del
+    bot y el estado del feed de mercado (`weex conectado (BTCUSDT 1h)` o
+    `weex conectando…`).
+- **Feed de mercado**: si WEEX aún no está conectado al arrancar, el runner
+  espera un máximo de 2 minutos y envía `✅ Feed de mercado conectado` (es la
+  prueba real de que el bot puede analizar el mercado) o, si no conecta,
+  `⚠️ El feed de mercado no ha conectado` con el tiempo esperado.
+- Telegram entrega el mensaje aunque el usuario esté desconectado: queda en
+  cola y se ve al volver a abrir el cliente.
 
 ## Comandos (solo el chat admin `TELEGRAM_ADMIN_CHAT_ID`)
 
@@ -146,6 +155,18 @@ Es seguro que convivan:
 - El estado (SQLite `data/bot.db`, `data/users.json`) se archiva como artefacto
   `tradingbot-state` al terminar/cancelar el runner y se restaura en el
   siguiente arranque. No se borra la base ni se reinicia el balance.
+  - **Corregido (bug confirmado en producción):** el paso
+    `Restore persisted state` usaba `if: inputs.restore_state != false`. En el
+    disparo `schedule` el contexto `inputs` es `null` y la comparación laxa de
+    GitHub (`null != false`, ambos a `0`) lo evalúa como **falso**: el paso se
+    omitía, la sesión arrancaba con la base vacía y, al archivar, publicaba un
+    artefacto vacío que el siguiente arranque sí restauraba (historial y
+    balance perdidos). Comprobado en la API pública del repo: en los 8 runs
+    `schedule` de `paper-session.yml` el paso aparece `skipped`, mientras que
+    en los `workflow_dispatch` aparece `success`. La condición es ahora
+    `github.event_name != 'workflow_dispatch' || github.event.inputs.restore_state != 'false'`.
+    Los mismos disparos controlan `TRADING_SESSION_START_ACTIVE` y
+    `TRADING_SESSION_SCHEDULE_ENABLED`.
 - El límite de 6 horas (`timeout-minutes: 360`) y `TRADING_SESSION_END`
   finalizan la sesión automáticamente.
 - Solo se cancela el workflow PAPER; nunca al controlador ni a otros workflows.

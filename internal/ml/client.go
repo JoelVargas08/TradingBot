@@ -54,6 +54,7 @@ type Prediction struct {
 	Confidence    float64 `json:"confidence"`
 	ProbUp        float64 `json:"prob_up"`
 	ProbDown      float64 `json:"prob_down"`
+	ModelVersion  string  `json:"model_version"`
 	Price         float64 `json:"price"`
 	RSI           float64 `json:"rsi"`
 	VolumeRatio   float64 `json:"volume_ratio"`

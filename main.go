@@ -453,10 +453,18 @@ func main() {
 		})
 		// Investing Bulls live también recibe el feed WEEX: un fanout mantiene
 		// el motor compartido (chandelier/TradingView) e IB alimentados por la
-		// misma fuente sin mezclar sus selecciones.
+		// misma fuente sin mezclar sus selecciones. El motor ML se suscribe al
+		// timeframe primario para no aplicar un modelo 1h a velas 5m/15m.
 		var weexSink ingest.CandleSink = liveEngine
+		feeds := make([]ingest.CandleSink, 0, 2)
 		if investingBullsLive != nil {
-			weexSink = &candleFanout{primary: liveEngine, feed: []ingest.CandleSink{investingBullsLive}}
+			feeds = append(feeds, investingBullsLive)
+		}
+		if mlEngine != nil {
+			feeds = append(feeds, ml.NewSignalSink(mlEngine, eventBus, sqliteStore, cfg.TradingSymbol, cfg.TradingTimeframe))
+		}
+		if len(feeds) > 0 {
+			weexSink = &candleFanout{primary: liveEngine, feed: feeds}
 		}
 		marketDataService = ingest.NewMarketDataService(weexProvider, sqliteStore, weexSink, cfg.WeexPriceType, cfg.WeexBackfillBars)
 		marketCommands = handlers.NewMarketCommands(telegram, marketDataService)
@@ -687,7 +695,23 @@ func main() {
 	if workflowController != nil {
 		runID = workflowController.RunID()
 	}
-	notifyAdmin(telegram, cfg.TelegramAdminChatID, startupMessage(cfg, bot, tradingSession, runID))
+	notifyAdmin(telegram, cfg.TelegramAdminChatID,
+		startupMessage(cfg, bot, tradingSession, runID, marketStatusOf(marketDataService)))
+
+	// El feed de mercado es lo que respalda que el bot "empezó a trabajar":
+	// cuando WEEX conecta se avisa con el dato real (una sola vez).  Si no
+	// conecta en el margen, se avisa del problema en lugar de callarlo.
+	if marketDataService != nil && !marketDataService.Status().Connected {
+		service := marketDataService
+		go waitForFeed(
+			ctx,
+			func() MarketStatus { return marketStatusOf(service) },
+			feedReadyTimeout,
+			feedPollInterval,
+			func(text string) { notifyAdmin(telegram, cfg.TelegramAdminChatID, text) },
+			log.Printf,
+		)
+	}
 
 	// Servidor HTTP para webhooks
 	mux := http.NewServeMux()
@@ -785,6 +809,21 @@ func main() {
 	// El listener se detiene con el contexto (cancel) y con el cierre del
 	// servidor HTTP; no hace falta tocar el canal interno del bot.
 	notifyAdmin(telegram, cfg.TelegramAdminChatID, shutdownMessage("fin de la sesión PAPER"))
+}
+
+// marketStatusOf adapta el estado del servicio de ingesta al resumen que usan
+// los avisos, sin exponer el tipo concreto de WEEX.
+func marketStatusOf(service *ingest.MarketDataService) MarketStatus {
+	if service == nil {
+		return MarketStatus{}
+	}
+	st := service.Status()
+	return MarketStatus{
+		Provider:  st.Provider,
+		Connected: st.Connected,
+		Symbol:    st.Symbol,
+		Timeframe: st.Timeframe,
+	}
 }
 
 func monitorInvestingBullsPaperValidation(

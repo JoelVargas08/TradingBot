@@ -33,17 +33,18 @@ type SignalEvent struct {
 }
 
 const (
-	MetaKeyRSI         = "rsi"
-	MetaKeyVolumeR     = "volume_ratio"
-	MetaKeyTrend4H     = "trend4h"
-	MetaKeyStopLoss    = "stop_loss"
-	MetaKeyTakeProfit  = "take_profit"
-	MetaKeyPartialTP   = "partial_tp"
-	MetaKeyRegime      = "regime"
-	MetaKeyConfidence  = "confidence"
-	MetaKeyProbability = "probability"
-	MetaKeySetup       = "setup"
-	MetaKeyMainTrend   = "main_trend"
+	MetaKeyRSI          = "rsi"
+	MetaKeyVolumeR      = "volume_ratio"
+	MetaKeyTrend4H      = "trend4h"
+	MetaKeyStopLoss     = "stop_loss"
+	MetaKeyTakeProfit   = "take_profit"
+	MetaKeyPartialTP    = "partial_tp"
+	MetaKeyRegime       = "regime"
+	MetaKeyConfidence   = "confidence"
+	MetaKeyProbability  = "probability"
+	MetaKeySetup        = "setup"
+	MetaKeyMainTrend    = "main_trend"
+	MetaKeyModelVersion = "model_version"
 )
 
 func (e SignalEvent) Valid() error {

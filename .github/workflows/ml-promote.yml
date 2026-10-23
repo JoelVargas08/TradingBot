@@ -1,0 +1,120 @@
+name: TradingBot - ML Promote (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_run_id:
+        description: "ID de la ejecución de ML Train que contiene el artefacto ml-candidate"
+        required: true
+        type: string
+      reason:
+        description: "Motivo de la promoción (queda registrado)"
+        required: true
+        default: "revisión manual"
+        type: string
+      min_holdout_trades:
+        description: "Mínimo de trades en el holdout final"
+        required: true
+        default: "10"
+        type: string
+      confirm:
+        description: "Confirmación explícita: selecciona yes para promover"
+        required: true
+        default: "no"
+        type: choice
+        options: [no, yes]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: tradingbot-ml-promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Validar y promover candidato
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      RUN_ID: ${{ inputs.candidate_run_id }}
+      REASON: ${{ inputs.reason }}
+      MIN_TRADES: ${{ inputs.min_holdout_trades }}
+      CONFIRM: ${{ inputs.confirm }}
+      PYTHONUNBUFFERED: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: ml/requirements-train.txt
+
+      - name: Validate confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$CONFIRM" != "yes" ]]; then
+            echo "::error::La promoción requiere confirm=yes"
+            exit 2
+          fi
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::candidate_run_id inválido"; exit 2; }
+          [[ "$MIN_TRADES" =~ ^[0-9]+$ ]] && (( MIN_TRADES > 0 )) || { echo "::error::min_holdout_trades inválido"; exit 2; }
+
+      - name: Install validation dependencies
+        run: python -m pip install -r ml/requirements-train.txt
+
+      - name: Download candidate artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf candidate
+          gh run download "$RUN_ID" --repo "$GITHUB_REPOSITORY" --name ml-candidate --dir candidate
+          test -f candidate/candidate.json || { echo "::error::Falta candidate/candidate.json"; exit 1; }
+          test -f candidate/report.json || { echo "::error::Falta candidate/report.json"; exit 1; }
+
+      - name: Validate and promote
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf ml-approved
+          python ml/nn_promote.py \
+            --model candidate/candidate.json \
+            --report candidate/report.json \
+            --out ml-approved \
+            --candidate-run-id "$RUN_ID" \
+            --reason "$REASON" \
+            --min-holdout-trades "$MIN_TRADES"
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f ml-approved/promotion.json ]]; then
+            echo '## Modelo aprobado' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat ml-approved/promotion.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '## Promoción no realizada' >> "$GITHUB_STEP_SUMMARY"
+            echo 'El candidato no superó las comprobaciones; no se modificó ningún modelo aprobado.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload approved model
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ml-approved
+          path: ml-approved/
+          if-no-files-found: error
+          retention-days: 90

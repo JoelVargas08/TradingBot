@@ -31,15 +31,17 @@ func klines(n int, start time.Time) []domain.Kline {
 
 // stubPredictor devuelve una predicción fija.
 type stubPredictor struct {
-	mu  sync.Mutex
-	req int
-	p   Prediction
-	err error
+	mu   sync.Mutex
+	req  int
+	p    Prediction
+	err  error
+	last []domain.Kline
 }
 
 func (s *stubPredictor) Predict(_ context.Context, symbol, timeframe string, ks []domain.Kline) (Prediction, error) {
 	s.mu.Lock()
 	s.req++
+	s.last = append([]domain.Kline(nil), ks...)
 	s.mu.Unlock()
 	if s.err != nil {
 		return Prediction{}, s.err
