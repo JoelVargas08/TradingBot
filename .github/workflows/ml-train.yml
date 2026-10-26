@@ -152,7 +152,7 @@ jobs:
             --epochs "$EPOCHS"
             --max-bars "$MAX_BARS"
             --max-ram-mb "$MAX_RAM_MB"
-            --max-time-sec "$MAX_TIME_SEC"
+            --max-seconds "$MAX_TIME_SEC"
             --out ml/models/candidates/candidate.json
             --report ml/models/candidates/report.json
             --verbose
