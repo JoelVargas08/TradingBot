@@ -6,8 +6,8 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,39 +144,43 @@ func TestWeexChannelName(t *testing.T) {
 	}
 }
 
-func TestWeexBackfillSavesAndValidatesQuery(t *testing.T) {
-	body := `[[1704067200000,"60000.0","60200.0","59900.0","60100.5","123.45",1704067260000,"60000.0",100,"100.0","200.0","0"]]`
-	var mu sync.Mutex
-	var symbol, interval, limit string
+func TestWeexBackfillUsesHistoryEndpoint(t *testing.T) {
+	const nowMs = int64(1704067200000)
+	var path, size string
+	var start, end int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/capi/v3/market/klines" {
-			t.Errorf("path = %q", r.URL.Path)
-		}
-		mu.Lock()
-		symbol = r.URL.Query().Get("symbol")
-		interval = r.URL.Query().Get("interval")
-		limit = r.URL.Query().Get("limit")
-		mu.Unlock()
-		w.Write([]byte(body))
+		path = r.URL.Path
+		size = r.URL.Query().Get("size")
+		start = queryInt(r, "startTime")
+		end = queryInt(r, "endTime")
+		w.Write([]byte("[" + klineRow(nowMs-2*3600000) + "]"))
 	}))
 	defer srv.Close()
 
 	store := &fakeCandleStore{dup: make(map[string]bool)}
-	p := NewWEEXProvider(store, WeexConfig{RestURL: srv.URL})
+	p := NewWEEXProvider(store, WeexConfig{RestURL: srv.URL, BackfillBars: 300, HistoryPageDelay: time.Nanosecond})
+	p.now = func() time.Time { return time.UnixMilli(nowMs) }
 	if err := p.Backfill(context.Background(), "BTCUSDT", "1h", 300); err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
-	mu.Lock()
-	if symbol != "BTCUSDT" || interval != "1h" || limit != "300" {
-		t.Errorf("query = %s %s %s", symbol, interval, limit)
+	if path != "/capi/v3/market/historyKlines" {
+		t.Errorf("path = %q, want /capi/v3/market/historyKlines", path)
 	}
-	mu.Unlock()
+	if size != "100" {
+		t.Errorf("size = %s, want 100", size)
+	}
+	if end != nowMs {
+		t.Errorf("endTime = %d, want %d", end, nowMs)
+	}
+	if start != nowMs-300*3600000 {
+		t.Errorf("startTime = %d, want %d", start, nowMs-300*3600000)
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if len(store.candles) != 1 {
 		t.Fatalf("velas = %d, want 1", len(store.candles))
 	}
-	if !store.candles[0].Closed || store.candles[0].Close != 60100.5 {
+	if !store.candles[0].Closed || store.candles[0].Close != 60050.5 {
 		t.Errorf("vela guardada inválida: %+v", store.candles[0])
 	}
 }
@@ -186,25 +190,46 @@ func TestWeexBackfillHTTPError(t *testing.T) {
 		http.Error(w, "boom", http.StatusTooManyRequests)
 	}))
 	defer srv.Close()
-	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL})
+	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL, MaxAttempts: 2, HistoryPageDelay: time.Nanosecond})
 	if err := p.Backfill(context.Background(), "BTCUSDT", "1h", 10); err == nil {
 		t.Error("Backfill con error HTTP debería fallar")
 	}
 }
 
-func TestWeexBackfillCapsLimitAt1000(t *testing.T) {
-	var got string
+func TestWeexBackfillPaginatesHistory(t *testing.T) {
+	const nowMs = int64(1704067200000)
+	const step = int64(3600000)
+	const total = 250
+	bars := make([]int64, 0, total)
+	for i := total; i >= 1; i-- {
+		bars = append(bars, nowMs-int64(i)*step)
+	}
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got = r.URL.Query().Get("limit")
-		w.Write([]byte("[]"))
+		calls.Add(1)
+		serveHistory(w, r, bars)
 	}))
 	defer srv.Close()
-	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL})
-	if err := p.Backfill(context.Background(), "BTCUSDT", "1h", 5000); err != nil {
+
+	store := &fakeCandleStore{dup: make(map[string]bool)}
+	p := NewWEEXProvider(store, WeexConfig{RestURL: srv.URL, HistoryPageDelay: time.Nanosecond})
+	p.now = func() time.Time { return time.UnixMilli(nowMs) }
+	if err := p.Backfill(context.Background(), "BTCUSDT", "1h", total); err != nil {
 		t.Fatalf("Backfill: %v", err)
 	}
-	if got != "1000" {
-		t.Errorf("limit = %s, want 1000", got)
+	if calls.Load() < 3 {
+		t.Errorf("llamadas = %d, want >= 3 (paginación)", calls.Load())
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.candles) != total {
+		t.Fatalf("velas = %d, want %d", len(store.candles), total)
+	}
+	if got := store.candles[0].Start.UnixMilli(); got != nowMs-total*step {
+		t.Errorf("primera vela = %d, want %d", got, nowMs-total*step)
+	}
+	if got := store.candles[len(store.candles)-1].Start.UnixMilli(); got != nowMs-step {
+		t.Errorf("última vela = %d, want %d", got, nowMs-step)
 	}
 }
 
@@ -414,40 +439,113 @@ func TestParseWSKlineDField(t *testing.T) {
 	}
 }
 
-func TestWeexGetKlinesSingleRequestCappedAtRestMaxBars(t *testing.T) {
-	// La API real de WEEX ignora startTime/endTime y devuelve como máximo
-	// RestMaxBars velas en una sola llamada: GetKlines no debe paginar.
+func TestWeexGetKlinesPaginatesBeyondOldCap(t *testing.T) {
+	const step = int64(3600000)
+	const total = 1200
+	base := int64(1704067200000) + total*step
+	bars := make([]int64, 0, total)
+	for i := total; i >= 1; i-- {
+		bars = append(bars, base-int64(i)*step)
+	}
 	var calls atomic.Int32
-	var gotLimit string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls.Add(1)
-		gotLimit = r.URL.Query().Get("limit")
-		rows := []string{}
-		for i := 0; i < RestMaxBars; i++ {
-			rows = append(rows, klineRow(int64(i+1)*int64(3600000)))
+		if r.URL.Path != "/capi/v3/market/historyKlines" {
+			t.Errorf("path = %q", r.URL.Path)
 		}
-		w.Write([]byte("[" + strings.Join(rows, ",") + "]"))
+		calls.Add(1)
+		serveHistory(w, r, bars)
 	}))
 	defer srv.Close()
 
-	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL})
-	bars, err := p.GetKlines(context.Background(), "BTCUSDT", "1h", time.UnixMilli(1), time.UnixMilli(5000*3600000), 5000)
+	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL, HistoryPageDelay: time.Nanosecond})
+	start := time.UnixMilli(base - total*step)
+	end := time.UnixMilli(base)
+	got, err := p.GetKlines(context.Background(), "BTCUSDT", "1h", start, end, total)
 	if err != nil {
 		t.Fatalf("GetKlines: %v", err)
 	}
-	if gotLimit != "1000" {
-		t.Errorf("limit = %s, want 1000 (tope REST)", gotLimit)
+	if calls.Load() < 12 {
+		t.Errorf("llamadas = %d, want >= 12 (100 velas por llamada)", calls.Load())
 	}
-	if calls.Load() != 1 {
-		t.Errorf("llamadas = %d, want 1 (sin paginación)", calls.Load())
+	if len(got) != total {
+		t.Fatalf("bars = %d, want %d", len(got), total)
 	}
-	if len(bars) != RestMaxBars {
-		t.Fatalf("bars = %d, want %d", len(bars), RestMaxBars)
-	}
-	for i := 1; i < len(bars); i++ {
-		if !bars[i].Start.After(bars[i-1].Start) {
+	for i := 1; i < len(got); i++ {
+		if !got[i].Start.After(got[i-1].Start) {
 			t.Fatalf("velas no estrictamente crecientes en índice %d", i)
 		}
+	}
+	if got[0].Start.UnixMilli() != base-total*step || got[len(got)-1].Start.UnixMilli() != base-step {
+		t.Errorf("rango devuelto = [%d,%d]", got[0].Start.UnixMilli(), got[len(got)-1].Start.UnixMilli())
+	}
+}
+
+func TestWeexGetKlinesWindowsMax90Days(t *testing.T) {
+	const day = int64(24 * 3600000)
+	const total = 200
+	base := int64(1704067200000) + total*day
+	bars := make([]int64, 0, total)
+	for i := total; i >= 1; i-- {
+		bars = append(bars, base-int64(i)*day)
+	}
+	var ranges [][2]int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := queryInt(r, "startTime")
+		end := queryInt(r, "endTime")
+		ranges = append(ranges, [2]int64{start, end})
+		serveHistory(w, r, bars)
+	}))
+	defer srv.Close()
+
+	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL, HistoryPageDelay: time.Nanosecond})
+	got, err := p.GetKlines(context.Background(), "BTCUSDT", "1d",
+		time.UnixMilli(base-total*day), time.UnixMilli(base), total)
+	if err != nil {
+		t.Fatalf("GetKlines: %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("bars = %d, want %d", len(got), total)
+	}
+	if len(ranges) < 3 {
+		t.Errorf("consultas = %d, want >= 3 ventanas de 90 días", len(ranges))
+	}
+	maxRange := int64(HistoryMaxRange / time.Millisecond)
+	for i, r := range ranges {
+		if r[1]-r[0] > maxRange {
+			t.Errorf("ventana %d excede 90 días: %d ms", i, r[1]-r[0])
+		}
+	}
+}
+
+func TestWeexGetKlinesStopsWhenHistoryExhausted(t *testing.T) {
+	const step = int64(3600000)
+	const total = 250
+	base := int64(1704067200000) + total*step
+	bars := make([]int64, 0, total)
+	for i := total; i >= 1; i-- {
+		bars = append(bars, base-int64(i)*step)
+	}
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		serveHistory(w, r, bars)
+	}))
+	defer srv.Close()
+
+	p := NewWEEXProvider(&fakeCandleStore{}, WeexConfig{RestURL: srv.URL, HistoryPageDelay: time.Nanosecond})
+	start := time.UnixMilli(base - 365*24*step)
+	got, err := p.GetKlines(context.Background(), "BTCUSDT", "1h", start, time.UnixMilli(base), 100000)
+	if err != nil {
+		t.Fatalf("GetKlines: %v", err)
+	}
+	if len(got) != total {
+		t.Fatalf("bars = %d, want %d", len(got), total)
+	}
+	if got[0].Start.UnixMilli() != base-total*step {
+		t.Errorf("primera vela = %d, want %d", got[0].Start.UnixMilli(), base-total*step)
+	}
+	if calls.Load() > 5 {
+		t.Errorf("llamadas = %d, want <= 5 (parar al agotar histórico)", calls.Load())
 	}
 }
 
@@ -468,6 +566,9 @@ func TestWeexGetKlinesValidation(t *testing.T) {
 	}
 	if _, err := p.GetKlines(ctx, "BTCUSDT", "1h", time.Time{}, time.Now(), 10); err == nil {
 		t.Error("start cero debería fallar")
+	}
+	if _, err := p.GetKlines(ctx, "BTCUSDT", "1h", time.Now(), time.Now().Add(-time.Hour), 10); err == nil {
+		t.Error("rango invertido debería fallar")
 	}
 }
 
@@ -582,4 +683,28 @@ func TestWeexConfigWithDefaults(t *testing.T) {
 	if c.BackfillBars != RestMaxBars || c.HTTPClient == nil || c.MaxAttempts <= 1 {
 		t.Errorf("defaults inválidos: %+v", c)
 	}
+	if c.HistoryPageDelay <= 0 {
+		t.Errorf("HistoryPageDelay = %v, want > 0", c.HistoryPageDelay)
+	}
+}
+
+func queryInt(r *http.Request, name string) int64 {
+	v, _ := strconv.ParseInt(r.URL.Query().Get(name), 10, 64)
+	return v
+}
+
+// serveHistory simula /historyKlines: devuelve como máximo HistoryMaxBars velas
+// dentro de [startTime, endTime], de la más reciente a la más antigua.
+func serveHistory(w http.ResponseWriter, r *http.Request, bars []int64) {
+	start := queryInt(r, "startTime")
+	end := queryInt(r, "endTime")
+	rows := make([]string, 0, HistoryMaxBars)
+	for i := len(bars) - 1; i >= 0 && len(rows) < HistoryMaxBars; i-- {
+		ts := bars[i]
+		if ts < start || ts > end {
+			continue
+		}
+		rows = append(rows, klineRow(ts))
+	}
+	w.Write([]byte("[" + strings.Join(rows, ",") + "]"))
 }

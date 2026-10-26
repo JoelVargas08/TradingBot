@@ -33,10 +33,22 @@ type WeexConfig struct {
 	BackfillBars  int
 	MaxAttempts   int
 	HTTPClient    *http.Client
+	// HistoryPageDelay separa las llamadas a /historyKlines para no saturar
+	// el rate limit público. No afecta a /klines ni al streaming.
+	HistoryPageDelay time.Duration
 }
 
-// RestMaxBars es el límite de velas por llamada REST de WEEX.
-const RestMaxBars = 1000
+const (
+	// RestMaxBars es el tope de /capi/v3/market/klines, que solo devuelve las
+	// velas más recientes e ignora startTime/endTime.
+	RestMaxBars = 1000
+	// HistoryMaxBars es el máximo de velas por respuesta de /historyKlines.
+	HistoryMaxBars = 100
+	// HistoryMaxRange es el rango temporal máximo por consulta de /historyKlines.
+	HistoryMaxRange = 90 * 24 * time.Hour
+	// MaxBackfillBars acota una descarga histórica para evitar consumos abusivos.
+	MaxBackfillBars = 200000
+)
 
 func (c WeexConfig) withDefaults() WeexConfig {
 	if c.RestURL == "" {
@@ -65,6 +77,9 @@ func (c WeexConfig) withDefaults() WeexConfig {
 	}
 	if c.MaxAttempts <= 1 {
 		c.MaxAttempts = 4
+	}
+	if c.HistoryPageDelay <= 0 {
+		c.HistoryPageDelay = 50 * time.Millisecond
 	}
 	if c.HTTPClient != nil {
 		return c
@@ -98,9 +113,8 @@ func NewWEEXProvider(store domain.CandleStore, cfg WeexConfig) *WeexProvider {
 }
 
 // Backfill descarga velas históricas cerradas y las persiste en el CandleStore.
-// La API pública de WEEX ignora startTime/endTime y solo sirve las RestMaxBars
-// velas más recientes, así que el límite se acota a RestMaxBars. Reintenta
-// errores transitorios (429/5xx) con backoff.
+// Usa /historyKlines, que sí respeta startTime/endTime, con paginación inversa
+// en ventanas de 90 días (máximo de la API) y 100 velas por respuesta.
 func (p *WeexProvider) Backfill(ctx context.Context, symbol, timeframe string, limit int) error {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	timeframe = strings.TrimSpace(timeframe)
@@ -110,12 +124,13 @@ func (p *WeexProvider) Backfill(ctx context.Context, symbol, timeframe string, l
 	if limit <= 0 {
 		limit = p.cfg.BackfillBars
 	}
-	if limit > RestMaxBars {
-		log.Printf("weex backfill: limit %d excede el máximo de la API (%d); se pedirán %d velas recientes", limit, RestMaxBars, RestMaxBars)
-		limit = RestMaxBars
+	if limit > MaxBackfillBars {
+		log.Printf("weex backfill: limit %d excede el máximo seguro (%d); se acotará", limit, MaxBackfillBars)
+		limit = MaxBackfillBars
 	}
-	current := time.Now().Truncate(parseInterval(timeframe))
-	start := current.Add(-time.Duration(limit) * parseInterval(timeframe))
+	step := parseInterval(timeframe)
+	current := p.now().Truncate(step)
+	start := current.Add(-time.Duration(limit) * step)
 	rows, err := p.GetKlines(ctx, symbol, timeframe, start, current, limit)
 	if err != nil {
 		return fmt.Errorf("weex backfill %s %s: %w", symbol, timeframe, err)
@@ -128,17 +143,17 @@ func (p *WeexProvider) Backfill(ctx context.Context, symbol, timeframe string, l
 		seen++
 	}
 	if seen < limit {
-		log.Printf("weex backfill: %s %s -> %d velas (pedidas %d); la API pública de WEEX ignora rangos y solo sirve las %d más recientes", symbol, timeframe, seen, limit, RestMaxBars)
+		log.Printf("weex backfill: %s %s -> %d velas (pedidas %d); el histórico disponible en /historyKlines puede ser menor", symbol, timeframe, seen, limit)
 	} else {
 		log.Printf("weex backfill: %s %s -> %d velas almacenadas", symbol, timeframe, seen)
 	}
 	return nil
 }
 
-// GetKlines descarga las velas más recientes disponibles y las devuelve
-// ordenadas ascendentemente, sin duplicados y validadas. La API pública de WEEX
-// ignora startTime/endTime y limita la respuesta a RestMaxBars velas, por lo que
-// no se puede paginar hacia atrás del máximo reciente.
+// GetKlines descarga velas cerradas por rango usando /historyKlines, que sí
+// honra startTime/endTime. La API limita cada respuesta a HistoryMaxBars y cada
+// consulta a HistoryMaxRange, así que se pagina hacia atrás por endTime y se
+// recorren ventanas consecutivas hasta cubrir [start, end] o alcanzar limit.
 func (p *WeexProvider) GetKlines(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, error) {
 	symbol = strings.ToUpper(strings.TrimSpace(symbol))
 	timeframe = strings.TrimSpace(timeframe)
@@ -149,41 +164,105 @@ func (p *WeexProvider) GetKlines(ctx context.Context, symbol, timeframe string, 
 		return nil, fmt.Errorf("start requerido")
 	}
 	if end.IsZero() {
-		end = time.Now()
+		end = p.now()
+	}
+	if !end.After(start) {
+		return nil, fmt.Errorf("rango inválido: end debe ser posterior a start")
 	}
 	if limit <= 0 {
 		limit = p.cfg.BackfillBars
 	}
-	if limit > RestMaxBars {
-		limit = RestMaxBars
+	if limit > MaxBackfillBars {
+		limit = MaxBackfillBars
 	}
-	bars, err := p.fetchKlinesRange(ctx, symbol, timeframe, start, end, limit)
+	bars, err := p.fetchHistoryRange(ctx, symbol, timeframe, start, end, limit)
 	if err != nil {
 		return nil, err
 	}
-	return dedupeSortKlines(bars), nil
+	if len(bars) > limit {
+		bars = bars[len(bars)-limit:]
+	}
+	return bars, nil
 }
 
-func (p *WeexProvider) klinesURL(symbol, timeframe string, start, end time.Time, limit int) string {
-	u := fmt.Sprintf("%s/capi/v3/market/klines?symbol=%s&interval=%s&limit=%d",
-		strings.TrimRight(p.cfg.RestURL, "/"), symbol, timeframe, limit)
-	if !start.IsZero() {
-		u += fmt.Sprintf("&startTime=%d", start.UnixMilli())
+// fetchHistoryRange recorre el rango de más reciente a más antiguo. En cada
+// ventana de HistoryMaxRange pagina hacia atrás usando el timestamp de la vela
+// más antigua recibida.
+func (p *WeexProvider) fetchHistoryRange(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, error) {
+	var out []domain.Kline
+	anchorEnd := end
+	for len(out) < limit && !anchorEnd.Before(start) {
+		before := len(out)
+		windowStart := anchorEnd.Add(-HistoryMaxRange)
+		if windowStart.Before(start) {
+			windowStart = start
+		}
+		pageEnd := anchorEnd
+		firstPage := true
+		for len(out) < limit {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if !firstPage && !waitHistoryPage(ctx, p.cfg.HistoryPageDelay) {
+				return nil, ctx.Err()
+			}
+			firstPage = false
+			rows, err := p.fetchHistoryPage(ctx, symbol, timeframe, windowStart, pageEnd)
+			if err != nil {
+				return nil, err
+			}
+			if len(rows) == 0 {
+				break
+			}
+			out = append(out, rows...)
+			if len(rows) < HistoryMaxBars {
+				break
+			}
+			oldest := rows[0].Start
+			nextEnd := oldest.Add(-time.Millisecond)
+			if nextEnd.Before(windowStart) {
+				break
+			}
+			pageEnd = nextEnd
+		}
+		if len(out) == before {
+			break
+		}
+		nextWindowEnd := windowStart.Add(-time.Millisecond)
+		if !nextWindowEnd.Before(anchorEnd) {
+			break
+		}
+		anchorEnd = nextWindowEnd
 	}
-	if !end.IsZero() {
-		u += fmt.Sprintf("&endTime=%d", end.UnixMilli())
-	}
-	return u
+	return dedupeSortKlines(out), nil
 }
 
-// fetchKlines recupera un bloque REST y reintenta errores transitorios.
-func (p *WeexProvider) fetchKlinesRange(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, error) {
+func waitHistoryPage(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return true
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-time.After(d):
+		return true
+	}
+}
+
+func (p *WeexProvider) historyURL(symbol, timeframe string, start, end time.Time) string {
+	return fmt.Sprintf("%s/capi/v3/market/historyKlines?symbol=%s&interval=%s&startTime=%d&endTime=%d&size=%d",
+		strings.TrimRight(p.cfg.RestURL, "/"), symbol, timeframe, start.UnixMilli(), end.UnixMilli(), HistoryMaxBars)
+}
+
+// fetchHistoryPage recupera un bloque de /historyKlines y reintenta errores
+// transitorios (429/5xx) con backoff.
+func (p *WeexProvider) fetchHistoryPage(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
 	var lastErr error
 	for attempt := 1; attempt <= p.cfg.MaxAttempts; attempt++ {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
-		bars, retriable, err := p.doFetchKlines(ctx, symbol, timeframe, start, end, limit)
+		bars, retriable, err := p.doFetchHistory(ctx, symbol, timeframe, start, end)
 		if err == nil {
 			return bars, nil
 		}
@@ -195,7 +274,7 @@ func (p *WeexProvider) fetchKlinesRange(ctx context.Context, symbol, timeframe s
 		if delay > 5*time.Second {
 			delay = 5 * time.Second
 		}
-		log.Printf("weex rest: intento %d/%d falló (%v); reintentando en %v", attempt, p.cfg.MaxAttempts, err, delay)
+		log.Printf("weex history: intento %d/%d falló (%v); reintentando en %v", attempt, p.cfg.MaxAttempts, err, delay)
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
@@ -205,10 +284,10 @@ func (p *WeexProvider) fetchKlinesRange(ctx context.Context, symbol, timeframe s
 	return nil, lastErr
 }
 
-// doFetchKlines ejecuta una única llamada REST. Devuelve retriable=true para
+// doFetchHistory ejecuta una única llamada REST. Devuelve retriable=true para
 // errores transitorios (429 o 5xx).
-func (p *WeexProvider) doFetchKlines(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.klinesURL(symbol, timeframe, start, end, limit), nil)
+func (p *WeexProvider) doFetchHistory(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, bool, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.historyURL(symbol, timeframe, start, end), nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -217,15 +296,15 @@ func (p *WeexProvider) doFetchKlines(ctx context.Context, symbol, timeframe stri
 		return nil, true, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		return nil, true, err
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return nil, true, fmt.Errorf("weex rest %d: %s", resp.StatusCode, string(body))
+		return nil, true, fmt.Errorf("weex history %d: %s", resp.StatusCode, string(body))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("weex rest %d: %s", resp.StatusCode, string(body))
+		return nil, false, fmt.Errorf("weex history %d: %s", resp.StatusCode, string(body))
 	}
 	bars, err := parseWeexKlines(body, symbol, timeframe)
 	if err != nil {

@@ -79,7 +79,7 @@ type report struct {
 func main() {
 	dbPath := flag.String("db", "data/bot.db", "ruta a la base SQLite")
 	symbol := flag.String("symbol", "BTCUSDT", "símbolo")
-	limit := flag.Int("limit", 1000, "velas por timeframe (tope WEEX: 1000)")
+	limit := flag.Int("limit", 1000, "velas por timeframe (historyKlines pagina hasta el límite)")
 	tfsFlag := flag.String("timeframes", "1h,15m,5m", "principal,entrada,confirmación")
 	confirm := flag.Bool("confirm", false, "exigir confirmación del tercer timeframe")
 	backfill := flag.Bool("backfill", false, "descargar velas desde WEEX")

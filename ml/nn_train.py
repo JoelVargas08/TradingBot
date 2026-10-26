@@ -428,7 +428,10 @@ def main():
         )
         report['validation_status'] = 'complete' if complete else 'inconclusive'
         report['eligible_for_promotion'] = bool(
-            complete and not guard.timed_out and not guard.oom_risk
+            complete
+            and test_trade.get('beats_baseline') is True
+            and not guard.timed_out
+            and not guard.oom_risk
         )
         if not complete:
             print(

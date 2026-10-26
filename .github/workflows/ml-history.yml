@@ -1,0 +1,107 @@
+name: TradingBot - ML History (WEEX)
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbol:
+        description: "Símbolo a descargar"
+        required: true
+        default: "BTCUSDT"
+        type: string
+      timeframe:
+        description: "Timeframe"
+        required: true
+        default: "1h"
+        type: choice
+        options: [1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d, 1w]
+      bars:
+        description: "Velas históricas a descargar (máx 200000)"
+        required: true
+        default: "8000"
+        type: string
+      csv:
+        description: "Exportar también CSV para entrenamiento"
+        required: true
+        default: "true"
+        type: choice
+        options: ["true", "false"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tradingbot-ml-history
+  cancel-in-progress: false
+
+jobs:
+  history:
+    name: Histórico profundo WEEX (/historyKlines)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      SYMBOL: ${{ inputs.symbol }}
+      TIMEFRAME: ${{ inputs.timeframe }}
+      BARS: ${{ inputs.bars }}
+      CSV_ENABLED: ${{ inputs.csv }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Validate inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SYMBOL" =~ ^[A-Za-z0-9]{3,24}$ ]] || { echo "símbolo inválido: $SYMBOL"; exit 2; }
+          [[ "$TIMEFRAME" =~ ^(1m|5m|15m|30m|1h|4h|12h|1d|1w)$ ]] || { echo "timeframe inválido: $TIMEFRAME"; exit 2; }
+          [[ "$BARS" =~ ^[0-9]+$ ]] && (( BARS >= 100 && BARS <= 200000 )) || { echo "bars inválido: $BARS"; exit 2; }
+          [[ "$CSV_ENABLED" == "true" || "$CSV_ENABLED" == "false" ]] || { echo "csv inválido"; exit 2; }
+
+      - name: Download history
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p data
+          args=(
+            go run ./cmd/mlhistory
+            -db data/bot.db
+            -symbol "$SYMBOL"
+            -timeframe "$TIMEFRAME"
+            -bars "$BARS"
+            -timeout 20m
+          )
+          if [[ "$CSV_ENABLED" == "true" ]]; then
+            args+=(-csv data/ml_history.csv)
+          fi
+          "${args[@]}" | tee data/history_report.json
+
+      - name: Job summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f data/history_report.json ]]; then
+            echo '### Histórico WEEX' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat data/history_report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Sin informe de histórico." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload history artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ml-history
+          path: data/
+          if-no-files-found: warn
+          retention-days: 30

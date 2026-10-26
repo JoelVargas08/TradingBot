@@ -9,7 +9,7 @@ on:
         default: "BTCUSDT"
         type: string
       timeframe:
-        description: "Timeframe (1m, 5m, 15m, 30m, 1h, 4h, 1d)"
+        description: "Timeframe (1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d, 1w)"
         required: true
         default: "1h"
         type: string
@@ -18,7 +18,7 @@ on:
         required: true
         default: "db"
         type: choice
-        options: [db, csv]
+        options: [db, history, csv]
       csv_path:
         description: "Ruta del CSV si source=csv"
         required: false
@@ -90,8 +90,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$SYMBOL" =~ ^[A-Z0-9]{3,24}$ ]] || { echo "símbolo inválido: $SYMBOL"; exit 2; }
-          [[ "$TIMEFRAME" =~ ^(1m|5m|15m|30m|1h|4h|1d)$ ]] || { echo "timeframe inválido: $TIMEFRAME"; exit 2; }
+          [[ "$SYMBOL" =~ ^[A-Za-z0-9]{3,24}$ ]] || { echo "símbolo inválido: $SYMBOL"; exit 2; }
+          [[ "$TIMEFRAME" =~ ^(1m|5m|15m|30m|1h|4h|12h|1d|1w)$ ]] || { echo "timeframe inválido: $TIMEFRAME"; exit 2; }
           [[ "$EPOCHS" =~ ^[0-9]+$ ]] && (( EPOCHS > 0 && EPOCHS <= 300 )) || { echo "epochs inválido"; exit 2; }
           [[ "$MAX_BARS" =~ ^[0-9]+$ ]] && (( MAX_BARS >= 200 )) || { echo "max_bars inválido"; exit 2; }
           [[ "$MAX_RAM_MB" =~ ^[0-9]+$ ]] || { echo "max_ram_mb inválido"; exit 2; }
@@ -110,7 +110,7 @@ jobs:
           mkdir -p data restore
           artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.name == "tradingbot-state" and .expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
           if [[ -z "$artifact_run_id" ]]; then
-            echo "::error::No hay artefacto tradingbot-state. Ejecuta una sesión PAPER o usa source=csv."
+            echo "::error::No hay artefacto tradingbot-state. Ejecuta una sesión PAPER o usa source=history/csv."
             exit 1
           fi
           gh run download "$artifact_run_id" --repo "$GITHUB_REPOSITORY" --name tradingbot-state --dir restore
@@ -121,6 +121,24 @@ jobs:
           tar -xzf restore/tradingbot-state.tgz
           test -f data/bot.db || { echo "::error::No se restauró data/bot.db"; exit 1; }
           echo "DB restaurada ($(du -h data/bot.db | cut -f1)) de la ejecución $artifact_run_id"
+
+      - name: Restore latest ML history database
+        if: ${{ inputs.source == 'history' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p data restore-history
+          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.name == "ml-history" and .expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
+          if [[ -z "$artifact_run_id" ]]; then
+            echo "::error::No hay artefacto ml-history. Ejecuta primero ML History (WEEX)."
+            exit 1
+          fi
+          gh run download "$artifact_run_id" --repo "$GITHUB_REPOSITORY" --name ml-history --dir restore-history
+          test -f restore-history/bot.db || { echo "::error::El artefacto ml-history no contiene bot.db"; exit 1; }
+          cp restore-history/bot.db data/bot.db
+          echo "DB histórica restaurada ($(du -h data/bot.db | cut -f1)) de la ejecución $artifact_run_id"
 
       - name: Train candidate
         shell: bash
@@ -139,10 +157,10 @@ jobs:
             --report ml/models/candidates/report.json
             --verbose
           )
-          if [[ "$SOURCE" == "db" ]]; then
-            args+=(--db data/bot.db)
-          else
+          if [[ "$SOURCE" == "csv" ]]; then
             args+=(--csv "$CSV_PATH")
+          else
+            args+=(--db data/bot.db)
           fi
           "${args[@]}"
 

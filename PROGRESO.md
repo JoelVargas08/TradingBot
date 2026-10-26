@@ -197,21 +197,25 @@ mediante un único `tradeSim` compartido.
 
 ### 6.1 Limitaciones de la fuente WEEX y corrección aplicada
 
-Verificado contra `api-contract.weex.com`:
+Verificado contra `api-contract.weex.com` (2026-10-26):
 
 1. **Timeframes servidos:** `1m,5m,15m,30m,1h,4h,12h,1d,1w`. **No hay `2h`** (HTTP 400).
-2. **Rangos ignorados:** `/capi/v3/market/klines` ignora `startTime`/`endTime`.
-3. **Tope de 1000 velas** por llamada (las más recientes).
+2. **`/capi/v3/market/klines` ignora rangos:** devuelve como máximo las 1000 velas
+   más recientes, aunque se envíen `startTime`/`endTime`.
+3. **`/capi/v3/market/historyKlines` sí honra rangos:** acepta
+   `startTime`/`endTime`, limita cada consulta a **90 días** y cada respuesta a
+   **100 velas**. Se puede paginar hacia atrás moviendo `endTime` al timestamp de
+   la vela más antigua recibida menos 1 ms. Verificado con ventanas de 2/9/30/90
+   días (`{"code":-1170,"msg":"Time range cannot exceed 90 days."}` al exceder 90).
 
 **Corrección aplicada:**
-- `WeexBackfillBars` por defecto `5000` → **`1000`** (`config/config.go`).
-- `WeexProvider.Backfill` acota `limit` a `RestMaxBars` con *warning* y avisa si
-  `seen < limit`.
-- `WeexProvider.GetKlines` ya **no pagina**: una sola llamada acotada a `RestMaxBars`
-  (refleja que la API ignora rangos).
-- Tests actualizados: `TestWeexConfigWithDefaults`,
-  `TestWeexGetKlinesSingleRequestCappedAtRestMaxBars`,
-  `TestWeexGetKlinesDeduplicatesWithinResponse`.
+- `WeexProvider.GetKlines` usa `/historyKlines` y pagina por ventanas de 90 días
+  y páginas de 100 velas; `Backfill` ya no está limitado a 1000 velas.
+- `WeexBackfillBars` sigue en **1000** por defecto para el feed en vivo (coste
+  bajo); el histórico profundo se descarga con `cmd/mlhistory` (hasta 200000).
+- Tests actualizados: `TestWeexBackfillPaginatesHistory`,
+  `TestWeexGetKlinesPaginatesBeyondOldCap`, `TestWeexGetKlinesWindowsMax90Days`,
+  `TestWeexBackfillUsesHistoryEndpoint`.
 
 ---
 
@@ -224,8 +228,10 @@ Verificado contra `api-contract.weex.com`:
    hoy configurable con default `false`).
 5. **Fase 6 no bloqueante:** diagnóstico por zona Fibonacci individual (zona 1 vs 2) y
    perfil de riesgo como dimensión del `SearchSpace`.
-6. **Historia profunda:** solo se acumula por streaming WS (la API REST no permite
-   backfill largo en WEEX).
+6. **Historia profunda:** resuelta. `cmd/mlhistory` y el workflow
+   `ML History (WEEX)` descargan histórico paginado con `/historyKlines`
+   (ventanas de 90 días, 100 velas/llamada) y lo dejan en SQLite/CSV para
+   entrenar la red neuronal. El feed en vivo mantiene 1000 velas por defecto.
 7. **Despliegue del controlador Telegram** (2026-10-21): fusionar
    `fix/telegram-controller` en `main` (el controlador despacha con
    `ref: main`) y crear la variable de Actions `TELEGRAM_ADMIN_CHAT_ID`.
@@ -243,6 +249,13 @@ go vet ./...
 go test ./... -count=1        # 32 paquetes OK
 gofmt -l <archivos nuevos>    # limpio (varios .go pre-existentes son CRLF: no reformatear)
 py -3 -m unittest discover -s .github/scripts -p "test_*.py"   # 45 tests del controlador
+py -3 -m unittest discover -s tests/ml -p "test_*.py"          # 13 tests ML
+```
+
+Histórico profundo para ML (WEEX `/historyKlines`, paginado):
+
+```powershell
+go run ./cmd/mlhistory -db <db-temporal> -symbol BTCUSDT -timeframe 1h -bars 5000
 ```
 
 Validación IB end-to-end sin Telegram:
@@ -259,6 +272,7 @@ go run ./cmd/ibvalidate -db <db-temporal> -symbol BTCUSDT -timeframes 1h,15m,5m 
 - **Especificación IB:** `docs/INVESTING_BULLS_STRATEGY.md` (R01-R26, §6.1 WEEX).
 - **Flujo/uso IB:** `docs/INVESTING_BULLS.md`.
 - **Memoria IB (detallada):** `MEMORIA_FASE_IB_ASIMILACION.md`.
+- **Histórico WEEX para ML (Fase 10):** `MEMORIA_FASE_10_HISTORICO_WEEX.md`.
 - **Planes IB:** `PLAN_IMPLEMENTACION_INVESTING_BULLS.md`,
   `PLAN_ASIMILAR_ESTRATEGIA_INVESTING_BULLS.md`.
 - **Fuente IB:** `docs/source/estrategia_investing_bulls_p34.txt`.
@@ -281,3 +295,14 @@ go run ./cmd/ibvalidate -db <db-temporal> -symbol BTCUSDT -timeframes 1h,15m,5m 
 Implementado un MLP NumPy pequeño con entrenamiento manual, promoción manual y inferencia dentro
 de la sesión PAPER. No hay trading real ni promoción automática. Detalle completo en
 `MEMORIA_FASE_9_RED_NEURONAL.md`.
+
+---
+
+## 11. Fase 10 - Histórico profundo WEEX (2026-10-26)
+
+Resuelto el bloqueo de datos de la Fase 9. `/historyKlines` sí honra `startTime`/`endTime`
+(máx. 90 días por consulta, 100 velas por respuesta); `GetKlines`/`Backfill` ahora paginan y
+`cmd/mlhistory` + workflow `ML History (WEEX)` siembran SQLite/CSV. Verificado con **5000 velas
+1h, 0 huecos**. El holdout de entrenamiento ya es concluyente (12 trades), pero el modelo actual
+**no supera la línea base**, así que `eligible_for_promotion=false` y no se promociona. Detalle en
+`MEMORIA_FASE_10_HISTORICO_WEEX.md`.

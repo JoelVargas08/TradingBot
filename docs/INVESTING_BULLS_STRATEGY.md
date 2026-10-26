@@ -410,16 +410,21 @@ decisión de ingeniería.
 
 ### 6.1 Limitaciones de la fuente de datos (WEEX)
 
-Verificadas contra la API real (`api-contract.weex.com`, Fase 7):
+Verificadas contra la API real (`api-contract.weex.com`, 2026-10-26):
 
 1. **Timeframes servidos:** `1m,5m,15m,30m,1h,4h,12h,1d,1w`. **`2h` no existe** (HTTP 400).
-2. **Rangos ignorados:** `/capi/v3/market/klines` ignora `startTime`/`endTime` (probado en ms y s, y
-   con `start`/`end`/`from`/`to`); `historyKlines` (param `size`) también ignora rangos.
-3. **Tope de 1000 velas:** el endpoint devuelve como máximo las **1000 velas más recientes** por
-   llamada. `WeexProvider.GetKlines` hace una única llamada acotada a `RestMaxBars` (1000) — no pagina.
-   El backfill entrega ~1000 velas/timeframe; `WeexBackfillBars` se acota a 1000 (default corregido).
-4. **Consecuencia:** con `RequireConfirm` (5m), 1000 velas ≈ 3.5 días de historia común, insuficiente
-   para el walk-forward MTF. La historia profunda solo se acumula por streaming WS.
+2. **`/capi/v3/market/klines` ignora rangos:** devuelve como máximo las **1000 velas más
+   recientes**, aunque se envíen `startTime`/`endTime` (probado en ms y s, y con
+   `start`/`end`/`from`/`to`).
+3. **`/capi/v3/market/historyKlines` sí honra rangos:** acepta `startTime`/`endTime`,
+   limita cada consulta a **90 días** (`-1170 Time range cannot exceed 90 days.`) y cada
+   respuesta a **100 velas**. Se pagina hacia atrás con `endTime = ts_más_antiguo - 1ms`.
+4. **Corrección aplicada:** `WeexProvider.GetKlines` pagina con `/historyKlines`
+   (ventanas de 90 días, 100 velas/página) y `Backfill` ya no está limitado a 1000 velas.
+   El feed en vivo mantiene `WEEX_BACKFILL_BARS=1000`; el histórico profundo para ML se
+   descarga con `cmd/mlhistory` (hasta 200000 velas) y el workflow `ML History (WEEX)`.
+5. **Consecuencia:** con `RequireConfirm` (5m) se puede obtener la ventana común necesaria;
+   ya no depende de acumular por streaming WS.
 
 ## 7. Mantenimiento
 

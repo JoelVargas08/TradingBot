@@ -9,6 +9,11 @@ walk-forward histórico); pendiente solo la **observación PAPER de 100 operacio
 Hallazgo principal: WEEX ignora rangos y limita a 1000 velas por timeframe. **Corrección aplicada:**
 el backfill WEEX se acota a 1000 velas (default `WeexBackfillBars` y `GetKlines` sin paginación inerte).
 
+> **Actualización 2026-10-26:** verificado en vivo que `/capi/v3/market/historyKlines` **sí honra
+> `startTime`/`endTime`**, con ventanas de máximo 90 días y 100 velas por respuesta. `GetKlines` ahora
+> pagina con ese endpoint y el backfill ya no está limitado a 1000 velas. El histórico profundo para ML
+> se descarga con `cmd/mlhistory` / workflow `ML History (WEEX)`. Ver `MEMORIA_FASE_10_HISTORICO_WEEX.md`.
+
 El trabajo sigue `PLAN_IMPLEMENTACION_INVESTING_BULLS.md` (fases, principios y decisiones
 bloqueantes) y su plan origen `PLAN_ASIMILAR_ESTRATEGIA_INVESTING_BULLS.md`, leyendo la fuente
 `docs/source/estrategia_investing_bulls_p34.txt`.
