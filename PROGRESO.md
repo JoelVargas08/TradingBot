@@ -306,3 +306,8 @@ Resuelto el bloqueo de datos de la Fase 9. `/historyKlines` sí honra `startTime
 1h, 0 huecos**. El holdout de entrenamiento ya es concluyente (12 trades), pero el modelo actual
 **no supera la línea base**, así que `eligible_for_promotion=false` y no se promociona. Detalle en
 `MEMORIA_FASE_10_HISTORICO_WEEX.md`.
+
+Corrida a escala (8000 velas 1h, 80 épocas, 4 folds): 0 huecos; holdout de 1590 filas. Con
+`--conf 0.6` no hay trades (`inconclusive`); con `--conf 0.3` hay 7 trades y net -7.01 % vs
+baseline +6.31 %. Walk-forward negativo en ambos casos. La falta de datos ya no bloquea; el
+siguiente paso es mejorar la señal (Fase 11), no descargar más velas.

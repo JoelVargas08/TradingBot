@@ -145,6 +145,41 @@ Conclusión: el problema de datos está resuelto y el mecanismo de seguridad fun
 actual **no debe promoverse** porque no supera la línea base. Esto es el resultado esperado y no un
 fallo del pipeline.
 
+### 4.1 Corrida a escala (8000 velas, 80 épocas, 4 folds)
+
+Descarga:
+
+```powershell
+go run ./cmd/mlhistory -db $env:TEMP\mlhistory_8000.db -symbol BTCUSDT -timeframe 1h -bars 8000
+```
+
+Resultado: **8000 velas**, 0 huecos, desde `2025-11-27T05:00:00Z` hasta
+`2026-10-26T12:00:00Z` (~333 días).
+
+Entrenamiento con el umbral de confianza por defecto (`--conf 0.6`):
+
+- `validation_status=inconclusive` por **0 trades** en el holdout (1590 filas).
+- Holdout acc `0.573`; modelo `0.00 %` vs baseline alcista `+6.31 %`.
+- Walk-forward: 4 folds, 12 trades, win rate 33 %, retorno compuesto `-2.18 %`.
+- `eligible_for_promotion=false`.
+
+Entrenamiento exploratorio con `--conf 0.3` (mismo dataset y épocas):
+
+- Holdout: **7 trades**, net `-7.01 %` vs baseline `+6.31 %`.
+- Walk-forward: 35 trades, win rate 28.6 %, retorno compuesto `-19.1 %`.
+- Sigue `inconclusive` (7 < 10 trades) y `eligible_for_promotion=false`.
+
+Interpretación:
+
+1. La falta de datos **ya no es el bloqueo**: hay 8000 velas limpias y el holdout es grande.
+2. El modelo acierta dirección ~57 % en el holdout, pero **pierde con costes** y los shorts en un
+   tramo alcista destruyen el retorno. Bajar el umbral solo aumenta la actividad y las pérdidas.
+3. No se debe seguir ajustando el umbral contra el holdout (contaminación). La selección de
+   hiperparámetros debe hacerse con el agregado walk-forward; el holdout se reserva para la
+   evaluación final de una única configuración.
+4. El siguiente trabajo es de **señal**, no de datos: filtro long-only, calibración del umbral en
+   walk-forward, features/labels alternativos y costes. Se aborda como Fase 11.
+
 ## 5. Cómo usarlo en GitHub Actions
 
 1. Ejecutar manualmente **`TradingBot - ML History (WEEX)`** con `symbol=BTCUSDT`,
@@ -179,8 +214,9 @@ fallo del pipeline.
 ## 7. Siguientes pasos
 
 1. Ejecutar `ML History` en Actions y verificar RAM/duración reales del runner.
-2. Entrenar con más épocas (`80`) y 4 splits usando `source=history` y 8000+ velas.
-3. Mejorar la señal (features/objetivo/arquitectura) hasta que el holdout supere la línea base con
-   costes; no promocionar solo por win rate.
-4. Solo entonces ejecutar `ML Promote` y observar `data/ml_predictions.jsonl` en PAPER.
+2. Repetir en Actions el entrenamiento ya validado localmente (8000 velas, 80 épocas, 4 folds).
+3. Abordar la **Fase 11 (señal)**: filtro long-only, umbral calibrado solo en walk-forward,
+   features/labels alternativos y análisis de costes. No promocionar solo por win rate.
+4. Solo cuando una configuración supere la línea base con costes, ejecutar `ML Promote` y observar
+   `data/ml_predictions.jsonl` en PAPER.
 5. Mantener el modelo aprobado intacto si un candidato falla o es rechazado.
