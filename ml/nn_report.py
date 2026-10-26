@@ -42,6 +42,29 @@ def main():
         f"{fmt(report.get('walk_forward', {}).get('aggregate', {}).get('compounded_net_return'))}",
         '',
     ]
+    wf_ref = report.get('walk_forward', {}).get('reference')
+    if wf_ref:
+        lines += [
+            f"- Referencia: **{wf_ref.get('name')}** "
+            f"(modelo {fmt(report.get('walk_forward', {}).get('aggregate', {}).get('compounded_net_return'))} "
+            f"vs {fmt(wf_ref.get('summary', {}).get('compounded_net_return'))})",
+            f"- Supera referencia: **{wf_ref.get('model_beats')}**",
+            '',
+        ]
+    wf_baselines = report.get('walk_forward', {}).get('baselines', {})
+    if wf_baselines:
+        lines += [
+            '## Baselines walk-forward',
+            '',
+            '| Estrategia | Trades | Retorno | Peor DD |',
+            '|---|---:|---:|---:|',
+        ]
+        for name, b in wf_baselines.items():
+            lines.append(
+                f"| {name} | {b.get('trades')} | {fmt(b.get('compounded_net_return'))} | "
+                f"{fmt(b.get('worst_fold_drawdown'))} |"
+            )
+        lines.append('')
     cal = report.get('calibration')
     if cal:
         sel = cal.get('selected', {})
@@ -92,6 +115,27 @@ def main():
                 f"- Pasa puerta: **{ext.get('passes_gate')}**",
                 '',
             ]
+            ext_ref = ext.get('reference')
+            if ext_ref:
+                lines += [
+                    f"- Referencia: **{ext_ref.get('name')}** "
+                    f"(modelo {fmt(em.get('net_return'))} vs "
+                    f"{fmt(ext_ref.get('summary', {}).get('net_return'))})",
+                    f"- Supera referencia: **{ext_ref.get('model_beats')}**",
+                    '',
+                ]
+            ext_baselines = ext.get('baselines', {})
+            if ext_baselines:
+                lines += [
+                    '| Estrategia | Trades | Retorno | DD |',
+                    '|---|---:|---:|---:|',
+                ]
+                for name, b in ext_baselines.items():
+                    lines.append(
+                        f"| {name} | {b.get('trades')} | {fmt(b.get('net_return'))} | "
+                        f"{fmt(b.get('max_drawdown'))} |"
+                    )
+                lines.append('')
     if report.get('error'):
         lines += ['## Error', '', str(report['error']), '']
     text = '\n'.join(lines)

@@ -66,6 +66,10 @@ def validate_candidate(model, report, min_trades):
         errors.append(f"validación no concluyente: {report.get('validation_status')!r}")
     if report.get('eligible_for_promotion') is not True:
         errors.append('el informe no marca eligible_for_promotion=true')
+    if report.get('reference_gate') is False:
+        errors.append('el modelo no supera la regla de referencia')
+    if report.get('external_gate') is False:
+        errors.append('no supera la validación externa')
     metrics = report.get('metrics', {})
     beats = metrics.get('beats_baseline')
     if beats is None:

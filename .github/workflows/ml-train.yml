@@ -30,6 +30,12 @@ on:
         default: "both"
         type: choice
         options: [both, long, short]
+      reference:
+        description: "Regla simple que el modelo debe superar"
+        required: true
+        default: "none"
+        type: choice
+        options: [none, always_long, momentum, rsi, macd]
       conf:
         description: "Umbral de confianza (0-1) si calibrate=false"
         required: true
@@ -108,6 +114,7 @@ jobs:
       SOURCE: ${{ inputs.source }}
       CSV_PATH: ${{ inputs.csv_path }}
       SIDE: ${{ inputs.side }}
+      REFERENCE: ${{ inputs.reference }}
       CONF: ${{ inputs.conf }}
       CALIBRATE: ${{ inputs.calibrate }}
       MIN_CALIBRATION_TRADES: ${{ inputs.min_calibration_trades }}
@@ -144,6 +151,7 @@ jobs:
           [[ "$SYMBOL" =~ ^[A-Za-z0-9]{3,24}$ ]] || { echo "símbolo inválido: $SYMBOL"; exit 2; }
           [[ "$TIMEFRAME" =~ ^(1m|5m|15m|30m|1h|4h|12h|1d|1w)$ ]] || { echo "timeframe inválido: $TIMEFRAME"; exit 2; }
           [[ "$SIDE" =~ ^(both|long|short)$ ]] || { echo "side inválido: $SIDE"; exit 2; }
+          [[ "$REFERENCE" =~ ^(none|always_long|momentum|rsi|macd)$ ]] || { echo "reference inválido: $REFERENCE"; exit 2; }
           awk -v c="$CONF" 'BEGIN { exit !(c > 0 && c <= 1) }' || { echo "conf inválido: $CONF"; exit 2; }
           [[ "$CALIBRATE" =~ ^(true|false)$ ]] || { echo "calibrate inválido"; exit 2; }
           [[ "$DEV_ONLY" =~ ^(true|false)$ ]] || { echo "dev_only inválido"; exit 2; }
@@ -213,6 +221,7 @@ jobs:
             --max-ram-mb "$MAX_RAM_MB"
             --max-seconds "$MAX_TIME_SEC"
             --side "$SIDE"
+            --reference "$REFERENCE"
             --conf "$CONF"
             --min-calibration-trades "$MIN_CALIBRATION_TRADES"
             --max-fold-loss "$MAX_FOLD_LOSS"

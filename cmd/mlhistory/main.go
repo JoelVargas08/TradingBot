@@ -38,6 +38,7 @@ func main() {
 	bars := flag.Int("bars", 8000, "velas históricas a descargar")
 	restURL := flag.String("rest-url", "https://api-contract.weex.com", "REST de WEEX")
 	csvPath := flag.String("csv", "", "exportar CSV (ts,open,high,low,close,volume)")
+	skipInvalid := flag.Bool("skip-invalid", false, "descartar velas históricas corruptas en vez de abortar")
 	timeout := flag.Duration("timeout", 10*time.Minute, "timeout global")
 	flag.Parse()
 
@@ -45,7 +46,7 @@ func main() {
 	defer cancel()
 
 	rep := report{Symbol: *symbol, Timeframe: *timeframe, Requested: *bars, CSV: *csvPath}
-	if err := run(ctx, *dbPath, *symbol, *timeframe, *bars, *restURL, *csvPath, &rep); err != nil {
+	if err := run(ctx, *dbPath, *symbol, *timeframe, *bars, *restURL, *csvPath, *skipInvalid, &rep); err != nil {
 		rep.Error = err.Error()
 	}
 	b, _ := json.MarshalIndent(rep, "", "  ")
@@ -55,7 +56,7 @@ func main() {
 	}
 }
 
-func run(ctx context.Context, dbPath, symbol, timeframe string, bars int, restURL, csvPath string, rep *report) error {
+func run(ctx context.Context, dbPath, symbol, timeframe string, bars int, restURL, csvPath string, skipInvalid bool, rep *report) error {
 	if bars <= 0 {
 		return fmt.Errorf("bars debe ser > 0")
 	}
@@ -70,7 +71,7 @@ func run(ctx context.Context, dbPath, symbol, timeframe string, bars int, restUR
 	}
 	defer st.Close()
 
-	provider := ingest.NewWEEXProvider(st, ingest.WeexConfig{RestURL: restURL})
+	provider := ingest.NewWEEXProvider(st, ingest.WeexConfig{RestURL: restURL, SkipInvalidHistory: skipInvalid})
 	if err := provider.Backfill(ctx, symbol, timeframe, bars); err != nil {
 		return err
 	}

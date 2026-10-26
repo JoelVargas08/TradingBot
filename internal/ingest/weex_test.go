@@ -3,6 +3,7 @@ package ingest
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -62,6 +63,27 @@ func TestParseWeexKlinesErrors(t *testing.T) {
 				t.Errorf("debería fallar: %q", c.body)
 			}
 		})
+	}
+}
+
+func TestParseWeexKlinesPageSkipInvalid(t *testing.T) {
+	body := `[
+		[1704067200000,"60000.0","60100.0","59900.0","60050.5","123.45"],
+		[1704067260000,"60000.0","60100.0","59900.0","60050.5","-1"],
+		[1704067320000,"60000.0","60100.0","59900.0","60050.5","123.45"]
+	]`
+	page, err := parseWeexKlinesPage([]byte(body), "BTCUSDT", "1h", true)
+	if err != nil {
+		t.Fatalf("parseWeexKlinesPage: %v", err)
+	}
+	if page.RawRows != 3 || page.Skipped != 1 || len(page.Bars) != 2 {
+		t.Fatalf("page = raw:%d skipped:%d bars:%d", page.RawRows, page.Skipped, len(page.Bars))
+	}
+	if page.RawOldest.UnixMilli() != 1704067200000 {
+		t.Errorf("RawOldest = %d, want 1704067200000", page.RawOldest.UnixMilli())
+	}
+	if _, err := parseWeexKlinesPage([]byte(body), "BTCUSDT", "1h", false); err == nil {
+		t.Error("modo estricto debería rechazar la vela inválida")
 	}
 }
 
@@ -230,6 +252,74 @@ func TestWeexBackfillPaginatesHistory(t *testing.T) {
 	}
 	if got := store.candles[len(store.candles)-1].Start.UnixMilli(); got != nowMs-step {
 		t.Errorf("última vela = %d, want %d", got, nowMs-step)
+	}
+}
+
+func TestWeexBackfillSkipsInvalidHistoryAndPaginates(t *testing.T) {
+	const nowMs = int64(1704067200000)
+	const step = int64(3600000)
+	const total = 250
+	const badTS = nowMs - 50*step
+	bars := make([]int64, 0, total)
+	for i := total; i >= 1; i-- {
+		bars = append(bars, nowMs-int64(i)*step)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := queryInt(r, "startTime")
+		end := queryInt(r, "endTime")
+		rows := make([]string, 0, HistoryMaxBars)
+		for i := len(bars) - 1; i >= 0 && len(rows) < HistoryMaxBars; i-- {
+			ts := bars[i]
+			if ts < start || ts > end {
+				continue
+			}
+			if ts == badTS {
+				rows = append(rows, fmt.Sprintf(`[%d,"60000","60000","59000","60000","-1"]`, ts))
+				continue
+			}
+			rows = append(rows, klineRow(ts))
+		}
+		w.Write([]byte("[" + strings.Join(rows, ",") + "]"))
+	}))
+	defer srv.Close()
+
+	store := &fakeCandleStore{dup: make(map[string]bool)}
+	p := NewWEEXProvider(store, WeexConfig{
+		RestURL:            srv.URL,
+		HistoryPageDelay:   time.Nanosecond,
+		SkipInvalidHistory: true,
+	})
+	p.now = func() time.Time { return time.UnixMilli(nowMs) }
+	if err := p.Backfill(context.Background(), "BTCUSDT", "1h", total); err != nil {
+		t.Fatalf("Backfill: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.candles) != total-1 {
+		t.Fatalf("velas = %d, want %d", len(store.candles), total-1)
+	}
+	if got := store.candles[0].Start.UnixMilli(); got != nowMs-total*step {
+		t.Errorf("primera vela = %d, want %d", got, nowMs-total*step)
+	}
+	if got := store.candles[len(store.candles)-1].Start.UnixMilli(); got != nowMs-step {
+		t.Errorf("última vela = %d, want %d", got, nowMs-step)
+	}
+}
+
+func TestWeexBackfillStrictRejectsInvalidHistory(t *testing.T) {
+	const nowMs = int64(1704067200000)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`[[` + strconv.FormatInt(nowMs-3600000, 10) + `,"60000","60000","59000","60000","-1"]]`))
+	}))
+	defer srv.Close()
+
+	p := NewWEEXProvider(&fakeCandleStore{dup: make(map[string]bool)}, WeexConfig{
+		RestURL:          srv.URL,
+		HistoryPageDelay: time.Nanosecond,
+	})
+	p.now = func() time.Time { return time.UnixMilli(nowMs) }
+	if err := p.Backfill(context.Background(), "BTCUSDT", "1h", 10); err == nil {
+		t.Fatal("Backfill estricto debería fallar con una vela inválida")
 	}
 }
 

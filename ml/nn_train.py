@@ -29,6 +29,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
+from baselines import evaluate_baselines  # noqa: E402
 from dataset import (  # noqa: E402
     dataset_hash,
     load_from_csv,
@@ -191,7 +192,17 @@ def _map_labels(raw_label):
     return y
 
 
-def _evaluate_external(model, mu, sigma, args, cfg, conf, side, report, temperature=1.0):
+def _reference_key(name, horizon):
+    return {
+        'always_long': 'always_long',
+        'momentum': f'momentum_{horizon}',
+        'rsi': 'rsi_30_70',
+        'macd': 'macd_hist',
+    }.get(name, '')
+
+
+def _evaluate_external(model, mu, sigma, args, cfg, conf, side, report,
+                       temperature=1.0, reference_name=''):
     """Evalúa el modelo final en otro símbolo/dataset sin tocar el holdout."""
     source = args.external_db or args.external_csv
     if not source:
@@ -224,6 +235,7 @@ def _evaluate_external(model, mu, sigma, args, cfg, conf, side, report, temperat
         ext_X = ext_X[ext_finite]
         ext_close = ext_close[ext_finite]
         ext_y = ext_y[ext_finite]
+        ext_clean = ext_clean.loc[ext_finite].reset_index(drop=True)
         ext_probs = apply_temperature(
             model.predict_proba(transform(ext_X, mu, sigma)), temperature
         )
@@ -234,10 +246,23 @@ def _evaluate_external(model, mu, sigma, args, cfg, conf, side, report, temperat
             slippage_rate=args.slippage_bps / 10000.0,
             side=side,
         )
+        ext_baselines = {
+            name: trade['model']
+            for name, trade in evaluate_baselines(
+                ext_close, ext_clean, cfg.horizon,
+                args.fee_bps / 10000.0, args.slippage_bps / 10000.0,
+            ).items()
+        }
+        ext_reference = ext_baselines.get(reference_name) if reference_name else None
+        reference_ok = bool(
+            ext_reference is None
+            or ext_trade['model']['net_return'] > ext_reference['net_return']
+        )
         external_ok = bool(
             ext_trade['model']['trades'] >= args.min_test_trades
             and ext_trade.get('beats_baseline') is True
             and ext_trade['model']['net_return'] > 0.0
+            and reference_ok
         )
         report['external'] = {
             'symbol': args.external_symbol,
@@ -246,14 +271,22 @@ def _evaluate_external(model, mu, sigma, args, cfg, conf, side, report, temperat
             'dataset_hash': dataset_hash(ext_raw) if len(ext_raw) else '',
             'predictive': ext_pred,
             'trading': ext_trade,
+            'baselines': ext_baselines,
             'passes_gate': external_ok,
         }
+        if reference_name:
+            report['external']['reference'] = {
+                'name': reference_name,
+                'summary': ext_reference,
+                'model_beats': reference_ok,
+            }
         print(
             f'[externo] {args.external_symbol} {ext_tf} '
             f'acc={ext_pred["accuracy"]:.3f} '
             f'net={ext_trade["model"]["net_return"]:.3f} '
             f'baseline={ext_trade["baseline_long"]["net_return"]:.3f} '
-            f'trades={ext_trade["model"]["trades"]} gate={external_ok}',
+            + (f'ref={ext_reference["net_return"]:.3f} ' if ext_reference else '')
+            + f'trades={ext_trade["model"]["trades"]} gate={external_ok}',
             flush=True,
         )
         return external_ok
@@ -296,6 +329,10 @@ def main():
                         help='umbral de confianza para métricas de trading')
     parser.add_argument('--side', choices=('both', 'long', 'short'), default='both',
                         help='dirección permitida en la simulación de trading')
+    parser.add_argument('--reference',
+                        choices=('none', 'always_long', 'momentum', 'rsi', 'macd'),
+                        default='none',
+                        help='regla simple que el modelo debe superar')
     parser.add_argument('--calibrate', action='store_true',
                         help='elige side/confianza solo con walk-forward')
     parser.add_argument('--min-calibration-trades', type=int, default=20,
@@ -383,6 +420,7 @@ def main():
             'sigma_mult': cfg.sigma_mult,
             'side': args.side,
             'confidence': args.conf,
+            'reference': args.reference,
             'calibrate': bool(args.calibrate),
             'dev_only': bool(args.dev_only),
         },
@@ -429,6 +467,7 @@ def main():
         X = X[finite]
         close = close[finite]
         raw_label = raw_label[finite]
+        clean = clean.loc[finite].reset_index(drop=True)
         if len(X) < cfg.min_train_rows:
             raise ValueError(f'filas finitas insuficientes: {len(X)}')
 
@@ -468,6 +507,7 @@ def main():
 
         fold_reports = []
         fold_preds = []
+        fold_baselines = {}
         for fold_no, (tr_rel, te_rel) in enumerate(folds, start=1):
             guard.check()
             tr = dev_idx[tr_rel]
@@ -498,6 +538,12 @@ def main():
                 slippage_rate=args.slippage_bps / 10000.0,
                 side=args.side,
             )
+            fold_base = evaluate_baselines(
+                close[te], clean.iloc[te], cfg.horizon,
+                args.fee_bps / 10000.0, args.slippage_bps / 10000.0,
+            )
+            for name, result in fold_base.items():
+                fold_baselines.setdefault(name, []).append(result)
             fold_reports.append({
                 'fold': fold_no,
                 'train': int(len(tr_fit)),
@@ -506,6 +552,7 @@ def main():
                 'temperature': float(temperature),
                 'fit': fit_info,
                 'predictive': pred_metrics,
+                'baselines': {name: result['model'] for name, result in fold_base.items()},
                 **trade_metrics,
             })
             print(
@@ -561,7 +608,33 @@ def main():
         report['walk_forward'] = {
             'folds': fold_reports,
             'aggregate': aggregate_folds(fold_reports),
+            'baselines': {
+                name: aggregate_folds(items)
+                for name, items in fold_baselines.items()
+            },
         }
+        reference_name = _reference_key(args.reference, cfg.horizon)
+        reference_ok = True
+        if reference_name:
+            ref_summary = report['walk_forward']['baselines'].get(reference_name, {})
+            model_summary = report['walk_forward']['aggregate']
+            reference_ok = float(
+                model_summary.get('compounded_net_return', -1.0)
+            ) > float(ref_summary.get('compounded_net_return', 0.0))
+            report['walk_forward']['reference'] = {
+                'name': reference_name,
+                'summary': ref_summary,
+                'model_beats': reference_ok,
+            }
+        report['reference_gate'] = reference_ok
+        if reference_name:
+            print(
+                f'[referencia] {reference_name} '
+                f"model={report['walk_forward']['aggregate'].get('compounded_net_return', 0.0):.3f} "
+                f"ref={report['walk_forward']['reference']['summary'].get('compounded_net_return', 0.0):.3f} "
+                f"gate={reference_ok}",
+                flush=True,
+            )
 
         if args.dev_only and not (args.external_db or args.external_csv):
             report['validation_status'] = 'dev_only'
@@ -587,10 +660,32 @@ def main():
         temperature = fit_temperature(final_val_probs, y[tr_val])
         report['config']['temperature'] = float(temperature)
         external_ok = _evaluate_external(
-            final_model, mu, sigma, args, cfg, conf, side, report, temperature
+            final_model, mu, sigma, args, cfg, conf, side, report,
+            temperature, reference_name,
         )
 
         if args.dev_only:
+            if args.out:
+                dev_meta = {
+                    'model': 'mlp-numpy',
+                    'schema_version': 1,
+                    'trained_at': utc_now(),
+                    'status': 'dev_candidate',
+                    'validation_status': 'dev_only',
+                    'eligible_for_promotion': False,
+                    'feature_names': list(NN_FEATURE_NAMES),
+                    'label': report['labels'],
+                    'config': report['config'],
+                    'splits': report['splits'],
+                    'external': report.get('external'),
+                    'reference_gate': reference_ok,
+                    'walk_forward_aggregate': report['walk_forward']['aggregate'],
+                    'data': report['data'],
+                    'code_version': report['code_version'],
+                }
+                write_json(Path(args.out), model_json(final_model, mu, sigma, dev_meta))
+                report['candidate_path'] = str(args.out)
+                print(f'[ok] candidato dev: {args.out}', flush=True)
             report['validation_status'] = 'dev_only'
             report['eligible_for_promotion'] = False
             report['status'] = 'completed'
@@ -625,6 +720,7 @@ def main():
             complete
             and test_trade.get('beats_baseline') is True
             and test_trade['model']['net_return'] > 0.0
+            and reference_ok
             and external_ok
             and not guard.timed_out
             and not guard.oom_risk
@@ -648,6 +744,7 @@ def main():
             'splits': report['splits'],
             'holdout': report['holdout'],
             'external': report.get('external'),
+            'reference_gate': reference_ok,
             'walk_forward_aggregate': report['walk_forward']['aggregate'],
             'data': report['data'],
             'code_version': report['code_version'],

@@ -46,6 +46,22 @@ class TestNNModules(unittest.TestCase):
         self.assertGreaterEqual(fit_temperature(probs, y), 0.35)
         self.assertLessEqual(fit_temperature(probs, y), 2.0)
 
+    def test_simple_baselines(self):
+        import pandas as pd
+        from baselines import evaluate_baselines, signal_probs
+        probs = signal_probs([True, False], [False, True])
+        self.assertEqual(probs[0, 2], 1.0)
+        self.assertEqual(probs[1, 0], 1.0)
+        close = np.linspace(100.0, 120.0, 120)
+        feat = pd.DataFrame({
+            'rsi_14': np.full(120, 50.0),
+            'macd_hist_pct': np.linspace(-0.01, 0.01, 120),
+        })
+        trades = evaluate_baselines(close, feat, 12, 0.0004, 0.0002)
+        self.assertIn('momentum_12', trades)
+        self.assertIn('macd_hist', trades)
+        self.assertGreater(trades['always_long']['model']['trades'], 0)
+
 
 class TestMLPLearning(unittest.TestCase):
     def test_mlp_learns_separable_pattern(self):
@@ -293,7 +309,7 @@ class TestAPILoading(unittest.TestCase):
 if __name__ == '__main__':
     unittest.main()
 class TestPromotionGate(unittest.TestCase):
-    def _write_candidate(self, d, status='complete', eligible=True, beats=True, trades=20, net=0.05):
+    def _write_candidate(self, d, status='complete', eligible=True, beats=True, trades=20, net=0.05, reference_gate=True, external_gate=True):
         import api
         dim = len(api.NN_FEATURE_NAMES)
         model = {
@@ -309,6 +325,8 @@ class TestPromotionGate(unittest.TestCase):
             'status': 'completed',
             'validation_status': status,
             'eligible_for_promotion': eligible,
+            'reference_gate': reference_gate,
+            'external_gate': external_gate,
             'data': {'dataset_hash': 'a' * 64},
             'metrics': {
                 'holdout_trades': trades,
@@ -364,6 +382,16 @@ class TestPromotionGate(unittest.TestCase):
             proc = self._run(model, report, out)
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn('net_return', proc.stdout + proc.stderr)
+            self.assertFalse(os.path.exists(os.path.join(out, 'neural_model.json')))
+
+    def test_rejects_failed_reference(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            model, report = self._write_candidate(d, reference_gate=False)
+            out = os.path.join(d, 'approved')
+            proc = self._run(model, report, out)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn('referencia', proc.stdout + proc.stderr)
             self.assertFalse(os.path.exists(os.path.join(out, 'neural_model.json')))
 
 
