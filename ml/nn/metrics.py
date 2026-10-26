@@ -9,6 +9,8 @@ La simulación es deliberadamente conservadora:
 """
 import numpy as np
 
+TRADE_SIDES = ('both', 'long', 'short')
+
 
 def classification_metrics(y_true, probs):
     probs = np.asarray(probs, dtype=np.float64)
@@ -23,7 +25,9 @@ def classification_metrics(y_true, probs):
     return {'accuracy': acc, 'log_loss': logloss, 'brier': brier, 'samples': int(len(y))}
 
 
-def directional_trades(probs, close, horizon, confidence, fee_rate, slippage_rate):
+def directional_trades(probs, close, horizon, confidence, fee_rate, slippage_rate, side='both'):
+    if side not in TRADE_SIDES:
+        raise ValueError(f'side inválido: {side!r}')
     probs = np.asarray(probs, dtype=np.float64)
     close = np.asarray(close, dtype=np.float64)
     n = min(len(probs), len(close))
@@ -40,9 +44,10 @@ def directional_trades(probs, close, horizon, confidence, fee_rate, slippage_rat
         prob_down = float(probs[i, 0])
         prob_up = float(probs[i, 2]) if probs.shape[1] > 2 else float(probs[i, 1])
         strength = prob_up - prob_down
-        if strength >= confidence:
+        direction = 0
+        if side in ('both', 'long') and strength >= confidence:
             direction = 1
-        elif strength <= -confidence:
+        elif side in ('both', 'short') and strength <= -confidence:
             direction = -1
         else:
             i += 1
@@ -95,14 +100,16 @@ def summarize_trades(trades):
 
 
 def evaluate_trading(probs, close, horizon, confidence=0.6,
-                     fee_rate=0.0004, slippage_rate=0.0002):
-    model_trades = directional_trades(probs, close, horizon, confidence, fee_rate, slippage_rate)
+                     fee_rate=0.0004, slippage_rate=0.0002, side='both'):
+    model_trades = directional_trades(
+        probs, close, horizon, confidence, fee_rate, slippage_rate, side=side
+    )
 
     n = min(len(probs), len(close))
     baseline_probs = np.zeros((n, 3), dtype=np.float64)
     baseline_probs[:, 2] = 1.0
     baseline_trades = directional_trades(
-        baseline_probs, close, horizon, 0.0, fee_rate, slippage_rate
+        baseline_probs, close, horizon, 0.0, fee_rate, slippage_rate, side='long'
     )
 
     model_summary = summarize_trades(model_trades)
@@ -111,7 +118,73 @@ def evaluate_trading(probs, close, horizon, confidence=0.6,
         'model': model_summary,
         'baseline_long': baseline_summary,
         'beats_baseline': model_summary['net_return'] > baseline_summary['net_return'],
+        'side': side,
+        'confidence': confidence,
         'costs': {'fee_rate': fee_rate, 'slippage_rate': slippage_rate},
+    }
+
+
+def calibrate_walk_forward(fold_preds, horizon, fee_rate, slippage_rate,
+                           min_trades=20, max_fold_loss=0.02,
+                           side_values=TRADE_SIDES, confidence_values=None):
+    """Elige side/confianza solo con las predicciones walk-forward.
+
+    `fold_preds` es una lista de dicts con `probs` y `close` por fold. Se
+    maximiza el retorno compuesto agregado sujeto a un mínimo de trades y a
+    que ningún fold pierda más de `max_fold_loss`. El holdout no participa.
+    """
+    if confidence_values is None:
+        confidence_values = [round(x, 2) for x in np.arange(0.05, 0.65, 0.05)]
+    if not fold_preds:
+        return {'status': 'no_folds', 'candidates': []}
+
+    candidates = []
+    for side in side_values:
+        for conf in confidence_values:
+            folds = [
+                evaluate_trading(
+                    fp['probs'], fp['close'], horizon, confidence=float(conf),
+                    fee_rate=fee_rate, slippage_rate=slippage_rate, side=side,
+                )
+                for fp in fold_preds
+            ]
+            agg = aggregate_folds(folds)
+            fold_nets = [float(f['model']['net_return']) for f in folds]
+            worst_fold = float(min(fold_nets)) if fold_nets else 0.0
+            trades = int(agg.get('trades', 0))
+            candidates.append({
+                'side': side,
+                'confidence': float(conf),
+                'trades': trades,
+                'win_rate': float(agg.get('win_rate', 0.0)),
+                'compounded_net_return': float(agg.get('compounded_net_return', 0.0)),
+                'worst_fold_drawdown': float(agg.get('worst_fold_drawdown', 0.0)),
+                'positive_folds': int(sum(1 for n in fold_nets if n > 0)),
+                'min_fold_net_return': worst_fold,
+                'fold_net_returns': fold_nets,
+                'eligible': bool(
+                    trades >= int(min_trades) and worst_fold >= -abs(max_fold_loss)
+                ),
+            })
+
+    eligible = [c for c in candidates if c['eligible']]
+    best = max(
+        eligible,
+        key=lambda c: (c['compounded_net_return'], c['trades'], c['win_rate']),
+    ) if eligible else {}
+    candidates.sort(
+        key=lambda c: (
+            c['eligible'], c['compounded_net_return'], c['trades'], c['win_rate'],
+        ),
+        reverse=True,
+    )
+    return {
+        'status': 'ok' if eligible else 'no_candidate',
+        'min_trades': int(min_trades),
+        'max_fold_loss': float(max_fold_loss),
+        'eligible_candidates': len(eligible),
+        'selected': dict(best),
+        'candidates': candidates[:10],
     }
 
 

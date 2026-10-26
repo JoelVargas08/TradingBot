@@ -34,6 +34,18 @@ class TestNNModules(unittest.TestCase):
         reg.promote_candidate(cand, reason='unit-test')
         self.assertTrue(os.path.exists(os.path.join(d, 'models', 'neural_model.json')))
 
+    def test_temperature_scaling(self):
+        from nn.calibration import apply_temperature, fit_temperature
+        probs = np.array([[0.6, 0.1, 0.3], [0.2, 0.2, 0.6]])
+        sharp = apply_temperature(probs, 0.5)
+        smooth = apply_temperature(probs, 2.0)
+        self.assertGreater(sharp[0, 0], probs[0, 0])
+        self.assertLess(smooth[0, 0], probs[0, 0])
+        self.assertAlmostEqual(float(sharp.sum(axis=1)[0]), 1.0)
+        y = np.array([0, 2])
+        self.assertGreaterEqual(fit_temperature(probs, y), 0.35)
+        self.assertLessEqual(fit_temperature(probs, y), 2.0)
+
 
 class TestMLPLearning(unittest.TestCase):
     def test_mlp_learns_separable_pattern(self):
@@ -86,6 +98,24 @@ class TestDatasetAndMetrics(unittest.TestCase):
         self.assertEqual(len(clean), 3)
         self.assertGreaterEqual(quality.gaps, 1)
 
+    def test_nn_features_are_finite_and_scale_free(self):
+        from dataset import load_synthetic, prepare_candles
+        from features import NN_FEATURE_NAMES, compute_features
+        raw, _ = prepare_candles(load_synthetic(300), '1h')
+        feat = compute_features(raw)
+        last = feat.iloc[-1]
+        for name in NN_FEATURE_NAMES:
+            self.assertIn(name, feat.columns)
+            self.assertTrue(np.isfinite(float(last[name])), name)
+        scaled = raw.copy()
+        for col in ('open', 'high', 'low', 'close'):
+            scaled[col] = scaled[col] * 10.0
+        scaled['volume'] = scaled['volume'] * 10.0
+        feat_scaled = compute_features(scaled)
+        a = feat[NN_FEATURE_NAMES].iloc[-1].to_numpy(dtype=np.float64)
+        b = feat_scaled[NN_FEATURE_NAMES].iloc[-1].to_numpy(dtype=np.float64)
+        np.testing.assert_allclose(a, b, rtol=1e-9, atol=1e-9)
+
     def test_trades_are_non_overlapping_and_pay_costs(self):
         from nn.metrics import directional_trades, summarize_trades
         close = np.linspace(100, 120, 100)
@@ -100,6 +130,89 @@ class TestDatasetAndMetrics(unittest.TestCase):
         self.assertFalse(math.isnan(summary['net_return']))
         self.assertGreater(summary['total_cost'], 0)
 
+    def test_side_filter_only_takes_requested_direction(self):
+        from nn.metrics import directional_trades
+        n = 80
+        close = np.linspace(100, 140, n)
+        probs = np.zeros((n, 3))
+        probs[:40, 2] = 0.90
+        probs[:40, 0] = 0.05
+        probs[40:, 2] = 0.05
+        probs[40:, 0] = 0.90
+        kw = dict(horizon=5, confidence=0.1, fee_rate=0.0, slippage_rate=0.0)
+        longs = directional_trades(probs, close, side='long', **kw)
+        shorts = directional_trades(probs, close, side='short', **kw)
+        both = directional_trades(probs, close, side='both', **kw)
+        self.assertTrue(longs)
+        self.assertTrue(shorts)
+        self.assertTrue(both)
+        self.assertTrue(all(t['direction'] == 1 for t in longs))
+        self.assertTrue(all(t['direction'] == -1 for t in shorts))
+        self.assertEqual({t['direction'] for t in both}, {1, -1})
+        with self.assertRaises(ValueError):
+            directional_trades(probs, close, side='sideways', **kw)
+
+    def test_calibrate_walk_forward_prefers_profitable_side(self):
+        from nn.metrics import calibrate_walk_forward
+        folds = []
+        for _ in range(2):
+            n = 80
+            close = np.linspace(100, 130, n)
+            probs = np.zeros((n, 3))
+            probs[:, 2] = 0.8
+            probs[:, 0] = 0.2
+            folds.append({'probs': probs, 'close': close})
+        cal = calibrate_walk_forward(
+            folds, horizon=5, fee_rate=0.0, slippage_rate=0.0, min_trades=1,
+            side_values=('long', 'short'),
+        )
+        self.assertEqual(cal['status'], 'ok')
+        self.assertEqual(cal['selected']['side'], 'long')
+        self.assertGreater(cal['selected']['compounded_net_return'], 0)
+        self.assertGreaterEqual(len(cal['candidates']), 2)
+
+    def test_calibration_rejects_fold_with_excess_loss(self):
+        from nn.metrics import calibrate_walk_forward
+        folds = []
+        for _ in range(3):
+            close = np.linspace(100, 110, 80)
+            probs = np.zeros((80, 3))
+            probs[:, 2] = 0.8
+            probs[:, 0] = 0.2
+            folds.append({'probs': probs, 'close': close})
+        close = np.linspace(110, 80, 80)
+        probs = np.zeros((80, 3))
+        probs[:, 2] = 0.8
+        probs[:, 0] = 0.2
+        folds.append({'probs': probs, 'close': close})
+        cal = calibrate_walk_forward(
+            folds, horizon=5, fee_rate=0.0, slippage_rate=0.0, min_trades=1,
+            max_fold_loss=0.02, side_values=('long',),
+        )
+        self.assertEqual(cal['status'], 'no_candidate')
+        self.assertEqual(cal['selected'], {})
+        self.assertTrue(all(not c['eligible'] for c in cal['candidates']))
+
+    def test_dev_only_skips_holdout(self):
+        import subprocess
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, 'cand.json')
+            report = os.path.join(d, 'report.json')
+            r = subprocess.run(
+                [sys.executable, str(ROOT / 'ml' / 'nn_train.py'),
+                 '--synthetic', '--epochs', '1', '--splits', '2',
+                 '--max-bars', '2000', '--dev-only',
+                 '--out', out, '--report', report],
+                capture_output=True, text=True,
+            )
+            self.assertEqual(r.returncode, 0, r.stderr)
+            with open(report, encoding='utf-8') as fh:
+                data = json.load(fh)
+            self.assertEqual(data['validation_status'], 'dev_only')
+            self.assertFalse(data['eligible_for_promotion'])
+            self.assertNotIn('holdout', data)
+            self.assertFalse(os.path.exists(out))
+
 
 class TestAPILoading(unittest.TestCase):
     def test_neural_model_load_and_predict(self):
@@ -107,7 +220,7 @@ class TestAPILoading(unittest.TestCase):
         from nn.model import MLP
 
         rng = np.random.RandomState(4)
-        X = rng.randn(100, len(api.FEATURE_NAMES))
+        X = rng.randn(100, len(api.NN_FEATURE_NAMES))
         model = MLP(X.shape[1], hidden_sizes=(6,), seed=2)
         mu = X.mean(axis=0)
         sigma = X.std(axis=0)
@@ -119,7 +232,7 @@ class TestAPILoading(unittest.TestCase):
             ],
             'mu': mu.tolist(),
             'sigma': sigma.tolist(),
-            'feature_names': list(api.FEATURE_NAMES),
+            'feature_names': list(api.NN_FEATURE_NAMES),
             'meta': {'trained_at': '2026-01-01T00:00:00Z', 'data': {'dataset_hash': 'abc'}},
         }
         with tempfile.TemporaryDirectory() as d:
@@ -144,13 +257,13 @@ class TestAPILoading(unittest.TestCase):
         import api
         payload = {
             'type': 'mlp_numpy',
-            'input_dim': len(api.FEATURE_NAMES),
+            'input_dim': len(api.NN_FEATURE_NAMES),
             'layers': [
-                {'w': [[0.1] * 3 for _ in range(len(api.FEATURE_NAMES))], 'b': [[0.0, 0.0, 0.0]]},
+                {'w': [[0.1] * 3 for _ in range(len(api.NN_FEATURE_NAMES))], 'b': [[0.0, 0.0, 0.0]]},
             ],
-            'mu': [0.0] * len(api.FEATURE_NAMES),
-            'sigma': [1.0] * (len(api.FEATURE_NAMES) - 1),
-            'feature_names': list(api.FEATURE_NAMES),
+            'mu': [0.0] * len(api.NN_FEATURE_NAMES),
+            'sigma': [1.0] * (len(api.NN_FEATURE_NAMES) - 1),
+            'feature_names': list(api.NN_FEATURE_NAMES),
         }
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, 'neural_model.json')
@@ -180,13 +293,13 @@ class TestAPILoading(unittest.TestCase):
 if __name__ == '__main__':
     unittest.main()
 class TestPromotionGate(unittest.TestCase):
-    def _write_candidate(self, d, status='complete', eligible=True, beats=True, trades=20):
+    def _write_candidate(self, d, status='complete', eligible=True, beats=True, trades=20, net=0.05):
         import api
-        dim = len(api.FEATURE_NAMES)
+        dim = len(api.NN_FEATURE_NAMES)
         model = {
             'type': 'mlp_numpy',
             'input_dim': dim,
-            'feature_names': list(api.FEATURE_NAMES),
+            'feature_names': list(api.NN_FEATURE_NAMES),
             'layers': [{'w': [[0.1] * 3 for _ in range(dim)], 'b': [[0.0, 0.0, 0.0]]}],
             'mu': [0.0] * dim,
             'sigma': [1.0] * dim,
@@ -197,7 +310,11 @@ class TestPromotionGate(unittest.TestCase):
             'validation_status': status,
             'eligible_for_promotion': eligible,
             'data': {'dataset_hash': 'a' * 64},
-            'metrics': {'holdout_trades': trades, 'beats_baseline': beats},
+            'metrics': {
+                'holdout_trades': trades,
+                'beats_baseline': beats,
+                'holdout_net_return': net,
+            },
             'resources': {'peak_ram_mb': 100.0, 'ram_measurement': 'psutil'},
         }
         model_path = os.path.join(d, 'candidate.json')
@@ -237,6 +354,16 @@ class TestPromotionGate(unittest.TestCase):
             proc = self._run(model, report, out)
             self.assertNotEqual(proc.returncode, 0)
             self.assertIn('RECHAZADA', proc.stdout + proc.stderr)
+            self.assertFalse(os.path.exists(os.path.join(out, 'neural_model.json')))
+
+    def test_rejects_non_positive_holdout_net(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            model, report = self._write_candidate(d, net=-0.01)
+            out = os.path.join(d, 'approved')
+            proc = self._run(model, report, out)
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn('net_return', proc.stdout + proc.stderr)
             self.assertFalse(os.path.exists(os.path.join(out, 'neural_model.json')))
 
 

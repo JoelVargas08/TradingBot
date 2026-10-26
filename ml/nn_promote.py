@@ -30,7 +30,7 @@ import sys
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from features import FEATURE_NAMES  # noqa: E402
+from features import NN_FEATURE_NAMES  # noqa: E402
 
 
 def sha256(path):
@@ -72,6 +72,17 @@ def validate_candidate(model, report, min_trades):
         beats = report.get('holdout', {}).get('trading', {}).get('beats_baseline')
     if beats is not True:
         errors.append('no supera la línea base alcista con costes en holdout')
+    net = metrics.get('holdout_net_return')
+    if net is None:
+        net = report.get('holdout', {}).get('trading', {}).get('model', {}).get('net_return')
+    try:
+        net = float(net)
+    except (TypeError, ValueError):
+        net = None
+    if net is None or not math.isfinite(net):
+        errors.append('holdout_net_return ausente o inválido')
+    elif net <= 0.0:
+        errors.append('holdout_net_return no es positivo')
     trades = int(metrics.get('holdout_trades', 0) or 0)
     if trades < min_trades:
         errors.append(f'trades de holdout {trades} < mínimo {min_trades}')
@@ -81,7 +92,7 @@ def validate_candidate(model, report, min_trades):
 
     if model.get('type') != 'mlp_numpy':
         errors.append(f"tipo de modelo inesperado: {model.get('type')!r}")
-    if model.get('feature_names') != list(FEATURE_NAMES):
+    if model.get('feature_names') != list(NN_FEATURE_NAMES):
         errors.append('feature_names no coinciden con ml/features.py')
     layers = model.get('layers') or []
     if not layers:

@@ -249,7 +249,7 @@ go vet ./...
 go test ./... -count=1        # 32 paquetes OK
 gofmt -l <archivos nuevos>    # limpio (varios .go pre-existentes son CRLF: no reformatear)
 py -3 -m unittest discover -s .github/scripts -p "test_*.py"   # 45 tests del controlador
-py -3 -m unittest discover -s tests/ml -p "test_*.py"          # 13 tests ML
+py -3 -m unittest discover -s tests/ml -p "test_*.py"          # 20 tests ML
 ```
 
 Histórico profundo para ML (WEEX `/historyKlines`, paginado):
@@ -273,6 +273,7 @@ go run ./cmd/ibvalidate -db <db-temporal> -symbol BTCUSDT -timeframes 1h,15m,5m 
 - **Flujo/uso IB:** `docs/INVESTING_BULLS.md`.
 - **Memoria IB (detallada):** `MEMORIA_FASE_IB_ASIMILACION.md`.
 - **Histórico WEEX para ML (Fase 10):** `MEMORIA_FASE_10_HISTORICO_WEEX.md`.
+- **Mejora de señal NN y validación externa (Fase 11):** `MEMORIA_FASE_11_MEJORA_SENAL.md`.
 - **Planes IB:** `PLAN_IMPLEMENTACION_INVESTING_BULLS.md`,
   `PLAN_ASIMILAR_ESTRATEGIA_INVESTING_BULLS.md`.
 - **Fuente IB:** `docs/source/estrategia_investing_bulls_p34.txt`.
@@ -311,3 +312,15 @@ Corrida a escala (8000 velas 1h, 80 épocas, 4 folds): 0 huecos; holdout de 1590
 `--conf 0.6` no hay trades (`inconclusive`); con `--conf 0.3` hay 7 trades y net -7.01 % vs
 baseline +6.31 %. Walk-forward negativo en ambos casos. La falta de datos ya no bloquea; el
 siguiente paso es mejorar la señal (Fase 11), no descargar más velas.
+
+---
+
+## 12. Fase 11 - Mejora de señal y validación externa (2026-10-26)
+
+Se añadieron 40 features NN scale-free, filtrado por dirección, calibración walk-forward robusta,
+temperature scaling y validación externa opcional. La corrida con ETH 30k (24,994 velas, 60
+épocas, 4 folds) eligió `short/0.40`: 27 trades, 62.96 % de acierto y **+15.32 %** walk-forward
+con 4/4 folds positivos. Sin embargo, en la validación externa BTC (8k velas) el modelo hizo 7
+trades con **-7.39 %** neto (baseline -31.86 %), por lo que `external_gate=false`. El holdout ETH
+de este conjunto de features **no se evaluó** y no se promocionó ningún modelo. La señal no
+generaliza al segundo activo. Detalle en `MEMORIA_FASE_11_MEJORA_SENAL.md`.

@@ -41,19 +41,57 @@ def main():
         f"- Retorno compuesto: "
         f"{fmt(report.get('walk_forward', {}).get('aggregate', {}).get('compounded_net_return'))}",
         '',
-        '## Holdout final',
-        '',
     ]
+    cal = report.get('calibration')
+    if cal:
+        sel = cal.get('selected', {})
+        lines += [
+            '## Calibración walk-forward',
+            '',
+            f"- Estado: **{cal.get('status')}** "
+            f"(mín. {cal.get('min_trades')} trades, "
+            f"pérdida/fold <= {fmt(cal.get('max_fold_loss'), 2)})",
+            f"- Candidatos elegibles: {cal.get('eligible_candidates')}",
+            f"- Side/confianza: **{sel.get('side')}** / **{fmt(sel.get('confidence'), 2)}**",
+            f"- Trades: {sel.get('trades')}",
+            f"- Retorno compuesto: {fmt(sel.get('compounded_net_return'))}",
+            f"- Peor drawdown de fold: {fmt(sel.get('worst_fold_drawdown'))}",
+            '',
+        ]
     metrics = report.get('metrics', {})
-    lines += [
-        f"- Accuracy: {fmt(metrics.get('holdout_accuracy'))}",
-        f"- Log loss: {fmt(metrics.get('holdout_log_loss'))}",
-        f"- Trades: {metrics.get('holdout_trades')}",
-        f"- Retorno neto: {fmt(metrics.get('holdout_net_return'))}",
-        f"- Baseline alcista: {fmt(metrics.get('baseline_net_return'))}",
-        f"- Supera baseline: **{metrics.get('beats_baseline')}**",
-        '',
-    ]
+    if report.get('holdout'):
+        lines += [
+            '## Holdout final',
+            '',
+            f"- Accuracy: {fmt(metrics.get('holdout_accuracy'))}",
+            f"- Log loss: {fmt(metrics.get('holdout_log_loss'))}",
+            f"- Trades: {metrics.get('holdout_trades')}",
+            f"- Retorno neto: {fmt(metrics.get('holdout_net_return'))}",
+            f"- Baseline alcista: {fmt(metrics.get('baseline_net_return'))}",
+            f"- Supera baseline: **{metrics.get('beats_baseline')}**",
+            '',
+        ]
+    else:
+        lines += ['## Holdout final', '', '- No evaluado (dev-only / selección).', '']
+    ext = report.get('external')
+    if ext:
+        lines += ['## Validación externa', '']
+        if ext.get('status') == 'failed':
+            lines += [f"- Falló: {ext.get('error')}", '']
+        else:
+            et = ext.get('trading', {})
+            em = et.get('model', {})
+            ebl = et.get('baseline_long', {})
+            ep = ext.get('predictive', {})
+            lines += [
+                f"- Símbolo/timeframe: {ext.get('symbol')} {ext.get('timeframe')}",
+                f"- Accuracy: {fmt(ep.get('accuracy'))}",
+                f"- Trades: {em.get('trades')}",
+                f"- Retorno neto: {fmt(em.get('net_return'))}",
+                f"- Baseline: {fmt(ebl.get('net_return'))}",
+                f"- Pasa puerta: **{ext.get('passes_gate')}**",
+                '',
+            ]
     if report.get('error'):
         lines += ['## Error', '', str(report['error']), '']
     text = '\n'.join(lines)

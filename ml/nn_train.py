@@ -36,11 +36,13 @@ from dataset import (  # noqa: E402
     load_synthetic,
     prepare_candles,
 )
-from features import FEATURE_NAMES, compute_features, feature_matrix  # noqa: E402
+from features import NN_FEATURE_NAMES, compute_features, nn_feature_matrix  # noqa: E402
 from labels import add_labels, walk_forward_splits  # noqa: E402
+from nn.calibration import apply_temperature, fit_temperature  # noqa: E402
 from nn.config import load_config  # noqa: E402
 from nn.metrics import (  # noqa: E402
     aggregate_folds,
+    calibrate_walk_forward,
     classification_metrics,
     evaluate_trading,
 )
@@ -180,6 +182,87 @@ def transform(X, mu, sigma):
     return (X - mu) / sigma
 
 
+def _map_labels(raw_label):
+    """Mapea las etiquetas de labels.py a clases 0=down, 1=flat, 2=up."""
+    y = np.zeros(len(raw_label), dtype=np.int64)
+    y[raw_label == 1] = 0
+    y[raw_label == 0] = 1
+    y[raw_label == 2] = 2
+    return y
+
+
+def _evaluate_external(model, mu, sigma, args, cfg, conf, side, report, temperature=1.0):
+    """Evalúa el modelo final en otro símbolo/dataset sin tocar el holdout."""
+    source = args.external_db or args.external_csv
+    if not source:
+        return True
+    ext_tf = args.external_timeframe or args.timeframe
+    try:
+        ext_df = (
+            load_from_db(
+                args.external_db, args.external_symbol, ext_tf,
+                limit=cfg.max_data_rows,
+            )
+            if args.external_db else load_from_csv(args.external_csv)
+        )
+        if len(ext_df) > cfg.max_data_rows:
+            ext_df = ext_df.iloc[-cfg.max_data_rows:].copy()
+        ext_raw, ext_q = prepare_candles(ext_df, ext_tf)
+        ext_feat = add_labels(
+            compute_features(ext_raw),
+            horizon=cfg.horizon, sigma_mult=cfg.sigma_mult,
+        )
+        ext_clean = ext_feat.dropna(
+            subset=NN_FEATURE_NAMES + ['label']
+        ).reset_index(drop=True)
+        if len(ext_clean) < max(50, cfg.horizon * 2):
+            raise ValueError(f'filas externas insuficientes: {len(ext_clean)}')
+        ext_X = nn_feature_matrix(ext_clean)
+        ext_close = ext_clean['close'].to_numpy(dtype=np.float64)
+        ext_y = _map_labels(ext_clean['label'].to_numpy(dtype=np.int64))
+        ext_finite = np.isfinite(ext_X).all(axis=1) & np.isfinite(ext_close)
+        ext_X = ext_X[ext_finite]
+        ext_close = ext_close[ext_finite]
+        ext_y = ext_y[ext_finite]
+        ext_probs = apply_temperature(
+            model.predict_proba(transform(ext_X, mu, sigma)), temperature
+        )
+        ext_pred = classification_metrics(ext_y, ext_probs)
+        ext_trade = evaluate_trading(
+            ext_probs, ext_close, cfg.horizon, confidence=conf,
+            fee_rate=args.fee_bps / 10000.0,
+            slippage_rate=args.slippage_bps / 10000.0,
+            side=side,
+        )
+        external_ok = bool(
+            ext_trade['model']['trades'] >= args.min_test_trades
+            and ext_trade.get('beats_baseline') is True
+            and ext_trade['model']['net_return'] > 0.0
+        )
+        report['external'] = {
+            'symbol': args.external_symbol,
+            'timeframe': ext_tf,
+            'data': ext_q.to_dict(),
+            'dataset_hash': dataset_hash(ext_raw) if len(ext_raw) else '',
+            'predictive': ext_pred,
+            'trading': ext_trade,
+            'passes_gate': external_ok,
+        }
+        print(
+            f'[externo] {args.external_symbol} {ext_tf} '
+            f'acc={ext_pred["accuracy"]:.3f} '
+            f'net={ext_trade["model"]["net_return"]:.3f} '
+            f'baseline={ext_trade["baseline_long"]["net_return"]:.3f} '
+            f'trades={ext_trade["model"]["trades"]} gate={external_ok}',
+            flush=True,
+        )
+        return external_ok
+    except Exception as exc:  # noqa: BLE001
+        report['external'] = {'status': 'failed', 'error': str(exc)}
+        print(f'[aviso] validación externa falló: {exc}', flush=True)
+        return False
+
+
 def model_json(model, mu, sigma, meta):
     return {
         'type': 'mlp_numpy',
@@ -192,7 +275,8 @@ def model_json(model, mu, sigma, meta):
         ],
         'mu': mu.tolist(),
         'sigma': sigma.tolist(),
-        'feature_names': list(FEATURE_NAMES),
+        'temperature': float(meta.get('config', {}).get('temperature', 1.0) or 1.0),
+        'feature_names': list(NN_FEATURE_NAMES),
         'meta': meta,
     }
 
@@ -210,9 +294,28 @@ def main():
     parser.add_argument('--splits', type=int, default=4)
     parser.add_argument('--conf', type=float, default=0.6,
                         help='umbral de confianza para métricas de trading')
+    parser.add_argument('--side', choices=('both', 'long', 'short'), default='both',
+                        help='dirección permitida en la simulación de trading')
+    parser.add_argument('--calibrate', action='store_true',
+                        help='elige side/confianza solo con walk-forward')
+    parser.add_argument('--min-calibration-trades', type=int, default=20,
+                        help='mínimo de trades walk-forward para calibrar')
+    parser.add_argument('--max-fold-loss', type=float, default=0.02,
+                        help='pérdida máxima permitida en un fold de calibración')
+    parser.add_argument('--dev-only', action='store_true',
+                        help='no evalúa el holdout (solo desarrollo/walk-forward)')
+    parser.add_argument('--horizon', type=int, default=0,
+                        help='0 usa el horizonte de la configuración')
+    parser.add_argument('--sigma-mult', type=float, default=0.0,
+                        help='0 usa sigma_mult de la configuración')
     parser.add_argument('--fee-bps', type=float, default=4.0)
     parser.add_argument('--slippage-bps', type=float, default=2.0)
     parser.add_argument('--min-test-trades', type=int, default=10)
+    ext = parser.add_mutually_exclusive_group()
+    ext.add_argument('--external-db', help='SQLite con datos para validación externa')
+    ext.add_argument('--external-csv', help='CSV para validación externa')
+    parser.add_argument('--external-symbol', default='BTCUSDT')
+    parser.add_argument('--external-timeframe', default='')
     parser.add_argument('--max-seconds', type=int, default=0,
                         help='0 usa NN_MAX_TIME_SEC del entorno')
     parser.add_argument('--max-ram-mb', type=int, default=0,
@@ -245,6 +348,16 @@ def main():
         cfg.batch_size = args.batch_size
     if args.seed > 0:
         cfg.seed = args.seed
+    if args.horizon > 0:
+        cfg.horizon = args.horizon
+    if args.sigma_mult > 0:
+        cfg.sigma_mult = args.sigma_mult
+    if args.min_calibration_trades < 1:
+        parser.error('--min-calibration-trades debe ser >= 1')
+    if not 0.0 <= args.max_fold_loss <= 1.0:
+        parser.error('--max-fold-loss debe estar entre 0 y 1')
+    if not 0.0 < args.conf <= 1.0:
+        parser.error('--conf debe estar entre 0 y 1')
 
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     report_path = Path(args.report) if args.report else DEFAULT_REPORT_DIR / f'nn_train_{stamp}.json'
@@ -268,6 +381,10 @@ def main():
             'seed': cfg.seed,
             'horizon': cfg.horizon,
             'sigma_mult': cfg.sigma_mult,
+            'side': args.side,
+            'confidence': args.conf,
+            'calibrate': bool(args.calibrate),
+            'dev_only': bool(args.dev_only),
         },
         'limits': {
             'max_ram_mb': cfg.max_ram_mb,
@@ -299,13 +416,13 @@ def main():
             )
 
         feat = add_labels(compute_features(raw), horizon=cfg.horizon, sigma_mult=cfg.sigma_mult)
-        clean = feat.dropna(subset=FEATURE_NAMES + ['label']).reset_index(drop=True)
+        clean = feat.dropna(subset=NN_FEATURE_NAMES + ['label']).reset_index(drop=True)
         if len(clean) < cfg.min_train_rows:
             raise ValueError(
                 f'filas útiles insuficientes tras features/labels: {len(clean)}'
             )
 
-        X = feature_matrix(clean)
+        X = nn_feature_matrix(clean)
         close = clean['close'].to_numpy(dtype=np.float64)
         raw_label = clean['label'].to_numpy(dtype=np.int64)
         finite = np.isfinite(X).all(axis=1) & np.isfinite(close)
@@ -316,10 +433,7 @@ def main():
             raise ValueError(f'filas finitas insuficientes: {len(X)}')
 
         # Clases explícitas: 0=down, 1=flat, 2=up.
-        y = np.zeros(len(raw_label), dtype=np.int64)
-        y[raw_label == 1] = 0
-        y[raw_label == 0] = 1
-        y[raw_label == 2] = 2
+        y = _map_labels(raw_label)
 
         report['labels'] = {
             'type': 'triple_barrier',
@@ -353,6 +467,7 @@ def main():
             raise ValueError('no se pudo construir ningún fold walk-forward')
 
         fold_reports = []
+        fold_preds = []
         for fold_no, (tr_rel, te_rel) in enumerate(folds, start=1):
             guard.check()
             tr = dev_idx[tr_rel]
@@ -370,17 +485,25 @@ def main():
                 patience=cfg.patience, sample_weight=sw, verbose=args.verbose,
             )
             probs = model.predict_proba(Xte)
+            val_probs = (
+                model.predict_proba(Xval) if len(tr_val) else np.empty((0, 3))
+            )
+            temperature = fit_temperature(val_probs, y[tr_val])
+            probs = apply_temperature(probs, temperature)
+            fold_preds.append({'probs': probs, 'close': close[te]})
             pred_metrics = classification_metrics(y[te], probs)
             trade_metrics = evaluate_trading(
                 probs, close[te], cfg.horizon, confidence=args.conf,
                 fee_rate=args.fee_bps / 10000.0,
                 slippage_rate=args.slippage_bps / 10000.0,
+                side=args.side,
             )
             fold_reports.append({
                 'fold': fold_no,
                 'train': int(len(tr_fit)),
                 'validation': int(len(tr_val)),
                 'test': int(len(te)),
+                'temperature': float(temperature),
                 'fit': fit_info,
                 'predictive': pred_metrics,
                 **trade_metrics,
@@ -392,10 +515,60 @@ def main():
                 flush=True,
             )
 
+        side = args.side
+        conf = args.conf
+        if args.calibrate:
+            calibration = calibrate_walk_forward(
+                fold_preds, cfg.horizon,
+                fee_rate=args.fee_bps / 10000.0,
+                slippage_rate=args.slippage_bps / 10000.0,
+                min_trades=args.min_calibration_trades,
+                max_fold_loss=args.max_fold_loss,
+            )
+            report['calibration'] = calibration
+            selected = calibration.get('selected', {})
+            if calibration.get('status') == 'ok':
+                side = selected['side']
+                conf = float(selected['confidence'])
+                for fr, fp in zip(fold_reports, fold_preds):
+                    fr.update(evaluate_trading(
+                        fp['probs'], fp['close'], cfg.horizon, confidence=conf,
+                        fee_rate=args.fee_bps / 10000.0,
+                        slippage_rate=args.slippage_bps / 10000.0,
+                        side=side,
+                    ))
+            elif args.dev_only:
+                print(
+                    '[aviso] calibración sin candidatos elegibles; se mantiene '
+                    f'side={side} conf={conf:.2f}',
+                    flush=True,
+                )
+            else:
+                raise ValueError(
+                    'calibración sin candidatos elegibles; no se evalúa el holdout'
+                )
+            print(
+                f'[calibración] side={side} conf={conf:.2f} '
+                f"trades={calibration.get('selected', {}).get('trades', 0)} "
+                f"net={calibration.get('selected', {}).get('compounded_net_return', 0.0):.3f} "
+                f"eligible={calibration.get('eligible_candidates', 0)} "
+                f"status={calibration.get('status')}",
+                flush=True,
+            )
+        report['config']['side'] = side
+        report['config']['confidence'] = conf
+        report['config']['max_fold_loss'] = args.max_fold_loss
         report['walk_forward'] = {
             'folds': fold_reports,
             'aggregate': aggregate_folds(fold_reports),
         }
+
+        if args.dev_only and not (args.external_db or args.external_csv):
+            report['validation_status'] = 'dev_only'
+            report['eligible_for_promotion'] = False
+            report['status'] = 'completed'
+            print('[ok] dev-only: holdout reservado (sin evaluación final)', flush=True)
+            return 0
 
         # Modelo final: entrena solo con desarrollo; el holdout sigue intacto.
         tr_fit, tr_val = carve_validation(dev_idx, gap, cfg.val_frac, min_train=80)
@@ -408,12 +581,32 @@ def main():
             seed=cfg.seed + 10_000, guard=guard, epochs=cfg.epochs,
             patience=cfg.patience, sample_weight=sw, verbose=args.verbose,
         )
-        test_probs = final_model.predict_proba(transform(X[test_idx], mu, sigma))
+        final_val_probs = (
+            final_model.predict_proba(Xval) if len(tr_val) else np.empty((0, 3))
+        )
+        temperature = fit_temperature(final_val_probs, y[tr_val])
+        report['config']['temperature'] = float(temperature)
+        external_ok = _evaluate_external(
+            final_model, mu, sigma, args, cfg, conf, side, report, temperature
+        )
+
+        if args.dev_only:
+            report['validation_status'] = 'dev_only'
+            report['eligible_for_promotion'] = False
+            report['status'] = 'completed'
+            print('[ok] dev-only: holdout reservado (validación externa sí)', flush=True)
+            return 0
+
+        test_probs = apply_temperature(
+            final_model.predict_proba(transform(X[test_idx], mu, sigma)),
+            temperature,
+        )
         test_pred = classification_metrics(y[test_idx], test_probs)
         test_trade = evaluate_trading(
-            test_probs, close[test_idx], cfg.horizon, confidence=args.conf,
+            test_probs, close[test_idx], cfg.horizon, confidence=conf,
             fee_rate=args.fee_bps / 10000.0,
             slippage_rate=args.slippage_bps / 10000.0,
+            side=side,
         )
         report['holdout'] = {
             'predictive': test_pred,
@@ -427,9 +620,12 @@ def main():
             and test_trade['model']['trades'] >= args.min_test_trades
         )
         report['validation_status'] = 'complete' if complete else 'inconclusive'
+        report['external_gate'] = external_ok
         report['eligible_for_promotion'] = bool(
             complete
             and test_trade.get('beats_baseline') is True
+            and test_trade['model']['net_return'] > 0.0
+            and external_ok
             and not guard.timed_out
             and not guard.oom_risk
         )
@@ -446,11 +642,12 @@ def main():
             'status': 'candidate',
             'validation_status': report['validation_status'],
             'eligible_for_promotion': report['eligible_for_promotion'],
-            'feature_names': list(FEATURE_NAMES),
+            'feature_names': list(NN_FEATURE_NAMES),
             'label': report['labels'],
             'config': report['config'],
             'splits': report['splits'],
             'holdout': report['holdout'],
+            'external': report.get('external'),
             'walk_forward_aggregate': report['walk_forward']['aggregate'],
             'data': report['data'],
             'code_version': report['code_version'],
