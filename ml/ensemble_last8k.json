@@ -1,0 +1,111 @@
+{
+  "models": [
+    "models\\candidates\\cand_1793105216\\model.json",
+    "models\\candidates\\cand_1793105236\\model.json",
+    "models\\candidates\\cand_1793105261\\model.json"
+  ],
+  "symbol": "BTCUSDT",
+  "timeframe": "1h",
+  "last_bars": 8000,
+  "start_ts": 0,
+  "end_ts": 0,
+  "combine": "vote",
+  "min_votes": 2,
+  "data": {
+    "input_rows": 8000,
+    "output_rows": 8000,
+    "invalid_rows": 0,
+    "duplicate_ts": 0,
+    "gaps": 0,
+    "timeframe_ms": 3600000,
+    "first_ts": 1764223200000,
+    "last_ts": 1793019600000
+  },
+  "samples": 7921,
+  "predictive": {
+    "accuracy": 0.5152127256659512,
+    "log_loss": 0.695300393228697,
+    "brier": 0.5016666360738069,
+    "samples": 7921
+  },
+  "trading": {
+    "model": {
+      "trades": 76,
+      "win_rate": 0.4868421052631579,
+      "net_return": -0.008002772108292366,
+      "gross_return": 0.11362512398227542,
+      "total_cost": 0.09120000000000002,
+      "avg_net_return": 0.0002950674208194123,
+      "max_drawdown": 0.16729898113527042
+    },
+    "baseline_long": {
+      "trades": 316,
+      "win_rate": 0.5,
+      "net_return": -0.31858687803026353,
+      "gross_return": 0.06970067144138703,
+      "total_cost": 0.3792,
+      "avg_net_return": -0.0009794282549323201,
+      "max_drawdown": 0.43065045374230715
+    },
+    "beats_baseline": true,
+    "side": "both",
+    "confidence": 0.2,
+    "costs": {
+      "fee_rate": 0.0004,
+      "slippage_rate": 0.0002
+    }
+  },
+  "baselines": {
+    "always_long": {
+      "trades": 316,
+      "win_rate": 0.5,
+      "net_return": -0.31858687803026353,
+      "gross_return": 0.06970067144138703,
+      "total_cost": 0.3792,
+      "avg_net_return": -0.0009794282549323201,
+      "max_drawdown": 0.43065045374230715
+    },
+    "always_short": {
+      "trades": 316,
+      "win_rate": 0.4462025316455696,
+      "net_return": -0.4073040231004288,
+      "gross_return": -0.06970067144138703,
+      "total_cost": 0.3792,
+      "avg_net_return": -0.001420571745067681,
+      "max_drawdown": 0.5166090397116188
+    },
+    "momentum_24": {
+      "trades": 315,
+      "win_rate": 0.4634920634920635,
+      "net_return": -0.2219485076986908,
+      "gross_return": 0.19941409493293683,
+      "total_cost": 0.378,
+      "avg_net_return": -0.0005669393811652805,
+      "max_drawdown": 0.30014116822134107
+    },
+    "rsi_30_70": {
+      "trades": 129,
+      "win_rate": 0.4806201550387597,
+      "net_return": -0.25261135025097736,
+      "gross_return": -0.10593938386698099,
+      "total_cost": 0.1548,
+      "avg_net_return": -0.002021235533852566,
+      "max_drawdown": 0.40449521265331767
+    },
+    "macd_hist": {
+      "trades": 316,
+      "win_rate": 0.5316455696202531,
+      "net_return": 0.15115280502755435,
+      "gross_return": 0.5933469948083969,
+      "total_cost": 0.3792,
+      "avg_net_return": 0.000677680363317711,
+      "max_drawdown": 0.21230005436636534
+    }
+  },
+  "reference": {
+    "name": "",
+    "summary": null,
+    "model_beats": true
+  },
+  "gate": false
+}

@@ -20,20 +20,20 @@ import (
 // cualquier ajuste a la doc real se haga solo aquí.
 const (
 	// Cabeceras de autenticación.
-	headerAccessKey   = "X-ACCESS-KEY"
-	headerAccessSign  = "X-ACCESS-SIGN"
-	headerAccessTS    = "X-ACCESS-TIMESTAMP"
-	weexContractBase  = "https://api-contract.weex.com"
-	weexSuccessCode   = "0"
+	headerAccessKey  = "X-ACCESS-KEY"
+	headerAccessSign = "X-ACCESS-SIGN"
+	headerAccessTS   = "X-ACCESS-TIMESTAMP"
+	weexContractBase = "https://api-contract.weex.com"
+	weexSuccessCode  = "0"
 )
 
 // Endpoints REST de contratos WEEX (v2).
 const (
-	pathOrderCreate   = "/v2/order/create"
-	pathOrderCancel   = "/v2/order/cancel"
-	pathOrderList     = "/v2/order/list"
-	pathPositionList  = "/v2/position/list"
-	pathAccountList   = "/v2/account/list"
+	pathOrderCreate  = "/v2/order/create"
+	pathOrderCancel  = "/v2/order/cancel"
+	pathOrderList    = "/v2/order/list"
+	pathPositionList = "/v2/position/list"
+	pathAccountList  = "/v2/account/list"
 )
 
 // WeexConfig configura el acceso autenticado a la API de contratos WEEX.

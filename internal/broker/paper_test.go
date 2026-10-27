@@ -174,14 +174,14 @@ func TestCancelOrderPending(t *testing.T) {
 	b, s := newPaper(t)
 	ctx := context.Background()
 	pending := domain.Order{
-		ClientID:  "ib-mtf-BTCUSDT-1005-buy",
+		ClientID:   "ib-mtf-BTCUSDT-1005-buy",
 		StrategyID: "ib-mtf",
-		Symbol:    "BTCUSDT",
-		Side:      domain.DirectionBuy,
-		Quantity:  1,
-		Price:     90,
-		Status:    OrderPending,
-		Time:      time.Now(),
+		Symbol:     "BTCUSDT",
+		Side:       domain.DirectionBuy,
+		Quantity:   1,
+		Price:      90,
+		Status:     OrderPending,
+		Time:       time.Now(),
 	}
 	if err := s.SaveOrder(ctx, pending); err != nil {
 		t.Fatalf("SaveOrder: %v", err)

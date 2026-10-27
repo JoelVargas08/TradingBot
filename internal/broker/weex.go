@@ -193,14 +193,14 @@ func (b *WeexBroker) listPositions(ctx context.Context, query url.Values) ([]dom
 	out := make([]domain.Position, 0, len(items))
 	for _, wp := range items {
 		out = append(out, domain.Position{
-			Symbol:      wp.Symbol,
-			Side:        wp.Side,
-			EntryPrice:  wp.EntryPrice,
-			Quantity:    wp.Quantity,
-			StopLoss:    wp.StopLoss,
-			TakeProfit:  wp.TakeProfit,
-			PnL:         wp.UnrealizedPnL,
-			Status:      domain.PositionOpen,
+			Symbol:     wp.Symbol,
+			Side:       wp.Side,
+			EntryPrice: wp.EntryPrice,
+			Quantity:   wp.Quantity,
+			StopLoss:   wp.StopLoss,
+			TakeProfit: wp.TakeProfit,
+			PnL:        wp.UnrealizedPnL,
+			Status:     domain.PositionOpen,
 		})
 	}
 	return out, nil
@@ -243,13 +243,13 @@ type weexOrder struct {
 }
 
 type weexPosition struct {
-	Symbol         string
-	Side           domain.Direction
-	EntryPrice     float64
-	Quantity       float64
-	StopLoss       float64
-	TakeProfit     float64
-	UnrealizedPnL  float64
+	Symbol           string
+	Side             domain.Direction
+	EntryPrice       float64
+	Quantity         float64
+	StopLoss         float64
+	TakeProfit       float64
+	UnrealizedPnL    float64
 	MarkPrice        float64
 	LiquidationPrice float64
 }
@@ -314,14 +314,14 @@ func parseWeexPositions(raw json.RawMessage) ([]weexPosition, error) {
 			qty = -qty
 		}
 		out = append(out, weexPosition{
-			Symbol:         flexString(it, "symbol", "contract", "contractName"),
-			Side:           dir,
-			EntryPrice:     flexFloat(it, "entryPrice", "avgEntryPrice", "openPrice", "costPrice"),
-			Quantity:       qty,
-			StopLoss:       flexFloat(it, "stopLossPrice", "stopLoss", "slPrice"),
-			TakeProfit:     flexFloat(it, "takeProfitPrice", "takeProfit", "tpPrice"),
-			UnrealizedPnL:  flexFloat(it, "unrealizedPnL", "unrealizedProfit", "totalProfit"),
-			MarkPrice:      flexFloat(it, "markPrice", "currentPrice"),
+			Symbol:           flexString(it, "symbol", "contract", "contractName"),
+			Side:             dir,
+			EntryPrice:       flexFloat(it, "entryPrice", "avgEntryPrice", "openPrice", "costPrice"),
+			Quantity:         qty,
+			StopLoss:         flexFloat(it, "stopLossPrice", "stopLoss", "slPrice"),
+			TakeProfit:       flexFloat(it, "takeProfitPrice", "takeProfit", "tpPrice"),
+			UnrealizedPnL:    flexFloat(it, "unrealizedPnL", "unrealizedProfit", "totalProfit"),
+			MarkPrice:        flexFloat(it, "markPrice", "currentPrice"),
 			LiquidationPrice: flexFloat(it, "liquidationPrice", "liqPrice"),
 		})
 	}

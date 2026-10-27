@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"tradingview-bot/internal/backtest"
-	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/strategies"
 )
 
@@ -134,8 +134,12 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 		}
 		if strings.HasPrefix(st.Source, "investing_bulls_learn_mtf") {
 			ev, ok, err := investingbulls.EvaluateLive(ctx, e.candles, st, k)
-			if err != nil { return fmt.Errorf("evaluando Investing Bulls %s: %w", sid, err) }
-			if !ok { return nil }
+			if err != nil {
+				return fmt.Errorf("evaluando Investing Bulls %s: %w", sid, err)
+			}
+			if !ok {
+				return nil
+			}
 			return e.publisher.Publish(ctx, ev)
 		}
 		spec, err := ParseSpec(st.Spec)

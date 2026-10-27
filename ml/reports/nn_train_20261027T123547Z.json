@@ -1,0 +1,869 @@
+{
+  "status": "completed",
+  "started_at": "2026-10-27T12:35:47Z",
+  "code_version": "",
+  "source": "db",
+  "symbol": "BTCUSDT",
+  "timeframe": "1h",
+  "config": {
+    "hidden_sizes": [
+      32,
+      16
+    ],
+    "lr": 0.001,
+    "batch_size": 256,
+    "epochs": 20,
+    "patience": 10,
+    "dropout": 0.1,
+    "weight_decay": 0.0001,
+    "seed": 1234,
+    "horizon": 24,
+    "sigma_mult": 1.5,
+    "side": "both",
+    "confidence": 0.6,
+    "reference": "none",
+    "calibrate": false,
+    "dev_only": false,
+    "max_fold_loss": 0.02,
+    "temperature": 1.7499999999999996
+  },
+  "limits": {
+    "max_ram_mb": 512,
+    "max_time_sec": 900,
+    "max_data_rows": 2000,
+    "epochs": 20,
+    "batch_size": 256
+  },
+  "data": {
+    "input_rows": 1611,
+    "output_rows": 1611,
+    "invalid_rows": 0,
+    "duplicate_ts": 0,
+    "gaps": 0,
+    "timeframe_ms": 3600000,
+    "first_ts": 1786978800000,
+    "last_ts": 1792767600000,
+    "dataset_hash": "da64b0fe2863372dca4d5d6113a84a661c94bce9c7f2fe9cc22ffe22a20e5039"
+  },
+  "labels": {
+    "type": "triple_barrier",
+    "horizon": 24,
+    "sigma_mult": 1.5,
+    "classes": {
+      "0": "down",
+      "1": "flat",
+      "2": "up"
+    },
+    "distribution": {
+      "0": 705,
+      "2": 827
+    },
+    "clean_rows": 1532
+  },
+  "splits": {
+    "total_clean": 1532,
+    "development": 1202,
+    "embargo_gap": 24,
+    "holdout": {
+      "start": 1226,
+      "end": 1531,
+      "rows": 306
+    },
+    "walk_forward_folds": 3
+  },
+  "walk_forward": {
+    "folds": [
+      {
+        "fold": 1,
+        "train": 601,
+        "validation": 156,
+        "test": 105,
+        "temperature": 1.4,
+        "fit": {
+          "epochs_run": 20,
+          "best_epoch": 10,
+          "best_val_loss": 0.8592691815497946,
+          "stopped_early": false,
+          "history": [
+            {
+              "epoch": 1,
+              "train_loss": 1.3708062627204578,
+              "val_loss": 1.3695571296109978
+            },
+            {
+              "epoch": 2,
+              "train_loss": 1.2548614164347314,
+              "val_loss": 1.2446176265349067
+            },
+            {
+              "epoch": 3,
+              "train_loss": 1.1621548030724242,
+              "val_loss": 1.1348334512724687
+            },
+            {
+              "epoch": 4,
+              "train_loss": 1.1143522765785485,
+              "val_loss": 1.0475323230113172
+            },
+            {
+              "epoch": 5,
+              "train_loss": 0.9879516324263573,
+              "val_loss": 0.9783703221901916
+            },
+            {
+              "epoch": 6,
+              "train_loss": 0.9401861155884316,
+              "val_loss": 0.9269730791832387
+            },
+            {
+              "epoch": 7,
+              "train_loss": 0.8769420179912458,
+              "val_loss": 0.892708041569799
+            },
+            {
+              "epoch": 8,
+              "train_loss": 0.7971201003144982,
+              "val_loss": 0.8726214291590293
+            },
+            {
+              "epoch": 9,
+              "train_loss": 0.814234539446261,
+              "val_loss": 0.8627092766988361
+            },
+            {
+              "epoch": 10,
+              "train_loss": 0.7812485405944983,
+              "val_loss": 0.8592691815497946
+            },
+            {
+              "epoch": 11,
+              "train_loss": 0.7386602000836199,
+              "val_loss": 0.8604418854215976
+            },
+            {
+              "epoch": 12,
+              "train_loss": 0.7123968386332254,
+              "val_loss": 0.8646990576426331
+            },
+            {
+              "epoch": 13,
+              "train_loss": 0.725206026416079,
+              "val_loss": 0.869033358094046
+            },
+            {
+              "epoch": 14,
+              "train_loss": 0.7122561086045999,
+              "val_loss": 0.8757875561985538
+            },
+            {
+              "epoch": 15,
+              "train_loss": 0.6799552626720485,
+              "val_loss": 0.883116579790561
+            },
+            {
+              "epoch": 16,
+              "train_loss": 0.6558205086306715,
+              "val_loss": 0.8879415789344751
+            },
+            {
+              "epoch": 17,
+              "train_loss": 0.6971843128509284,
+              "val_loss": 0.8917824222816058
+            },
+            {
+              "epoch": 18,
+              "train_loss": 0.6623811534875325,
+              "val_loss": 0.8927806195273492
+            },
+            {
+              "epoch": 19,
+              "train_loss": 0.6301802850539173,
+              "val_loss": 0.8872450418207932
+            },
+            {
+              "epoch": 20,
+              "train_loss": 0.6337063055875992,
+              "val_loss": 0.8819024172733481
+            }
+          ]
+        },
+        "predictive": {
+          "accuracy": 0.5714285714285714,
+          "log_loss": 0.7811001603177451,
+          "brier": 0.4968833311377162,
+          "samples": 105
+        },
+        "baselines": {
+          "always_long": {
+            "trades": 4,
+            "win_rate": 0.25,
+            "net_return": -0.019498110594893148,
+            "gross_return": -0.014488839303889334,
+            "total_cost": 0.0048000000000000004,
+            "avg_net_return": -0.004822209825972333,
+            "max_drawdown": 0.026562492335542642
+          },
+          "always_short": {
+            "trades": 4,
+            "win_rate": 0.25,
+            "net_return": 0.00937563896132243,
+            "gross_return": 0.014488839303889334,
+            "total_cost": 0.0048000000000000004,
+            "avg_net_return": 0.0024222098259723338,
+            "max_drawdown": 0.0129914758072176
+          },
+          "momentum_24": {
+            "trades": 3,
+            "win_rate": 0.3333333333333333,
+            "net_return": 0.006031955598137406,
+            "gross_return": 0.010087467082255941,
+            "total_cost": 0.0036000000000000003,
+            "avg_net_return": 0.0021624890274186473,
+            "max_drawdown": 0.020240205302777703
+          },
+          "rsi_30_70": {
+            "trades": 1,
+            "win_rate": 1.0,
+            "net_return": 0.027843881617379163,
+            "gross_return": 0.02904388161737914,
+            "total_cost": 0.0012000000000000001,
+            "avg_net_return": 0.027843881617379142,
+            "max_drawdown": 0.0
+          },
+          "macd_hist": {
+            "trades": 4,
+            "win_rate": 0.25,
+            "net_return": 0.00985281029301599,
+            "gross_return": 0.0149608995368673,
+            "total_cost": 0.0048000000000000004,
+            "avg_net_return": 0.0025402248842168254,
+            "max_drawdown": 0.012524878285241958
+          }
+        },
+        "model": {
+          "trades": 1,
+          "win_rate": 1.0,
+          "net_return": 0.024858850787766285,
+          "gross_return": 0.026058850787766374,
+          "total_cost": 0.0012000000000000001,
+          "avg_net_return": 0.024858850787766375,
+          "max_drawdown": 0.0
+        },
+        "baseline_long": {
+          "trades": 4,
+          "win_rate": 0.25,
+          "net_return": -0.019498110594893148,
+          "gross_return": -0.014488839303889334,
+          "total_cost": 0.0048000000000000004,
+          "avg_net_return": -0.004822209825972333,
+          "max_drawdown": 0.026562492335542642
+        },
+        "beats_baseline": true,
+        "side": "both",
+        "confidence": 0.6,
+        "costs": {
+          "fee_rate": 0.0004,
+          "slippage_rate": 0.0002
+        }
+      },
+      {
+        "fold": 2,
+        "train": 195,
+        "validation": 54,
+        "test": 105,
+        "temperature": 1.4999999999999996,
+        "fit": {
+          "epochs_run": 20,
+          "best_epoch": 20,
+          "best_val_loss": 0.8889919415273337,
+          "stopped_early": false,
+          "history": [
+            {
+              "epoch": 1,
+              "train_loss": 1.0011980800058078,
+              "val_loss": 1.1039559666440721
+            },
+            {
+              "epoch": 2,
+              "train_loss": 0.9452383384600542,
+              "val_loss": 1.0944531375408106
+            },
+            {
+              "epoch": 3,
+              "train_loss": 0.8911040460350507,
+              "val_loss": 1.0839444692973499
+            },
+            {
+              "epoch": 4,
+              "train_loss": 0.8655304564818352,
+              "val_loss": 1.0723744482565125
+            },
+            {
+              "epoch": 5,
+              "train_loss": 0.9128279711523075,
+              "val_loss": 1.0598658648622714
+            },
+            {
+              "epoch": 6,
+              "train_loss": 0.8892585357805726,
+              "val_loss": 1.04623024118488
+            },
+            {
+              "epoch": 7,
+              "train_loss": 0.8970624577791938,
+              "val_loss": 1.031870328597529
+            },
+            {
+              "epoch": 8,
+              "train_loss": 0.8620590911384318,
+              "val_loss": 1.01736555219965
+            },
+            {
+              "epoch": 9,
+              "train_loss": 0.832348362270694,
+              "val_loss": 1.0024898807559195
+            },
+            {
+              "epoch": 10,
+              "train_loss": 0.7924894328945861,
+              "val_loss": 0.9881310841366372
+            },
+            {
+              "epoch": 11,
+              "train_loss": 0.7646717190398366,
+              "val_loss": 0.9739860760858315
+            },
+            {
+              "epoch": 12,
+              "train_loss": 0.7927707034967304,
+              "val_loss": 0.9612145161021158
+            },
+            {
+              "epoch": 13,
+              "train_loss": 0.8244489457958413,
+              "val_loss": 0.9499070828270663
+            },
+            {
+              "epoch": 14,
+              "train_loss": 0.7539561630775277,
+              "val_loss": 0.9392824515034642
+            },
+            {
+              "epoch": 15,
+              "train_loss": 0.7511675420142497,
+              "val_loss": 0.9297193834859722
+            },
+            {
+              "epoch": 16,
+              "train_loss": 0.7194289070571912,
+              "val_loss": 0.9206253352362376
+            },
+            {
+              "epoch": 17,
+              "train_loss": 0.6899025780209176,
+              "val_loss": 0.9121393831001727
+            },
+            {
+              "epoch": 18,
+              "train_loss": 0.7098065860280086,
+              "val_loss": 0.9038707229438029
+            },
+            {
+              "epoch": 19,
+              "train_loss": 0.6910038598136511,
+              "val_loss": 0.8961441890627574
+            },
+            {
+              "epoch": 20,
+              "train_loss": 0.6742052657003815,
+              "val_loss": 0.8889919415273337
+            }
+          ]
+        },
+        "predictive": {
+          "accuracy": 0.3523809523809524,
+          "log_loss": 1.0438127067800846,
+          "brier": 0.6988570120053604,
+          "samples": 105
+        },
+        "baselines": {
+          "always_long": {
+            "trades": 4,
+            "win_rate": 0.25,
+            "net_return": -0.02915902896612821,
+            "gross_return": -0.024360379275833344,
+            "total_cost": 0.0048000000000000004,
+            "avg_net_return": -0.007290094818958336,
+            "max_drawdown": 0.03474653795339944
+          },
+          "always_short": {
+            "trades": 4,
+            "win_rate": 0.5,
+            "net_return": 0.019384962068837774,
+            "gross_return": 0.024360379275833344,
+            "total_cost": 0.0048000000000000004,
+            "avg_net_return": 0.004890094818958336,
+            "max_drawdown": 0.0005344297951651589
+          },
+          "momentum_24": {
+            "trades": 3,
+            "win_rate": 0.6666666666666666,
+            "net_return": 0.026749122916356782,
+            "gross_return": 0.030375311598206056,
+            "total_cost": 0.0036000000000000003,
+            "avg_net_return": 0.008925103866068686,
+            "max_drawdown": 0.0030440758625516207
+          },
+          "rsi_30_70": {
+            "trades": 2,
+            "win_rate": 0.0,
+            "net_return": -0.011352729977520348,
+            "gross_return": -0.00897154473764683,
+            "total_cost": 0.0024000000000000002,
+            "avg_net_return": -0.005685772368823415,
+            "max_drawdown": 0.009361809270650778
+          },
+          "macd_hist": {
+            "trades": 4,
+            "win_rate": 0.75,
+            "net_return": 0.032374033677504466,
+            "gross_return": 0.03700652754104561,
+            "total_cost": 0.0048000000000000004,
+            "avg_net_return": 0.008051631885261402,
+            "max_drawdown": 0.0018655702048346878
+          }
+        },
+        "model": {
+          "trades": 0,
+          "win_rate": 0.0,
+          "net_return": 0.0,
+          "gross_return": 0.0,
+          "total_cost": 0.0,
+          "avg_net_return": 0.0,
+          "max_drawdown": 0.0
+        },
+        "baseline_long": {
+          "trades": 4,
+          "win_rate": 0.25,
+          "net_return": -0.02915902896612821,
+          "gross_return": -0.024360379275833344,
+          "total_cost": 0.0048000000000000004,
+          "avg_net_return": -0.007290094818958336,
+          "max_drawdown": 0.03474653795339944
+        },
+        "beats_baseline": true,
+        "side": "both",
+        "confidence": 0.6,
+        "costs": {
+          "fee_rate": 0.0004,
+          "slippage_rate": 0.0002
+        }
+      },
+      {
+        "fold": 3,
+        "train": 96,
+        "validation": 0,
+        "test": 28,
+        "temperature": 1.0,
+        "fit": {
+          "epochs_run": 20,
+          "best_epoch": 19,
+          "best_val_loss": 0.7840383906953009,
+          "stopped_early": false,
+          "history": [
+            {
+              "epoch": 1,
+              "train_loss": 1.587324617125887,
+              "val_loss": null
+            },
+            {
+              "epoch": 2,
+              "train_loss": 1.5806447014722167,
+              "val_loss": null
+            },
+            {
+              "epoch": 3,
+              "train_loss": 1.5058246082979256,
+              "val_loss": null
+            },
+            {
+              "epoch": 4,
+              "train_loss": 1.4093863940801483,
+              "val_loss": null
+            },
+            {
+              "epoch": 5,
+              "train_loss": 1.2846277354435847,
+              "val_loss": null
+            },
+            {
+              "epoch": 6,
+              "train_loss": 1.2597677712728512,
+              "val_loss": null
+            },
+            {
+              "epoch": 7,
+              "train_loss": 1.2130538851262183,
+              "val_loss": null
+            },
+            {
+              "epoch": 8,
+              "train_loss": 1.1728179264029779,
+              "val_loss": null
+            },
+            {
+              "epoch": 9,
+              "train_loss": 1.1479681211560793,
+              "val_loss": null
+            },
+            {
+              "epoch": 10,
+              "train_loss": 1.1157439958187232,
+              "val_loss": null
+            },
+            {
+              "epoch": 11,
+              "train_loss": 1.1673905060107281,
+              "val_loss": null
+            },
+            {
+              "epoch": 12,
+              "train_loss": 0.9436134078789659,
+              "val_loss": null
+            },
+            {
+              "epoch": 13,
+              "train_loss": 1.03935203329511,
+              "val_loss": null
+            },
+            {
+              "epoch": 14,
+              "train_loss": 0.9062737948508449,
+              "val_loss": null
+            },
+            {
+              "epoch": 15,
+              "train_loss": 0.8666480783089833,
+              "val_loss": null
+            },
+            {
+              "epoch": 16,
+              "train_loss": 0.872488707160139,
+              "val_loss": null
+            },
+            {
+              "epoch": 17,
+              "train_loss": 0.9164564295590217,
+              "val_loss": null
+            },
+            {
+              "epoch": 18,
+              "train_loss": 0.7975099157101965,
+              "val_loss": null
+            },
+            {
+              "epoch": 19,
+              "train_loss": 0.7840383906953009,
+              "val_loss": null
+            },
+            {
+              "epoch": 20,
+              "train_loss": 0.8359997385514895,
+              "val_loss": null
+            }
+          ]
+        },
+        "predictive": {
+          "accuracy": 0.25,
+          "log_loss": 1.5971187282512858,
+          "brier": 1.076657906772267,
+          "samples": 28
+        },
+        "baselines": {
+          "always_long": {
+            "trades": 1,
+            "win_rate": 0.0,
+            "net_return": -0.021190575460465433,
+            "gross_return": -0.019990575460465454,
+            "total_cost": 0.0012000000000000001,
+            "avg_net_return": -0.021190575460465454,
+            "max_drawdown": 0.0
+          },
+          "always_short": {
+            "trades": 1,
+            "win_rate": 1.0,
+            "net_return": 0.018790575460465364,
+            "gross_return": 0.019990575460465454,
+            "total_cost": 0.0012000000000000001,
+            "avg_net_return": 0.018790575460465454,
+            "max_drawdown": 0.0
+          },
+          "momentum_24": {
+            "trades": 0,
+            "win_rate": 0.0,
+            "net_return": 0.0,
+            "gross_return": 0.0,
+            "total_cost": 0.0,
+            "avg_net_return": 0.0,
+            "max_drawdown": 0.0
+          },
+          "rsi_30_70": {
+            "trades": 0,
+            "win_rate": 0.0,
+            "net_return": 0.0,
+            "gross_return": 0.0,
+            "total_cost": 0.0,
+            "avg_net_return": 0.0,
+            "max_drawdown": 0.0
+          },
+          "macd_hist": {
+            "trades": 1,
+            "win_rate": 1.0,
+            "net_return": 0.018790575460465364,
+            "gross_return": 0.019990575460465454,
+            "total_cost": 0.0012000000000000001,
+            "avg_net_return": 0.018790575460465454,
+            "max_drawdown": 0.0
+          }
+        },
+        "model": {
+          "trades": 1,
+          "win_rate": 0.0,
+          "net_return": -0.020672709066597905,
+          "gross_return": -0.019472709066597926,
+          "total_cost": 0.0012000000000000001,
+          "avg_net_return": -0.020672709066597926,
+          "max_drawdown": 0.0
+        },
+        "baseline_long": {
+          "trades": 1,
+          "win_rate": 0.0,
+          "net_return": -0.021190575460465433,
+          "gross_return": -0.019990575460465454,
+          "total_cost": 0.0012000000000000001,
+          "avg_net_return": -0.021190575460465454,
+          "max_drawdown": 0.0
+        },
+        "beats_baseline": true,
+        "side": "both",
+        "confidence": 0.6,
+        "costs": {
+          "fee_rate": 0.0004,
+          "slippage_rate": 0.0002
+        }
+      }
+    ],
+    "aggregate": {
+      "folds": 3,
+      "trades": 2,
+      "win_rate": 0.5,
+      "compounded_net_return": 0.0036722419311028265,
+      "worst_fold_drawdown": 0.0
+    },
+    "baselines": {
+      "always_long": {
+        "folds": 3,
+        "trades": 9,
+        "win_rate": 0.2222222222222222,
+        "compounded_net_return": -0.06826014407862169,
+        "worst_fold_drawdown": 0.03474653795339944
+      },
+      "always_short": {
+        "folds": 3,
+        "trades": 9,
+        "win_rate": 0.4444444444444444,
+        "compounded_net_return": 0.04827676625975741,
+        "worst_fold_drawdown": 0.0129914758072176
+      },
+      "momentum_24": {
+        "folds": 3,
+        "trades": 6,
+        "win_rate": 0.5,
+        "compounded_net_return": 0.03294242803621472,
+        "worst_fold_drawdown": 0.020240205302777703
+      },
+      "rsi_30_70": {
+        "folds": 3,
+        "trades": 3,
+        "win_rate": 0.3333333333333333,
+        "compounded_net_return": 0.016175047570330614,
+        "worst_fold_drawdown": 0.009361809270650778
+      },
+      "macd_hist": {
+        "folds": 3,
+        "trades": 9,
+        "win_rate": 0.5555555555555556,
+        "compounded_net_return": 0.0621358550691109,
+        "worst_fold_drawdown": 0.012524878285241958
+      }
+    }
+  },
+  "reference_gate": true,
+  "holdout": {
+    "predictive": {
+      "accuracy": 0.5130718954248366,
+      "log_loss": 0.7735316323813687,
+      "brier": 0.5168927046061007,
+      "samples": 306
+    },
+    "trading": {
+      "model": {
+        "trades": 1,
+        "win_rate": 1.0,
+        "net_return": 0.015448443955325963,
+        "gross_return": 0.016648443955325942,
+        "total_cost": 0.0012000000000000001,
+        "avg_net_return": 0.015448443955325943,
+        "max_drawdown": 0.0
+      },
+      "baseline_long": {
+        "trades": 12,
+        "win_rate": 0.5,
+        "net_return": -0.032441330730712536,
+        "gross_return": -0.01708298542064468,
+        "total_cost": 0.0144,
+        "avg_net_return": -0.0026235821183870564,
+        "max_drawdown": 0.050217532418374455
+      },
+      "beats_baseline": true,
+      "side": "both",
+      "confidence": 0.6,
+      "costs": {
+        "fee_rate": 0.0004,
+        "slippage_rate": 0.0002
+      }
+    },
+    "fit": {
+      "epochs_run": 20,
+      "best_epoch": 20,
+      "best_val_loss": 0.8881985276389507,
+      "stopped_early": false,
+      "history": [
+        {
+          "epoch": 1,
+          "train_loss": 1.133145339587005,
+          "val_loss": 1.2604173118856659
+        },
+        {
+          "epoch": 2,
+          "train_loss": 1.072740298585922,
+          "val_loss": 1.1880100626161216
+        },
+        {
+          "epoch": 3,
+          "train_loss": 0.9673253694845132,
+          "val_loss": 1.1294135177375935
+        },
+        {
+          "epoch": 4,
+          "train_loss": 0.9034487970360126,
+          "val_loss": 1.084530442353647
+        },
+        {
+          "epoch": 5,
+          "train_loss": 0.8681910815651863,
+          "val_loss": 1.0514997792229055
+        },
+        {
+          "epoch": 6,
+          "train_loss": 0.8287424111599859,
+          "val_loss": 1.0242789260199432
+        },
+        {
+          "epoch": 7,
+          "train_loss": 0.8084121194213337,
+          "val_loss": 1.002045248390172
+        },
+        {
+          "epoch": 8,
+          "train_loss": 0.7823523799231475,
+          "val_loss": 0.9830134803585371
+        },
+        {
+          "epoch": 9,
+          "train_loss": 0.7755261768741168,
+          "val_loss": 0.9667432468211572
+        },
+        {
+          "epoch": 10,
+          "train_loss": 0.7616055047392413,
+          "val_loss": 0.9511827663511739
+        },
+        {
+          "epoch": 11,
+          "train_loss": 0.7363378476455464,
+          "val_loss": 0.9379852394935985
+        },
+        {
+          "epoch": 12,
+          "train_loss": 0.7130891029310256,
+          "val_loss": 0.927003696451597
+        },
+        {
+          "epoch": 13,
+          "train_loss": 0.7086268178887484,
+          "val_loss": 0.9164066897766158
+        },
+        {
+          "epoch": 14,
+          "train_loss": 0.6913614477846591,
+          "val_loss": 0.9077279021870723
+        },
+        {
+          "epoch": 15,
+          "train_loss": 0.6824233450282521,
+          "val_loss": 0.8980297526374528
+        },
+        {
+          "epoch": 16,
+          "train_loss": 0.6714397737251339,
+          "val_loss": 0.8932401428777049
+        },
+        {
+          "epoch": 17,
+          "train_loss": 0.6570735739375353,
+          "val_loss": 0.8913308977079232
+        },
+        {
+          "epoch": 18,
+          "train_loss": 0.6559737006295554,
+          "val_loss": 0.8908142985818396
+        },
+        {
+          "epoch": 19,
+          "train_loss": 0.640156118147748,
+          "val_loss": 0.889624229875099
+        },
+        {
+          "epoch": 20,
+          "train_loss": 0.6517374243923089,
+          "val_loss": 0.8881985276389507
+        }
+      ]
+    }
+  },
+  "validation_status": "inconclusive",
+  "external_gate": true,
+  "eligible_for_promotion": false,
+  "candidate_path": "D:\\ETECSA\\Programación\\GO\\Proyectos\\Trading algoritmico\\ml\\models\\candidates\\cand_1793104547\\model.json",
+  "metrics": {
+    "holdout_accuracy": 0.5130718954248366,
+    "holdout_log_loss": 0.7735316323813687,
+    "holdout_net_return": 0.015448443955325963,
+    "holdout_max_drawdown": 0.0,
+    "holdout_trades": 1,
+    "baseline_net_return": -0.032441330730712536,
+    "beats_baseline": true
+  },
+  "resources": {
+    "peak_ram_mb": 71.2421875,
+    "ram_measurement": "psutil",
+    "duration_sec": 0.4069999999999254,
+    "cpu_sec": 0.40625,
+    "cpu_pct": 96.26777251184254,
+    "max_ram_mb": 512,
+    "max_time_sec": 900
+  },
+  "duration_sec": 0.42200000000002547,
+  "finished_at": "2026-10-27T12:35:47Z"
+}
