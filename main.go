@@ -185,11 +185,18 @@ func main() {
 	investingBullsStrategyID := strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID"))
 	if investingBullsStrategyID != "" {
 		sid := investingBullsStrategyID
+		log.Printf("Investing Bulls live: buscando estrategia %s en %s", sid, cfg.DBFile)
 		st, err := sqliteStore.GetStrategy(ctx, sid)
 		if err != nil {
-			log.Printf("Investing Bulls live: deshabilitado: strategy=%s no encontrada: %v", sid, err)
+			if errors.Is(err, domain.ErrNotFound) {
+				log.Printf("Investing Bulls live: NO ENCONTRADA estrategia=%s en %s (sqlite) -> inicialización de Investing Bulls detenida sin fallback a Chandelier", sid, cfg.DBFile)
+			} else {
+				log.Printf("Investing Bulls live: ERROR leyendo estrategia=%s en %s: %v -> inicialización de Investing Bulls detenida sin fallback a Chandelier", sid, cfg.DBFile, err)
+			}
+			investingBullsLive = nil
 		} else if st.Status != domain.StrategyActive {
-			log.Printf("Investing Bulls live: bloqueado: strategy=%s status=%s reason=%s", sid, st.Status, st.Error)
+			log.Printf("Investing Bulls live: bloqueado: strategy=%s status=%s reason=%s -> inicialización de Investing Bulls detenida sin fallback a Chandelier", sid, st.Status, st.Error)
+			investingBullsLive = nil
 		} else {
 			investingBullsLive = strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
 			liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL"))
@@ -201,9 +208,10 @@ func main() {
 				liveTF = "15m"
 			}
 			if err := investingBullsLive.SetSelection(sid, liveSymbol, liveTF); err != nil {
-				log.Printf("Investing Bulls live: %v", err)
+				log.Printf("Investing Bulls live: %v -> inicialización de Investing Bulls detenida sin fallback a Chandelier", err)
+				investingBullsLive = nil
 			} else {
-				log.Printf("Investing Bulls live activo: %s %s %s", sid, liveSymbol, liveTF)
+				log.Printf("Investing Bulls live activo: %s %s %s (fuente=%s)", sid, liveSymbol, liveTF, st.Source)
 			}
 		}
 	} else {
