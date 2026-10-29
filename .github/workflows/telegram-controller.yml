@@ -1,18 +1,39 @@
-name: TradingBot - Telegram Workflow Controller
+name: TradingBot - Telegram Controller
+
+# Plano de control continuo (relevo).  Cada job escucha Telegram y vigila la
+# sesión PAPER durante CONTROLLER_RUNTIME_SECONDS (5h30m) y, al terminar,
+# despacha su sucesor: la cadena cubre todo el día con un único controlador a
+# la vez (grupo de concurrencia).  Así el arranque de las 08:00 (America/Havana)
+# ocurre en menos de un minuto y los comandos se atienden en segundos.
+#
+# Por qué no basta un cron: medido en este repositorio (8-29 oct 2026), GitHub
+# ejecutó el cron "*/5" solo 2-7 veces al día, con huecos de 4-7 h.  El cron se
+# mantiene únicamente como vigilante para reanudar la cadena si se rompe.
+#
+# Apagar la cadena: variable de repositorio TRADINGBOT_CONTROLLER_RELAY=false
+# (el job en curso termina su ciclo y no despacha sucesor) o cancelar el run.
 
 on:
-  # Ciclo cada 5 minutos: comprueba el estado de la sesión PAPER y arranca la
-  # del día dentro de la ventana de 08:00-13:00 (hora de Cuba). El ciclo es
-  # corto y sin estado, así que una ejecución perdida se recupera en el
-  # siguiente ciclo.
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      relay:
+        description: "Despachar el siguiente job del controlador al terminar"
+        required: false
+        default: true
+        type: boolean
+      runtime_seconds:
+        description: "Duración del job en segundos (vacío = 19800; 0 = una sola pasada de diagnóstico)"
+        required: false
+        default: ""
+        type: string
 
 concurrency:
   group: tradingbot-telegram-controller
-  # Nunca se cancela un ciclo en curso: podría cortar entre el despacho del
-  # workflow y la notificación al usuario.
+  # Nunca se cancela un job en curso: podría cortar entre el despacho del
+  # workflow PAPER y la notificación al usuario.  Un disparo nuevo queda en
+  # cola y reemplaza a cualquier otro pendiente: nunca hay dos cadenas.
   cancel-in-progress: false
 
 permissions:
@@ -23,14 +44,14 @@ jobs:
   control:
     name: Telegram → GitHub Actions control plane
     runs-on: ubuntu-latest
-    # El job escucha 240 s (ventana de escucha) más el margen de arranque:
-    # termina antes de que GitHub Actions programe el siguiente ciclo de 5 min.
-    timeout-minutes: 6
+    # 5h30m de trabajo + margen; por debajo del límite de 6 h de los runners.
+    timeout-minutes: 345
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       # El token integrado GITHUB_TOKEN sirve para listar, despachar y cancelar
-      # ejecuciones con el permiso actions: write. Si se define el secreto
-      # opcional TRADINGBOT_ACTIONS_TOKEN, se prefiere ese token dedicado.
+      # ejecuciones con el permiso actions: write (y para despachar el
+      # sucesor: workflow_dispatch es la excepción que sí crea runs con
+      # GITHUB_TOKEN).  TRADINGBOT_ACTIONS_TOKEN es opcional.
       GH_TOKEN: ${{ secrets.TRADINGBOT_ACTIONS_TOKEN || secrets.GITHUB_TOKEN }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       # Único chat autorizado a controlar el workflow.
@@ -39,22 +60,55 @@ jobs:
       TRADINGBOT_TIMEZONE: America/Havana
       TRADINGBOT_AUTO_START_HOUR: "8"
       TRADINGBOT_AUTO_START_DEADLINE_HOUR: "13"
-      # Rama desde la que se despacha el workflow PAPER.
+      # Rama desde la que se despacha el workflow PAPER y el sucesor.
       TRADINGBOT_DISPATCH_REF: ${{ vars.TRADINGBOT_DISPATCH_REF || 'main' }}
-      # Escucha continua en reposo: la latencia de un comando pasa de "hasta
-      # 5 minutos" a "hasta ~1 minuto" sin solapar ciclos.
-      CONTROLLER_POLL_WINDOW_SECONDS: "240"
+      CONTROLLER_RUNTIME_SECONDS: ${{ github.event.inputs.runtime_seconds }}
     steps:
+      - name: Record job start
+        run: echo "JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
       - name: Run controller unit tests
         if: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         run: |
           set -euo pipefail
           python3 -m unittest discover -s .github/scripts -p "test_*.py"
+
       - name: Poll Telegram and control paper workflow
+        id: controller
         shell: bash
         run: |
           set -euo pipefail
           python3 .github/scripts/telegram_workflow_controller.py
+
+      - name: Relay to the next controller job
+        # Se relanza aunque el ciclo haya terminado con error (la cadena no
+        # debe morir por un fallo transitorio), pero no si: el run se canceló,
+        # el controlador no llegó a ejecutarse (tests rotos), declaró un error
+        # de configuración (relay=false), o se apagó el relevo por variable.
+        if: >-
+          ${{ !cancelled()
+              && steps.controller.outcome != 'skipped'
+              && steps.controller.outputs.relay != 'false'
+              && github.event.inputs.relay != 'false'
+              && vars.TRADINGBOT_CONTROLLER_RELAY != 'false' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Un job que falla en segundos no debe relanzarse en bucle: como
+          # mínimo pasan 10 minutos entre dos jobs de la cadena.
+          elapsed=$(( $(date +%s) - JOB_STARTED_AT ))
+          if (( elapsed < 600 )); then
+            echo "Job corto (${elapsed}s); espera $(( 600 - elapsed ))s antes del relevo."
+            sleep $(( 600 - elapsed ))
+          fi
+          gh workflow run telegram-controller.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref "${TRADINGBOT_DISPATCH_REF}" \
+            -f relay=true
+          echo "Relevo despachado en ${TRADINGBOT_DISPATCH_REF} ($(date -u +%FT%TZ))."

@@ -1,22 +1,15 @@
 name: TradingBot - Paper Session
 
+# Única vía de ejecución PAPER.  La despacha el controlador
+# (telegram-controller.yml) a las 08:00 de La Habana (lunes a viernes) o por
+# /session_start, y también se puede lanzar a mano desde Actions.
+#
+# No tiene `schedule`: el cron "0 8 * * 1-5" se ejecutaba entre las 11:57 y las
+# 13:58 de La Habana (medido 8-29 oct 2026) y, al quedar en cola detrás de la
+# sesión activa, podía arrancar justo después de un /session_stop y deshacer la
+# parada del operador.  El controlador en relevo continuo arranca la sesión a
+# su hora, reintenta los fallos y nunca despacha con un run activo o en cola.
 on:
-  # Disparo redundante del disparo diario.  El dispatcher principal es el
-  # controlador (telegram-controller.yml), que arranca la sesión dentro de la
-  # ventana 08:00-13:00 y garantiza la recuperación; pero los cron de GitHub
-  # Actions se ejecutan con retraso (en este repo se han medido retrasos de
-  # 4-6 h), así que un segundo disparador con la misma semántica da otra
-  # oportunidad dentro del día.
-  #
-  # Es seguro que convivan los dos:
-  #  - el gate usa la misma ventana 08:00-14:00 y el grupo de concurrencia
-  #    (cancel-in-progress: false) impide dos runners a la vez;
-  #  - un run que arranque fuera de la ventana se cierra solo;
-  #  - el controlador no duplica: comprueba los runs del día y los estados
-  #    activo/en cola antes de despachar.
-  schedule:
-    - cron: "0 8 * * 1-5"
-      timezone: "America/Havana"
   workflow_dispatch:
     inputs:
       restore_state:
@@ -25,12 +18,12 @@ on:
         default: true
         type: boolean
       strategy_id:
-        description: "ID de la estrategia Investing Bulls a ejecutar"
+        description: "Investing Bulls: ID explícito (vacío = variable del repo o alias investing-bulls-mtf)"
         required: false
         default: ""
         type: string
       manual_session:
-        description: "Arranque manual desde Telegram: sesión PAPER completa de 6 horas"
+        description: "Arranque manual: sesión PAPER activa desde el arranque (sin horario)"
         required: false
         default: false
         type: boolean
@@ -47,6 +40,8 @@ jobs:
   paper-session:
     name: WEEX paper trading - sesión La Habana
     runs-on: ubuntu-latest
+    # Límite duro de los runners alojados.  El bot se detiene solo unos minutos
+    # antes (ver "Run paper session") para que el estado se archive siempre.
     timeout-minutes: 360
 
     env:
@@ -75,16 +70,11 @@ jobs:
 
       # La ventana real de la sesión es 08:00 → 14:00 hora de Cuba. Con
       # manual_session=false el gate sigue el horario y el runner termina solo
-      # al cerrar la ventana; con manual_session=true la sesión dura las 6 horas
-      # del timeout del workflow.
+      # al cerrar la ventana; con manual_session=true la sesión está activa
+      # desde el arranque hasta el final del job.
       #
-      # OJO con el contexto `inputs`: en el disparo `schedule` no existe (es
-      # null) y la comparación laxa de GitHub resuelve "null != false" como
-      # FALSO, porque null y false se coer ambos a 0.  Con "inputs.manual_session
-      # == true" el disparo automático caía siempre en la rama de sesión
-      # manual/horario según el valor, no según la intención.
-      # `github.event.inputs` es siempre texto y `github.event_name` dice de
-      # dónde viene el disparo, así que la decisión es explícita.
+      # `github.event.inputs` es siempre texto (o null fuera de un dispatch),
+      # así que la comparación con 'true' es explícita.
       TRADING_SESSION_ENABLED: "true"
       TRADING_SESSION_START_ACTIVE: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.manual_session == 'true' && 'true' || 'false' }}
       TRADING_SESSION_SCHEDULE_ENABLED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.manual_session == 'true' && 'false' || 'true' }}
@@ -98,7 +88,14 @@ jobs:
       INVESTING_BULLS_CONFIRM_TIMEFRAME: 5m
       INVESTING_BULLS_CONFIRM_5M: "true"
       INVESTING_BULLS_SYMBOL: BTCUSDT
-      INVESTING_BULLS_STRATEGY_ID: ${{ inputs.strategy_id || vars.INVESTING_BULLS_STRATEGY_ID }}
+      # Selector estable: el alias "investing-bulls-mtf" elige la estrategia MTF
+      # activa más reciente de BTCUSDT con timeframes 1h/15m/5m.  Un ID
+      # explícito (input o variable del repo) se valida y, si no es válido,
+      # Investing Bulls no arranca: nunca se sustituye por otra estrategia.
+      INVESTING_BULLS_STRATEGY_ID: ${{ inputs.strategy_id || vars.INVESTING_BULLS_STRATEGY_ID || 'investing-bulls-mtf' }}
+      # El motor compartido no opera ninguna estrategia: Chandelier solo
+      # actuaría si se selecciona de forma explícita (LIVE_STRATEGY=chandelier).
+      LIVE_STRATEGY: none
 
       RISK_ENABLED: "true"
       DB_FILE: data/bot.db
@@ -106,14 +103,28 @@ jobs:
       PORT: "8080"
 
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      # Chat al que el runner avisa de que ha arrancado y de que se detiene.
+      # Chat al que el runner avisa de que ha arrancado y de que se detiene, y
+      # único chat autorizado para los comandos de control.
       TELEGRAM_ADMIN_CHAT_ID: ${{ vars.TELEGRAM_ADMIN_CHAT_ID }}
 
     steps:
+      - name: Record job start
+        run: echo "JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      - name: Assert PAPER mode
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${TRADING_MODE}" != "paper" || "${MODE}" != "paper" ]]; then
+            echo "::error::Este workflow solo puede ejecutarse en modo PAPER."
+            exit 1
+          fi
+          echo "Modo PAPER confirmado. Investing Bulls solicitado: ${INVESTING_BULLS_STRATEGY_ID}; motor compartido: ${LIVE_STRATEGY}."
 
       - name: Restore approved ML model
         id: ml_model
@@ -123,7 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ml/models data
-          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.name == "ml-approved" and .expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
+          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=ml-approved&per_page=20" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
           if [[ -z "${artifact_run_id}" ]]; then
             echo "Sin modelo ML aprobado; la sesión PAPER arranca sin inferencia ML."
             exit 0
@@ -162,35 +173,46 @@ jobs:
           cache: true
 
       - name: Restore persisted state
-        # En el disparo `schedule` no hay `inputs` (es null) y "null != false"
-        # se evalúa como FALSO: la restauración se omitía y la sesión arrancaba
-        # con la base vacía (balance reiniciado e historial perdido).  El
-        # disparo automático restaura siempre; el manual solo si no se pidió
-        # explícitamente lo contrario.
-        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.restore_state != 'false' }}
+        id: restore
+        # El disparo manual restaura salvo que se pida explícitamente lo
+        # contrario (restore_state=false empieza con una base nueva).
+        if: ${{ github.event.inputs.restore_state != 'false' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p data restore
-          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.name == "tradingbot-state" and .expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
+          # Filtro por nombre: sin él, más de 100 artefactos de otros tipos
+          # podían dejar fuera de la primera página el último estado.
+          artifact_run_id="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/artifacts?name=tradingbot-state&per_page=20" --jq '.artifacts | map(select(.expired == false)) | sort_by(.created_at) | reverse | .[0].workflow_run.id // empty')"
 
           if [[ -z "${artifact_run_id}" ]]; then
             echo "No hay estado persistido anterior; se inicia una base nueva."
+            echo "source=none" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           echo "Restaurando estado desde la ejecución ${artifact_run_id}..."
           gh run download "${artifact_run_id}" --repo "${GITHUB_REPOSITORY}" --name tradingbot-state --dir restore
 
-          if [[ -f restore/tradingbot-state.tgz ]]; then
-            tar -xzf restore/tradingbot-state.tgz
-            echo "Estado restaurado."
-          else
-            echo "ERROR: el artefacto existe pero no contiene tradingbot-state.tgz."
+          # Un artefacto existente que no se puede restaurar detiene la sesión:
+          # nunca se opera con la cuenta reiniciada en silencio.
+          if [[ ! -f restore/tradingbot-state.tgz ]]; then
+            echo "::error::El artefacto existe pero no contiene tradingbot-state.tgz."
             exit 1
           fi
+          # Listado completo antes de buscar: con pipefail, `tar | grep -q`
+          # puede fallar por SIGPIPE aunque el fichero exista.
+          listing="$(tar -tzf restore/tradingbot-state.tgz)"
+          if ! grep -qx 'data/bot.db' <<<"${listing}"; then
+            echo "::error::tradingbot-state.tgz no contiene data/bot.db."
+            exit 1
+          fi
+          tar -xzf restore/tradingbot-state.tgz
+          python3 .github/scripts/paper_state.py verify data/bot.db
+          echo "source=${artifact_run_id}" >> "$GITHUB_OUTPUT"
+          echo "Estado restaurado y verificado (run ${artifact_run_id})."
 
       - name: Validate, test and build
         run: |
@@ -233,10 +255,24 @@ jobs:
           # Permite que el propio runner cancele su ejecución al recibir
           # /session_stop o /stop desde Telegram (githubactions.NewFromEnv).
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          ./bot
+          set -uo pipefail
+          # El job tiene un límite duro de 6 h.  El bot recibe SIGTERM 4 minutos
+          # antes para cerrar limpio (checkpoint SQLite y aviso de parada) y
+          # dejar tiempo al archivado del estado.
+          budget=$(( JOB_STARTED_AT + 356 * 60 - $(date +%s) ))
+          echo "Presupuesto del bot: ${budget}s (run ${GITHUB_RUN_ID})."
+          timeout --signal=TERM --kill-after=60 "${budget}" ./bot
+          code=$?
+          if [[ ${code} -eq 124 ]]; then
+            echo "Fin del presupuesto del job; el bot se detuvo de forma limpia."
+            exit 0
+          fi
+          exit ${code}
 
       - name: Archive persistent state
+        id: archive
         if: always()
         shell: bash
         run: |
@@ -245,22 +281,60 @@ jobs:
           if [[ -f data/ml_sidecar.pid ]]; then
             kill "$(cat data/ml_sidecar.pid)" 2>/dev/null || true
           fi
-          if [[ -f data/bot.db ]]; then
-            extra=()
-            for f in data/users.json data/ml_predictions.jsonl data/ml_predictions.jsonl.1 data/ml_sidecar.log data/ml_health.json; do
-              [[ -f "$f" ]] && extra+=("$f")
-            done
-            tar -czf tradingbot-state.tgz data/bot.db* "${extra[@]}" 2>/dev/null || true
-            ls -lh tradingbot-state.tgz
-          else
+          if [[ ! -f data/bot.db ]]; then
             echo "No existe data/bot.db; no se sube estado."
+            echo "saved=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          extra=()
+          for f in data/users.json data/ml_predictions.jsonl data/ml_predictions.jsonl.1 data/ml_sidecar.log data/ml_health.json; do
+            [[ -f "$f" ]] && extra+=("$f")
+          done
+          # GNU tar devuelve 1 si un fichero cambió durante la copia (p. ej. el
+          # log del sidecar): es un aviso, no una razón para perder el estado.
+          rc=0
+          tar -czf tradingbot-state.tgz data/bot.db* "${extra[@]}" || rc=$?
+          if (( rc > 1 )); then
+            echo "::error::tar falló (código ${rc}); no se archiva el estado."
+            exit "${rc}"
+          fi
+          (( rc == 1 )) && echo "::warning::tar avisó de ficheros modificados durante la copia."
+          ls -lh tradingbot-state.tgz
+          # Una base corrupta nunca sustituye al último estado bueno: se sube
+          # con otro nombre para diagnóstico y la siguiente sesión restaura el
+          # anterior.
+          if python3 .github/scripts/paper_state.py verify data/bot.db; then
+            echo "artifact=tradingbot-state" >> "$GITHUB_OUTPUT"
+            echo "saved=ok" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::data/bot.db no supera PRAGMA integrity_check; se archiva como tradingbot-state-corrupt."
+            echo "artifact=tradingbot-state-corrupt" >> "$GITHUB_OUTPUT"
+            echo "saved=corrupt" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload persistent state
-        if: always() && hashFiles('tradingbot-state.tgz') != ''
+        if: always() && steps.archive.outputs.artifact != ''
         uses: actions/upload-artifact@v7
         with:
-          name: tradingbot-state
+          name: ${{ steps.archive.outputs.artifact }}
           path: tradingbot-state.tgz
           if-no-files-found: error
           retention-days: 90
+
+      - name: Session summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Sesión PAPER (run ${GITHUB_RUN_ID})"
+            echo ""
+            echo "- Disparo: ${GITHUB_EVENT_NAME}; sesión manual: ${{ github.event.inputs.manual_session || 'false' }}"
+            echo "- Estado restaurado desde: ${{ steps.restore.outputs.source || 'no restaurado' }}"
+            echo "- Estado archivado: ${{ steps.archive.outputs.saved || 'no' }} (${{ steps.archive.outputs.artifact || 'sin artefacto' }})"
+            echo "- Investing Bulls solicitado: \`${INVESTING_BULLS_STRATEGY_ID}\`; motor compartido: \`${LIVE_STRATEGY}\`"
+            echo "- Modo: PAPER (sin órdenes reales)"
+            echo ""
+            if [[ -f data/bot.db ]]; then
+              python3 .github/scripts/paper_state.py summary data/bot.db || echo "No se pudo resumir data/bot.db"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
