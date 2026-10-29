@@ -5,13 +5,13 @@
 > estrategia *Investing Bulls*). El detalle de cada fase vive en los `MEMORIA_*.md`
 > enlazados al final.
 
-- **Fecha:** 2026-10-21
+- **Fecha:** 2026-10-29
 - **Módulo Go:** `tradingview-bot` (Go 1.26.2)
 - **Repositorio:** https://github.com/JoelVargas08/TradingBot
-- **Rama de trabajo:** `fix/telegram-controller` (sin fusionar en `main`)
-- **Verificación (última):** `go build ./...`, `go vet ./...` limpios y
-  `go test ./... -count=1` → **32 paquetes OK**, 0 fallos; controlador Python →
-  **45 tests OK**.
+- **Rama de trabajo:** `feat/cierre-plan-paper` (PR a `main`; incluye `fix/telegram-controller`)
+- **Verificación (última, 2026-10-29):** `go build ./...`, `go vet ./...` limpios y
+  `go test -count=1 ./...` → **35 paquetes OK**, 0 fallos; scripts de Actions
+  (controlador + estado) → **77 tests OK**; ML → **27 tests OK**.
 - **Trading real:** **deshabilitado** por defecto (LIVE off); todo corre en PAPER.
 
 ---
@@ -359,3 +359,34 @@ reservado (2026-03-31 a 2026-10-25) dio **-7.4 %**, 17 trades, DD 13.3 %, MACD +
 `gate=false`. **No se promociona**: el holdout ETH negativo es decisivo. Los DD de 30k en
 SOL/XRP/ADA (53-77 %) también son inaceptables. El holdout ETH queda consumido para esta
 configuración. Detalle en `MEMORIA_FASE_13_DATOS_30K_Y_ENSEMBLE.md`.
+
+---
+
+## 15. Cierre del plan PAPER: arranque 08:00, Telegram, selección IB y persistencia (2026-10-29)
+
+Plan: `PLAN_OPENCODE_CIERRE_TRADINGBOT_2026-10-28`. Detalle y evidencias en
+`MEMORIA_SESION_2026-10-29.md`.
+
+- **Causa del arranque tardío (medida con la API de Actions):** el cron `*/5` del controlador
+  corrió 2–7 veces/día y el `0 8 * * 1-5` de PAPER disparó entre 11:57 y 13:58 de La Habana.
+  El controlador pasa a **relevo continuo** (jobs de 5h30m que despachan su sucesor; cron solo
+  vigilante) y despacha la sesión en < 1 min tras las 08:00. Se elimina el `schedule` de
+  `paper-session.yml` (podía arrancar tras un `/stop`).
+- **Reintentos que nunca ocurrían:** el controlador buscaba `status == "failed"`; GitHub usa
+  `status=completed` + `conclusion`. Corregido, con tests en vocabulario real.
+- **Telegram:** confirmación honesta de despacho/parada, sin doble despacho en un lote, comandos
+  de la sesión anterior y caducados ignorados, estado desconocido = en cola, logs con
+  `utc/local/run/event`; el runner exige `TELEGRAM_ADMIN_CHAT_ID` para comandos de control.
+- **Investing Bulls:** selector estable `investing-bulls-mtf` (activa más reciente compatible con
+  símbolo/timeframes/feed); ID explícito validado; sin resolución no opera nada y Chandelier no
+  actúa como sustituto (`LIVE_STRATEGY=none`).
+- **Bug crítico del libro PAPER:** `UNIQUE(strategy_id, symbol, timeframe, status)` impedía
+  cerrar una segunda operación de la misma estrategia: el máximo real era 1 operación cerrada.
+  Migración idempotente a índice único parcial sobre posiciones abiertas. El conteo de 100
+  operaciones ahora acumula entre sesiones e informa PF, DD, costes y long/short.
+- **Persistencia:** restauración verificada (`data/bot.db` + `integrity_check`), parada limpia
+  antes del límite de 6 h, base corrupta nunca sustituye al último estado bueno, resumen del job.
+- **NN (WEEX BTCUSDT 1h, 8 000 velas, dev-only):** baselines con costes todas negativas; NN
+  walk-forward −2.1 % (11 trades) frente a MACD +15.2 % → `gate=false`. RAM pico 97 MB. No se
+  promociona; holdout intacto.
+
