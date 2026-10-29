@@ -58,6 +58,25 @@ type CommandsHandler struct {
 	session     SessionController
 	performance PerformanceProvider
 	workflow    WorkflowController
+	// details añade a /session el estado de estrategia y feed de mercado.
+	details func() string
+}
+
+// SetSessionDetails registra un proveedor de detalles para /session
+// (estrategia en uso, proveedor, última vela por timeframe...).
+func (ch *CommandsHandler) SetSessionDetails(fn func() string) {
+	ch.details = fn
+}
+
+func (ch *CommandsHandler) sessionDetails() string {
+	if ch.details == nil {
+		return ""
+	}
+	text := strings.TrimSpace(ch.details())
+	if text == "" {
+		return ""
+	}
+	return "\n\n" + text
 }
 
 func NewCommandsHandler(um *models.UserManager, tg MessageSender, positions domain.PositionStore, session SessionController, performance PerformanceProvider, workflow WorkflowController) *CommandsHandler {
@@ -132,13 +151,13 @@ func (ch *CommandsHandler) HandleSession(chatID int64) {
 		ch.telegram.SendMessage(chatID, fmt.Sprintf(
 			"🟢 <b>Sesión PAPER ACTIVA</b>%s\n\n"+
 				"Iniciada: %s%s\n"+
-				"Nuevas operaciones: habilitadas",
-			runText, startText, ch.remainingWindowText()))
+				"Nuevas operaciones: habilitadas%s",
+			runText, startText, ch.remainingWindowText(), ch.sessionDetails()))
 		return
 	}
-	ch.telegram.SendMessage(chatID, "🔴 <b>Sesión PAPER DETENIDA</b>\n\n"+
+	ch.telegram.SendMessage(chatID, "🔴 <b>Sesión PAPER DETENIDA</b>"+runText+"\n\n"+
 		"Nuevas operaciones: deshabilitadas\n"+
-		"Usa /session_start para arrancarla.")
+		"Usa /session_start para arrancarla."+ch.sessionDetails())
 }
 
 func (ch *CommandsHandler) HandleSessionStart(chatID int64) {

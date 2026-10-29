@@ -180,42 +180,38 @@ func main() {
 
 	// Pipeline de señales: bus → evaluador → notifier (rate-limit + retry)
 	eventBus := bus.New(512)
-	// Investing Bulls live evaluator: activation is explicit through environment.
+	// Investing Bulls live: INVESTING_BULLS_STRATEGY_ID puede ser un ID
+	// explícito o el alias estable "investing-bulls-mtf" (la estrategia MTF
+	// activa más reciente del símbolo). Si no resuelve, IB no arranca y nada la
+	// sustituye: el motor compartido solo opera Chandelier si se pide de forma
+	// explícita (LIVE_STRATEGY).
 	var investingBullsLive *strategymanager.LiveEngine
-	investingBullsStrategyID := strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID"))
-	if investingBullsStrategyID != "" {
-		sid := investingBullsStrategyID
-		log.Printf("Investing Bulls live: buscando estrategia %s en %s", sid, cfg.DBFile)
-		st, err := sqliteStore.GetStrategy(ctx, sid)
-		if err != nil {
-			if errors.Is(err, domain.ErrNotFound) {
-				log.Printf("Investing Bulls live: NO ENCONTRADA estrategia=%s en %s (sqlite) -> inicialización de Investing Bulls detenida sin fallback a Chandelier", sid, cfg.DBFile)
-			} else {
-				log.Printf("Investing Bulls live: ERROR leyendo estrategia=%s en %s: %v -> inicialización de Investing Bulls detenida sin fallback a Chandelier", sid, cfg.DBFile, err)
-			}
-			investingBullsLive = nil
-		} else if st.Status != domain.StrategyActive {
-			log.Printf("Investing Bulls live: bloqueado: strategy=%s status=%s reason=%s -> inicialización de Investing Bulls detenida sin fallback a Chandelier", sid, st.Status, st.Error)
-			investingBullsLive = nil
-		} else {
-			investingBullsLive = strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
-			liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL"))
-			if liveSymbol == "" {
-				liveSymbol = "BTCUSDT"
-			}
-			liveTF := strings.TrimSpace(os.Getenv("INVESTING_BULLS_ENTRY_TIMEFRAME"))
-			if liveTF == "" {
-				liveTF = "15m"
-			}
-			if err := investingBullsLive.SetSelection(sid, liveSymbol, liveTF); err != nil {
-				log.Printf("Investing Bulls live: %v -> inicialización de Investing Bulls detenida sin fallback a Chandelier", err)
-				investingBullsLive = nil
-			} else {
-				log.Printf("Investing Bulls live activo: %s %s %s (fuente=%s)", sid, liveSymbol, liveTF, st.Source)
-			}
-		}
+	liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL"))
+	if liveSymbol == "" {
+		liveSymbol = "BTCUSDT"
+	}
+	strategies := strategyRuntime{IBRequested: strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID"))}
+	strategies.Shared, strategies.SharedReason = sharedStrategyFor(cfg.LiveStrategy, strategies.IBRequested != "")
+	if selection, err := investingbulls.ResolveLive(ctx, sqliteStore, investingbulls.LiveRequest{
+		Requested:        strategies.IBRequested,
+		Symbol:           liveSymbol,
+		MainTimeframe:    cfg.IBMainTimeframe,
+		EntryTimeframe:   cfg.IBEntryTimeframe,
+		ConfirmTimeframe: cfg.IBConfirmTimeframe,
+		FeedTimeframes:   liveFeedTimeframes(cfg),
+	}); err != nil {
+		strategies.IBErr = err
 	} else {
-		log.Println("Investing Bulls live: deshabilitado (INVESTING_BULLS_STRATEGY_ID vacío)")
+		engine := strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
+		if err := engine.SetSelection(selection.Strategy.ID, liveSymbol, selection.Model.Timeframes.EntryTimeframe); err != nil {
+			strategies.IBErr = err
+		} else {
+			investingBullsLive = engine
+			strategies.IB = &selection
+		}
+	}
+	for _, line := range strategies.LogLines() {
+		log.Println(line)
 	}
 	evaluatorSvc := evaluator.New(sqliteStore)
 	notifierSvc := notifier.New(telegram, userManager, notifier.Config{})
@@ -284,14 +280,18 @@ func main() {
 
 	// Validador PAPER de Investing Bulls: la decisión definitiva se toma
 	// únicamente al cerrar la muestra mínima configurada (100 por defecto).
-	if investingBullsStrategyID != "" && tradingSession != nil && paperEngine != nil {
-		go monitorInvestingBullsPaperValidation(ctx, sqliteStore, tradingSession, investingBullsStrategyID, userManager, telegram, cfg)
+	if strategies.IB != nil && tradingSession != nil && paperEngine != nil {
+		go monitorInvestingBullsPaperValidation(ctx, sqliteStore, tradingSession, strategies.IB.Strategy.ID, userManager, telegram, cfg)
 	}
 
 	// Motor de estrategia en vivo compartido: TradingView (webhook) y WEEX
 	// (MarketDataService) alimentan el mismo motor; las señales se publican en
-	// el mismo bus que ya consume el processor/paper engine.
+	// el mismo bus que ya consume el processor/paper engine. Su estrategia es
+	// una decisión explícita (strategies.Shared), nunca un fallback.
 	liveEngine := strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
+	if err := liveEngine.SetSelection(strategies.Shared, cfg.TradingSymbol, cfg.TradingTimeframe); err != nil {
+		log.Fatalf("estrategia del motor compartido inválida: %v", err)
+	}
 
 	// Modo de ejecución (Fase 6)
 	if cfg.Mode == "live" {
@@ -492,7 +492,7 @@ func main() {
 				log.Fatalf("timeframes MTF inválidos (%v): %v", extras, err)
 			}
 		}
-		if err := marketDataService.SetSelection("chandelier", cfg.TradingSymbol, cfg.TradingTimeframe); err != nil {
+		if err := marketDataService.SetSelection(strategies.Shared, cfg.TradingSymbol, cfg.TradingTimeframe); err != nil {
 			log.Fatalf("selección de mercado WEEX inválida: %v", err)
 		}
 		liveEngine.SetSource("weex")
@@ -665,6 +665,10 @@ func main() {
 	}
 	workflowController := githubactions.NewFromEnv()
 	commandsHandler := handlers.NewCommandsHandler(userManager, telegram, positionsStore, tradingSession, paperEngine, workflowController)
+	feedTFs := liveFeedTimeframes(cfg)
+	commandsHandler.SetSessionDetails(func() string {
+		return sessionDetails(ctx, strategies, marketDataService, feedMonitor, sqliteStore, feedTFs, time.Now())
+	})
 	webhookHandler := handlers.NewWebhookHandler(eventBus, cfg.WebhookSecret, sqliteStore, sqliteStore, liveEngine)
 
 	// Polling de Telegram. El listener (internal/telegram) conserva el offset
@@ -678,6 +682,9 @@ func main() {
 		store:            sqliteStore,
 		session:          tradingSession,
 		cfg:              cfg,
+	}
+	if strategies.IB != nil {
+		dispatcher.ibDiagDefault = strategies.IB.Strategy.ID + " " + liveSymbol
 	}
 	listener := tginternal.New(
 		tginternal.NewBotFetcher(bot),
@@ -704,7 +711,8 @@ func main() {
 		runID = workflowController.RunID()
 	}
 	notifyAdmin(telegram, cfg.TelegramAdminChatID,
-		startupMessage(cfg, bot, tradingSession, runID, marketStatusOf(marketDataService)))
+		startupMessage(cfg, bot, tradingSession, runID, marketStatusOf(marketDataService))+
+			"\n\n<b>Estrategias</b>\n"+strings.Join(strategies.Lines(), "\n"))
 
 	// El feed de mercado es lo que respalda que el bot "empezó a trabajar":
 	// cuando WEEX conecta se avisa con el dato real (una sola vez).  Si no
@@ -856,72 +864,76 @@ func monitorInvestingBullsPaperValidation(
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 	reportedPass := false
+	notify := func(msg string) {
+		sent := map[int64]bool{}
+		if userManager != nil {
+			for _, id := range userManager.ActiveUserIDs() {
+				sent[id] = true
+				telegram.SendMessage(id, msg)
+			}
+		}
+		if cfg != nil && cfg.TelegramAdminChatID != 0 && !sent[cfg.TelegramAdminChatID] {
+			telegram.SendMessage(cfg.TelegramAdminChatID, msg)
+		}
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Cuentan todas las operaciones cerradas de esta estrategia, de
+			// todas las sesiones: la base se restaura en cada ejecución de
+			// GitHub Actions y el ID de la estrategia es único por aprendizaje.
+			// Una ventana de 08:00-14:00 no basta para cerrar 100 operaciones.
 			positions, err := store.ClosedPositions(ctx)
 			if err != nil {
 				log.Printf("IB paper validation: error leyendo operaciones cerradas: %v", err)
 				continue
 			}
-			trades, wins := 0, 0
-			sessionStart := time.Time{}
-			if session != nil {
-				sessionStart = session.StartedAt()
-			}
-			for _, p := range positions {
-				if p.StrategyID != strategyID {
-					continue
-				}
-				// Solo cuentan operaciones abiertas durante esta sesión PAPER.
-				// Las operaciones históricas permanecen en SQLite para aprendizaje.
-				if !sessionStart.IsZero() && p.EntryTS.Before(sessionStart) {
-					continue
-				}
-				trades++
-				if p.NetPnL > 0 {
-					wins++
-				}
-			}
-			if trades < minTrades {
+			stats := computePaperValidation(positions, strategyID)
+			if stats.Trades < minTrades {
 				continue
 			}
-			winRate := float64(wins) / float64(trades)
-			if winRate < minWinRate {
+			report := formatPaperValidation(stats, minTrades, minWinRate)
+			if stats.WinRate() < minWinRate {
 				if session != nil && session.IsActive() {
 					session.Stop()
 				}
 				st, err := store.GetStrategy(ctx, strategyID)
 				if err == nil {
 					st.Status = domain.StrategyRejected
-					st.Error = fmt.Sprintf("PAPER rechazado tras %d operaciones: win rate %.2f%% < %.2f%%", trades, winRate*100, minWinRate*100)
+					st.Error = fmt.Sprintf("PAPER rechazado tras %d operaciones: win rate %.2f%% < %.2f%%", stats.Trades, stats.WinRate()*100, minWinRate*100)
 					st.UpdatedAt = time.Now().UTC()
 					if err := store.UpsertStrategy(ctx, st); err != nil {
 						log.Printf("IB paper validation: error rechazando %s: %v", strategyID, err)
 					}
 				}
-				msg := fmt.Sprintf("🛑 <b>Investing Bulls rechazado</b>\n\nEstrategia: <code>%s</code>\nOperaciones: %d/%d\nWin rate: %.2f%%\nMínimo requerido: %.2f%%\n\nLa sesión PAPER fue detenida y no se abrirán nuevas operaciones.", strategyID, trades, minTrades, winRate*100, minWinRate*100)
-				if userManager != nil {
-					for _, id := range userManager.ActiveUserIDs() {
-						telegram.SendMessage(id, msg)
-					}
-				}
-				log.Printf("IB paper validation: REJECTED strategy=%s trades=%d winrate=%.2f%%", strategyID, trades, winRate*100)
+				notify(fmt.Sprintf("🛑 <b>Investing Bulls rechazado</b>\n\nEstrategia: <code>%s</code>\n%s\n\n"+
+					"La sesión PAPER fue detenida y no se abrirán nuevas operaciones.", strategyID, report))
+				log.Printf("IB paper validation: REJECTED strategy=%s trades=%d winrate=%.2f%% net=%.2f pf=%.2f",
+					strategyID, stats.Trades, stats.WinRate()*100, stats.NetPnL, stats.ProfitFactor())
 				return
 			}
-			if !reportedPass {
-				reportedPass = true
-				msg := fmt.Sprintf("✅ <b>Investing Bulls: muestra mínima completada</b>\\n\\nEstrategia: <code>%s</code>\\nOperaciones: %d/%d\\nWin rate: %.2f%%\\nMínimo requerido: %.2f%%\\n\\nLa estrategia superó la validación PAPER y la sesión continúa activa.", strategyID, trades, minTrades, winRate*100, minWinRate*100)
-				if userManager != nil {
-					for _, id := range userManager.ActiveUserIDs() {
-						telegram.SendMessage(id, msg)
-					}
-				}
-				log.Printf("IB paper validation: muestra mínima superada strategy=%s trades=%d winrate=%.2f%%", strategyID, trades, winRate*100)
+			if reportedPass {
+				continue
 			}
+			reportedPass = true
+			st, err := store.GetStrategy(ctx, strategyID)
+			if err != nil || strings.HasPrefix(st.Error, paperValidatedPrefix) {
+				// Ya se informó en una sesión anterior.
+				continue
+			}
+			st.Error = fmt.Sprintf("%s: %d operaciones, win rate %.2f%%, neto %.2f USDT (no habilita LIVE)",
+				paperValidatedPrefix, stats.Trades, stats.WinRate()*100, stats.NetPnL)
+			st.UpdatedAt = time.Now().UTC()
+			if err := store.UpsertStrategy(ctx, st); err != nil {
+				log.Printf("IB paper validation: error registrando la muestra de %s: %v", strategyID, err)
+			}
+			notify(fmt.Sprintf("✅ <b>Investing Bulls: muestra mínima completada</b>\n\nEstrategia: <code>%s</code>\n%s\n\n"+
+				"La sesión PAPER continúa en observación.", strategyID, report))
+			log.Printf("IB paper validation: muestra mínima superada strategy=%s trades=%d winrate=%.2f%% net=%.2f pf=%.2f",
+				strategyID, stats.Trades, stats.WinRate()*100, stats.NetPnL, stats.ProfitFactor())
 		}
 	}
 }

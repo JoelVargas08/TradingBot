@@ -13,6 +13,11 @@ import (
 	"tradingview-bot/internal/strategies"
 )
 
+// StrategyNone deja el motor sin estrategia: recibe velas pero no evalúa ni
+// publica señales. Es la selección explícita de una sesión que solo debe
+// operar con Investing Bulls, para que Chandelier nunca actúe como sustituto.
+const StrategyNone = "none"
+
 // SignalPublisher es el bus que recibe las señales generadas por una estrategia.
 type SignalPublisher interface {
 	Publish(context.Context, domain.SignalEvent) error
@@ -83,6 +88,9 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 		return nil
 	}
 	sid, symbol, timeframe := e.Selection()
+	if sid == StrategyNone {
+		return nil
+	}
 	if !strings.EqualFold(k.Symbol, symbol) || !strings.EqualFold(k.Timeframe, timeframe) {
 		return nil
 	}
