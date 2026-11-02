@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from dataset import prepare_candles, timeframe_ms
-from features import FEATURE_NAMES, compute_features, load_candles
+from features import FEATURE_NAMES, NN_FEATURE_NAMES, compute_features, load_candles
 
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "models")
 NEURAL_MODEL_PATH = os.environ.get(
@@ -143,9 +143,9 @@ def load_neural():
             (np.asarray(layer["w"], dtype=np.float64), np.asarray(layer["b"], dtype=np.float64))
             for layer in data["layers"]
         ]
-        if data.get("feature_names") != list(FEATURE_NAMES):
+        if data.get("feature_names") != list(NN_FEATURE_NAMES):
             raise ValueError("feature_names del modelo no coinciden con las features actuales")
-        n_features = len(FEATURE_NAMES)
+        n_features = len(NN_FEATURE_NAMES)
         if data["_mu"].shape != (n_features,) or data["_sigma"].shape != (n_features,):
             raise ValueError("dimensiones de normalización inválidas")
         if np.any(data["_sigma"] <= 0) or not np.all(np.isfinite(data["_sigma"])):
@@ -209,7 +209,12 @@ def nn_predict(X):
     for w, b in nn["_layers"][:-1]:
         a = _relu(a @ w + b)
     w, b = nn["_layers"][-1]
-    return _softmax(a @ w + b)
+    probs = _softmax(a @ w + b)
+    t = float(nn.get("temperature", 1.0) or 1.0)
+    if np.isfinite(t) and t > 0.0 and abs(t - 1.0) > 1e-12:
+        logits = np.log(np.clip(probs, 1e-12, 1.0)) / t
+        return _softmax(logits)
+    return probs
 
 
 def _signal(prob_up, prob_down):
@@ -346,10 +351,11 @@ def predict(req: PredictRequest):
     raw, _quality = _validate_candles(req.candles, req.timeframe, check_freshness=True)
     feat = compute_features(raw)
     last = feat.iloc[[-1]]
-    if last[FEATURE_NAMES].isna().any(axis=1).iloc[0]:
+    feature_names = NN_FEATURE_NAMES if _state["nn"] is not None else FEATURE_NAMES
+    if last[feature_names].isna().any(axis=1).iloc[0]:
         raise HTTPException(status_code=422, detail="features con NaN en la última vela")
 
-    X = last[FEATURE_NAMES].to_numpy(dtype=np.float64).reshape(1, -1)
+    X = last[feature_names].to_numpy(dtype=np.float64).reshape(1, -1)
     if _state["nn"] is not None:
         probs = nn_predict(X)[0]
         prob_down, prob_flat, prob_up = float(probs[0]), float(probs[1]), float(probs[2])
@@ -401,7 +407,8 @@ def predict_batch(req: PredictRequest):
 
     raw, _quality = _validate_candles(req.candles, req.timeframe)
     feat = compute_features(raw)
-    X = feat[FEATURE_NAMES].to_numpy(dtype=np.float64)
+    feature_names = NN_FEATURE_NAMES if _state["nn"] is not None else FEATURE_NAMES
+    X = feat[feature_names].to_numpy(dtype=np.float64)
     valid = ~np.isnan(X).any(axis=1)
 
     prob_matrix = None

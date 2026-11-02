@@ -166,40 +166,6 @@ CREATE TABLE IF NOT EXISTS performance (
 );
 CREATE INDEX IF NOT EXISTS idx_performance_strategy ON performance(strategy_id, metric);
 
-CREATE TABLE IF NOT EXISTS positions (
-	id           INTEGER PRIMARY KEY AUTOINCREMENT,
-	strategy_id  TEXT NOT NULL,
-	symbol       TEXT NOT NULL,
-	timeframe    TEXT NOT NULL DEFAULT '',
-	side         TEXT NOT NULL,
-	entry_ts     INTEGER NOT NULL,
-	entry_price  REAL NOT NULL,
-	stop_loss    REAL NOT NULL DEFAULT 0,
-	take_profit  REAL NOT NULL DEFAULT 0,
-	quantity     REAL NOT NULL DEFAULT 0,
-	risk_amount  REAL NOT NULL DEFAULT 0,
-	status       TEXT NOT NULL DEFAULT 'open',
-	exit_ts      INTEGER NOT NULL DEFAULT 0,
-	exit_price   REAL NOT NULL DEFAULT 0,
-	pnl          REAL NOT NULL DEFAULT 0,
-	partial_tp   REAL NOT NULL DEFAULT 0,
-	partial_qty  REAL NOT NULL DEFAULT 0,
-	partial_pnl  REAL NOT NULL DEFAULT 0,
-	exit_reason  TEXT NOT NULL DEFAULT '',
-	entry_fee    REAL NOT NULL DEFAULT 0,
-	exit_fee     REAL NOT NULL DEFAULT 0,
-	slippage_entry REAL NOT NULL DEFAULT 0,
-	slippage_exit  REAL NOT NULL DEFAULT 0,
-	gross_pnl    REAL NOT NULL DEFAULT 0,
-	net_pnl      REAL NOT NULL DEFAULT 0,
-	r_multiple   REAL NOT NULL DEFAULT 0,
-	duration_ms  INTEGER NOT NULL DEFAULT 0,
-	ambiguous_bar INTEGER NOT NULL DEFAULT 0,
-	UNIQUE(strategy_id, symbol, timeframe, status)
-);
-CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(status, strategy_id);
-CREATE INDEX IF NOT EXISTS idx_positions_closed ON positions(status, exit_ts);
-
 CREATE TABLE IF NOT EXISTS orders (
 	client_id   TEXT PRIMARY KEY,
 	order_id    TEXT NOT NULL DEFAULT '',
@@ -253,9 +219,62 @@ CREATE TABLE IF NOT EXISTS marks (
 );
 `
 
+// positionsTableDDL define el libro de posiciones. La unicidad "una posición
+// abierta por estrategia/símbolo/temporalidad" la impone el índice parcial
+// idx_positions_one_open (ver migratePositions), no una restricción de tabla:
+// el histórico de operaciones cerradas debe poder crecer sin límite.
+const positionsTableDDL = `
+CREATE TABLE IF NOT EXISTS positions (
+	id           INTEGER PRIMARY KEY AUTOINCREMENT,
+	strategy_id  TEXT NOT NULL,
+	symbol       TEXT NOT NULL,
+	timeframe    TEXT NOT NULL DEFAULT '',
+	side         TEXT NOT NULL,
+	entry_ts     INTEGER NOT NULL,
+	entry_price  REAL NOT NULL,
+	stop_loss    REAL NOT NULL DEFAULT 0,
+	take_profit  REAL NOT NULL DEFAULT 0,
+	quantity     REAL NOT NULL DEFAULT 0,
+	risk_amount  REAL NOT NULL DEFAULT 0,
+	status       TEXT NOT NULL DEFAULT 'open',
+	exit_ts      INTEGER NOT NULL DEFAULT 0,
+	exit_price   REAL NOT NULL DEFAULT 0,
+	pnl          REAL NOT NULL DEFAULT 0,
+	partial_tp   REAL NOT NULL DEFAULT 0,
+	partial_qty  REAL NOT NULL DEFAULT 0,
+	partial_pnl  REAL NOT NULL DEFAULT 0,
+	exit_reason  TEXT NOT NULL DEFAULT '',
+	entry_fee    REAL NOT NULL DEFAULT 0,
+	exit_fee     REAL NOT NULL DEFAULT 0,
+	slippage_entry REAL NOT NULL DEFAULT 0,
+	slippage_exit  REAL NOT NULL DEFAULT 0,
+	gross_pnl    REAL NOT NULL DEFAULT 0,
+	net_pnl      REAL NOT NULL DEFAULT 0,
+	r_multiple   REAL NOT NULL DEFAULT 0,
+	duration_ms  INTEGER NOT NULL DEFAULT 0,
+	ambiguous_bar INTEGER NOT NULL DEFAULT 0
+);`
+
+// positionsColumns es la lista de columnas que se copia al reconstruir la
+// tabla de una base antigua.
+const positionsColumns = `id, strategy_id, symbol, timeframe, side, entry_ts, entry_price,
+	stop_loss, take_profit, quantity, risk_amount, status, exit_ts, exit_price, pnl,
+	partial_tp, partial_qty, partial_pnl, exit_reason, entry_fee, exit_fee,
+	slippage_entry, slippage_exit, gross_pnl, net_pnl, r_multiple, duration_ms, ambiguous_bar`
+
+// legacyPositionsUnique es la restricción de las bases creadas antes de
+// 2026-10-29. Con ella, cerrar una segunda operación de la misma
+// estrategia/símbolo/temporalidad violaba la unicidad (ya había una fila
+// 'closed'): la posición quedaba abierta para siempre y bloqueaba nuevas
+// entradas, así que el libro PAPER nunca podía pasar de una operación cerrada.
+const legacyPositionsUnique = "UNIQUE(strategy_id, symbol, timeframe, status)"
+
 func migrate(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("aplicando esquema: %w", err)
+	}
+	if _, err := db.Exec(positionsTableDDL); err != nil {
+		return fmt.Errorf("creando tabla positions: %w", err)
 	}
 	// Migraciones idempotentes para tablas creadas antes de Fase 4 y Fase C.
 	for _, stmt := range []string{
@@ -302,6 +321,47 @@ func migrate(db *sql.DB) error {
 	}
 	if _, err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_idem ON signals(idem_key) WHERE idem_key <> ''"); err != nil {
 		return fmt.Errorf("creando índice idem de señales: %w", err)
+	}
+	return migratePositions(db)
+}
+
+// migratePositions reconstruye la tabla positions de las bases antiguas sin la
+// restricción legacyPositionsUnique (conservando todas las filas e ids) y crea
+// los índices, incluido el único parcial que mantiene "una posición abierta
+// por estrategia/símbolo/temporalidad". Es idempotente.
+func migratePositions(db *sql.DB) error {
+	var ddl string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'positions'`).Scan(&ddl); err != nil {
+		return fmt.Errorf("leyendo esquema de positions: %w", err)
+	}
+	if strings.Contains(strings.Join(strings.Fields(ddl), " "), legacyPositionsUnique) {
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("migrando positions: %w", err)
+		}
+		for _, stmt := range []string{
+			strings.Replace(positionsTableDDL, "CREATE TABLE IF NOT EXISTS positions", "CREATE TABLE positions_rebuild", 1),
+			"INSERT INTO positions_rebuild (" + positionsColumns + ") SELECT " + positionsColumns + " FROM positions",
+			"DROP TABLE positions",
+			"ALTER TABLE positions_rebuild RENAME TO positions",
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("migrando positions: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("migrando positions: %w", err)
+		}
+	}
+	for _, stmt := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_positions_open ON positions(status, strategy_id)",
+		"CREATE INDEX IF NOT EXISTS idx_positions_closed ON positions(status, exit_ts)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_positions_one_open ON positions(strategy_id, symbol, timeframe) WHERE status = 'open'",
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("creando índices de positions: %w", err)
+		}
 	}
 	return nil
 }

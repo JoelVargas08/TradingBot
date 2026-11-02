@@ -36,6 +36,9 @@ type WeexConfig struct {
 	// HistoryPageDelay separa las llamadas a /historyKlines para no saturar
 	// el rate limit público. No afecta a /klines ni al streaming.
 	HistoryPageDelay time.Duration
+	// SkipInvalidHistory descarta velas históricas corruptas (OHLCV inválido)
+	// en lugar de abortar toda la descarga. Solo se aplica al backfill.
+	SkipInvalidHistory bool
 }
 
 const (
@@ -185,20 +188,28 @@ func (p *WeexProvider) GetKlines(ctx context.Context, symbol, timeframe string, 
 	return bars, nil
 }
 
+type historyPage struct {
+	Bars      []domain.Kline
+	RawRows   int
+	RawOldest time.Time
+	Skipped   int
+}
+
 // fetchHistoryRange recorre el rango de más reciente a más antiguo. En cada
 // ventana de HistoryMaxRange pagina hacia atrás usando el timestamp de la vela
-// más antigua recibida.
+// más antigua recibida. Si se descartan velas inválidas, el avance usa el
+// timestamp crudo para no dejar huecos ni entrar en bucles.
 func (p *WeexProvider) fetchHistoryRange(ctx context.Context, symbol, timeframe string, start, end time.Time, limit int) ([]domain.Kline, error) {
 	var out []domain.Kline
 	anchorEnd := end
 	for len(out) < limit && !anchorEnd.Before(start) {
-		before := len(out)
 		windowStart := anchorEnd.Add(-HistoryMaxRange)
 		if windowStart.Before(start) {
 			windowStart = start
 		}
 		pageEnd := anchorEnd
 		firstPage := true
+		exhausted := false
 		for len(out) < limit {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
@@ -207,25 +218,35 @@ func (p *WeexProvider) fetchHistoryRange(ctx context.Context, symbol, timeframe 
 				return nil, ctx.Err()
 			}
 			firstPage = false
-			rows, err := p.fetchHistoryPage(ctx, symbol, timeframe, windowStart, pageEnd)
+			page, err := p.fetchHistoryPage(ctx, symbol, timeframe, windowStart, pageEnd)
 			if err != nil {
 				return nil, err
 			}
-			if len(rows) == 0 {
+			if page.RawRows == 0 {
+				exhausted = true
 				break
 			}
-			out = append(out, rows...)
-			if len(rows) < HistoryMaxBars {
+			if page.Skipped > 0 {
+				log.Printf("weex history: %s %s -> %d velas inválidas descartadas", symbol, timeframe, page.Skipped)
+			}
+			out = append(out, page.Bars...)
+			if page.RawRows < HistoryMaxBars {
 				break
 			}
-			oldest := rows[0].Start
+			oldest := page.RawOldest
+			if oldest.IsZero() && len(page.Bars) > 0 {
+				oldest = page.Bars[0].Start
+			}
+			if oldest.IsZero() {
+				break
+			}
 			nextEnd := oldest.Add(-time.Millisecond)
 			if nextEnd.Before(windowStart) {
 				break
 			}
 			pageEnd = nextEnd
 		}
-		if len(out) == before {
+		if exhausted {
 			break
 		}
 		nextWindowEnd := windowStart.Add(-time.Millisecond)
@@ -256,19 +277,19 @@ func (p *WeexProvider) historyURL(symbol, timeframe string, start, end time.Time
 
 // fetchHistoryPage recupera un bloque de /historyKlines y reintenta errores
 // transitorios (429/5xx) con backoff.
-func (p *WeexProvider) fetchHistoryPage(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, error) {
+func (p *WeexProvider) fetchHistoryPage(ctx context.Context, symbol, timeframe string, start, end time.Time) (historyPage, error) {
 	var lastErr error
 	for attempt := 1; attempt <= p.cfg.MaxAttempts; attempt++ {
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return historyPage{}, ctx.Err()
 		}
-		bars, retriable, err := p.doFetchHistory(ctx, symbol, timeframe, start, end)
+		page, retriable, err := p.doFetchHistory(ctx, symbol, timeframe, start, end)
 		if err == nil {
-			return bars, nil
+			return page, nil
 		}
 		lastErr = err
 		if !retriable {
-			return nil, err
+			return historyPage{}, err
 		}
 		delay := time.Duration(1<<uint(attempt)) * 300 * time.Millisecond
 		if delay > 5*time.Second {
@@ -277,40 +298,40 @@ func (p *WeexProvider) fetchHistoryPage(ctx context.Context, symbol, timeframe s
 		log.Printf("weex history: intento %d/%d falló (%v); reintentando en %v", attempt, p.cfg.MaxAttempts, err, delay)
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return historyPage{}, ctx.Err()
 		case <-time.After(delay):
 		}
 	}
-	return nil, lastErr
+	return historyPage{}, lastErr
 }
 
 // doFetchHistory ejecuta una única llamada REST. Devuelve retriable=true para
 // errores transitorios (429 o 5xx).
-func (p *WeexProvider) doFetchHistory(ctx context.Context, symbol, timeframe string, start, end time.Time) ([]domain.Kline, bool, error) {
+func (p *WeexProvider) doFetchHistory(ctx context.Context, symbol, timeframe string, start, end time.Time) (historyPage, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.historyURL(symbol, timeframe, start, end), nil)
 	if err != nil {
-		return nil, false, err
+		return historyPage{}, false, err
 	}
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return nil, true, err
+		return historyPage{}, true, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return nil, true, err
+		return historyPage{}, true, err
 	}
 	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return nil, true, fmt.Errorf("weex history %d: %s", resp.StatusCode, string(body))
+		return historyPage{}, true, fmt.Errorf("weex history %d: %s", resp.StatusCode, string(body))
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, false, fmt.Errorf("weex history %d: %s", resp.StatusCode, string(body))
+		return historyPage{}, false, fmt.Errorf("weex history %d: %s", resp.StatusCode, string(body))
 	}
-	bars, err := parseWeexKlines(body, symbol, timeframe)
+	page, err := parseWeexKlinesPage(body, symbol, timeframe, p.cfg.SkipInvalidHistory)
 	if err != nil {
-		return nil, false, err
+		return historyPage{}, false, err
 	}
-	return bars, false, nil
+	return page, false, nil
 }
 
 // ValidateKlinesData valida un conjunto de velas que va a ser usado por el
@@ -607,43 +628,73 @@ func (f *flexNumber) UnmarshalJSON(b []byte) error {
 // [openTime, open, high, low, close, volume, ...]. Los campos numéricos pueden
 // venir como número o como string; se valida coherencia de OHLC.
 func parseWeexKlines(body []byte, symbol, timeframe string) ([]domain.Kline, error) {
+	page, err := parseWeexKlinesPage(body, symbol, timeframe, false)
+	if err != nil {
+		return nil, err
+	}
+	return page.Bars, nil
+}
+
+// parseWeexKlinesPage permite descartar filas inválidas en descargas
+// históricas. En modo estricto cualquier fila corrupta aborta el parseo.
+func parseWeexKlinesPage(body []byte, symbol, timeframe string, skipInvalid bool) (historyPage, error) {
 	var rows [][]json.RawMessage
 	if err := json.Unmarshal(body, &rows); err != nil {
-		return nil, fmt.Errorf("parseando klines weex: %w", err)
+		return historyPage{}, fmt.Errorf("parseando klines weex: %w", err)
 	}
-	out := make([]domain.Kline, 0, len(rows))
+	page := historyPage{RawRows: len(rows)}
+	page.Bars = make([]domain.Kline, 0, len(rows))
 	for _, row := range rows {
-		if len(row) < 6 {
-			return nil, fmt.Errorf("fila de kline con %d campos, want ≥6", len(row))
-		}
-		var f weexKlineFields
-		if err := json.Unmarshal(row[0], &f.Start); err != nil {
-			if s, err2 := unmarshalString(row[0]); err2 == nil {
-				if v, err3 := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err3 == nil {
-					f.Start = v
-				} else {
-					return nil, fmt.Errorf("openTime inválido %q", s)
-				}
-			} else {
-				return nil, fmt.Errorf("openTime inválido: %v", err)
+		k, ts, err := parseWeexKlineRow(row, symbol, timeframe)
+		if ts > 0 {
+			start := time.UnixMilli(ts)
+			if page.RawOldest.IsZero() || start.Before(page.RawOldest) {
+				page.RawOldest = start
 			}
 		}
-		priceFields := []*flexNumber{&f.Open, &f.High, &f.Low, &f.Close, &f.Volume}
-		for i, dst := range priceFields {
-			if err := json.Unmarshal(row[1+i], dst); err != nil {
-				return nil, fmt.Errorf("precio %d inválido: %w", i+1, err)
+		if err != nil {
+			if !skipInvalid {
+				return historyPage{}, err
 			}
+			page.Skipped++
+			continue
 		}
-		if !f.hasPrice() {
-			return nil, fmt.Errorf("kline incompleta (ts=%d)", f.Start)
-		}
-		k := buildKline(f, symbol, timeframe, true)
-		if err := validateKline(k); err != nil {
-			return nil, fmt.Errorf("kline inválida: %w", err)
-		}
-		out = append(out, k)
+		page.Bars = append(page.Bars, k)
 	}
-	return dedupeSortKlines(out), nil
+	page.Bars = dedupeSortKlines(page.Bars)
+	return page, nil
+}
+
+func parseWeexKlineRow(row []json.RawMessage, symbol, timeframe string) (domain.Kline, int64, error) {
+	if len(row) < 6 {
+		return domain.Kline{}, 0, fmt.Errorf("fila de kline con %d campos, want ≥6", len(row))
+	}
+	var f weexKlineFields
+	if err := json.Unmarshal(row[0], &f.Start); err != nil {
+		if s, err2 := unmarshalString(row[0]); err2 == nil {
+			if v, err3 := strconv.ParseInt(strings.TrimSpace(s), 10, 64); err3 == nil {
+				f.Start = v
+			} else {
+				return domain.Kline{}, 0, fmt.Errorf("openTime inválido %q", s)
+			}
+		} else {
+			return domain.Kline{}, 0, fmt.Errorf("openTime inválido: %v", err)
+		}
+	}
+	priceFields := []*flexNumber{&f.Open, &f.High, &f.Low, &f.Close, &f.Volume}
+	for i, dst := range priceFields {
+		if err := json.Unmarshal(row[1+i], dst); err != nil {
+			return domain.Kline{}, f.Start, fmt.Errorf("precio %d inválido: %w", i+1, err)
+		}
+	}
+	if !f.hasPrice() {
+		return domain.Kline{}, f.Start, fmt.Errorf("kline incompleta (ts=%d)", f.Start)
+	}
+	k := buildKline(f, symbol, timeframe, true)
+	if err := validateKline(k); err != nil {
+		return k, f.Start, fmt.Errorf("kline inválida: %w", err)
+	}
+	return k, f.Start, nil
 }
 
 // dedupeSortKlines ordena ascendentemente y elimina duplicados por timestamp

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"strconv"
 	"strings"
 
 	"tradingview-bot/config"
@@ -26,12 +27,52 @@ type telegramDispatcher struct {
 	store            *store.Store
 	session          *session.Manager
 	cfg              *config.Config
+	// ibDiagDefault son los argumentos de /ibdiag sin parámetros: la
+	// estrategia Investing Bulls que opera en esta sesión y su símbolo.
+	ibDiagDefault string
+}
+
+// adminOnlyCommands controlan la sesión o el workflow, cambian la estrategia o
+// lanzan trabajos pesados: solo TELEGRAM_ADMIN_CHAT_ID puede usarlos (la misma
+// regla que aplica el controlador de GitHub Actions cuando no hay runner).
+var adminOnlyCommands = map[string]bool{
+	"session_start": true, "session_stop": true, "stop": true,
+	"strategy": true, "symbol": true, "timeframe": true, "activate": true, "backtest": true,
+	"learn": true, "learnib": true, "validateib": true, "learnibmtf": true, "validateibmtf": true,
+	"ibdiag": true,
+}
+
+// restricted indica si el mensaje solo puede venir del chat administrador.
+func (d *telegramDispatcher) restricted(m tginternal.Message) bool {
+	if d.cfg == nil || d.cfg.TelegramAdminChatID == 0 || m.ChatID == d.cfg.TelegramAdminChatID {
+		// Sin chat admin configurado (despliegue local) se mantiene el
+		// comportamiento anterior.
+		return false
+	}
+	if m.DocumentID != "" {
+		return true
+	}
+	if !m.IsCommand {
+		return false
+	}
+	if m.Command == "start" {
+		// /start sin argumentos arranca el workflow; con argumento solo se
+		// permite suscribir el propio chat a las alertas.
+		args := strings.Fields(m.Arguments)
+		return len(args) == 0 || args[0] != strconv.FormatInt(m.ChatID, 10)
+	}
+	return adminOnlyCommands[m.Command]
 }
 
 // Handle implementa tginternal.Handler.
 func (d *telegramDispatcher) Handle(ctx context.Context, m tginternal.Message) error {
 	log.Printf("Telegram update recibido: update_id=%d", m.UpdateID)
 	chatID := m.ChatID
+	if d.restricted(m) {
+		log.Printf("Telegram: comando restringido rechazado (update_id=%d chat=%d comando=%q)", m.UpdateID, chatID, m.Command)
+		d.telegram.SendMessage(chatID, "⛔ Comando reservado al administrador del bot.")
+		return nil
+	}
 
 	// Documento adjunto → aprender la estrategia del PDF.
 	if m.DocumentID != "" {
@@ -74,6 +115,9 @@ func (d *telegramDispatcher) Handle(ctx context.Context, m tginternal.Message) e
 	case "validateibmtf":
 		go runInvestingBullsValidateMTF(ctx, d.store, d.telegram, chatID, args, d.cfg, d.session)
 	case "ibdiag":
+		if strings.TrimSpace(args) == "" {
+			args = d.ibDiagDefault
+		}
 		go runInvestingBullsDiag(ctx, d.store, d.telegram, chatID, args)
 	case "strategies":
 		if d.strategyCommands != nil {

@@ -1,0 +1,137 @@
+{
+  "always_long": {
+    "model": {
+      "trades": 319,
+      "win_rate": 0.5391849529780565,
+      "net_return": 0.49372557648488513,
+      "gross_return": 0.8518711358786691,
+      "total_cost": 0.38280000000000003,
+      "avg_net_return": 0.0014704424322215326,
+      "max_drawdown": 0.23680460664423797
+    },
+    "baseline_long": {
+      "trades": 319,
+      "win_rate": 0.5391849529780565,
+      "net_return": 0.49372557648488513,
+      "gross_return": 0.8518711358786691,
+      "total_cost": 0.38280000000000003,
+      "avg_net_return": 0.0014704424322215326,
+      "max_drawdown": 0.23680460664423797
+    },
+    "beats_baseline": false,
+    "side": "long",
+    "confidence": 0.0,
+    "costs": {
+      "fee_rate": 0.0004,
+      "slippage_rate": 0.0002
+    }
+  },
+  "always_short": {
+    "model": {
+      "trades": 319,
+      "win_rate": 0.4169278996865204,
+      "net_return": -0.7289304248020456,
+      "gross_return": -0.8518711358786691,
+      "total_cost": 0.38280000000000003,
+      "avg_net_return": -0.0038704424322215337,
+      "max_drawdown": 0.7375615514977687
+    },
+    "baseline_long": {
+      "trades": 319,
+      "win_rate": 0.5391849529780565,
+      "net_return": 0.49372557648488513,
+      "gross_return": 0.8518711358786691,
+      "total_cost": 0.38280000000000003,
+      "avg_net_return": 0.0014704424322215326,
+      "max_drawdown": 0.23680460664423797
+    },
+    "beats_baseline": false,
+    "side": "short",
+    "confidence": 0.0,
+    "costs": {
+      "fee_rate": 0.0004,
+      "slippage_rate": 0.0002
+    }
+  },
+  "momentum_24": {
+    "model": {
+      "trades": 318,
+      "win_rate": 0.44025157232704404,
+      "net_return": -0.7191265007356538,
+      "gross_return": -0.8196567437355355,
+      "total_cost": 0.3816,
+      "avg_net_return": -0.00377753692998596,
+      "max_drawdown": 0.7688398526375837
+    },
+    "baseline_long": {
+      "trades": 319,
+      "win_rate": 0.5391849529780565,
+      "net_return": 0.49372557648488513,
+      "gross_return": 0.8518711358786691,
+      "total_cost": 0.38280000000000003,
+      "avg_net_return": 0.0014704424322215326,
+      "max_drawdown": 0.23680460664423797
+    },
+    "beats_baseline": false,
+    "side": "both",
+    "confidence": 0.5,
+    "costs": {
+      "fee_rate": 0.0004,
+      "slippage_rate": 0.0002
+    }
+  },
+  "rsi_30_70": {
+    "model": {
+      "trades": 110,
+      "win_rate": 0.5181818181818182,
+      "net_return": 0.01412827776738812,
+      "gross_return": 0.16359926697790073,
+      "total_cost": 0.132,
+      "avg_net_return": 0.000287266063435461,
+      "max_drawdown": 0.17855481617241498
+    },
+    "baseline_long": {
+      "trades": 319,
+      "win_rate": 0.5391849529780565,
+      "net_return": 0.49372557648488513,
+      "gross_return": 0.8518711358786691,
+      "total_cost": 0.38280000000000003,
+      "avg_net_return": 0.0014704424322215326,
+      "max_drawdown": 0.23680460664423797
+    },
+    "beats_baseline": false,
+    "side": "both",
+    "confidence": 0.5,
+    "costs": {
+      "fee_rate": 0.0004,
+      "slippage_rate": 0.0002
+    }
+  },
+  "macd_hist": {
+    "model": {
+      "trades": 318,
+      "win_rate": 0.48427672955974843,
+      "net_return": -0.5369325166971852,
+      "gross_return": -0.31816390460987487,
+      "total_cost": 0.3816,
+      "avg_net_return": -0.0022005154233014942,
+      "max_drawdown": 0.5353517811140505
+    },
+    "baseline_long": {
+      "trades": 319,
+      "win_rate": 0.5391849529780565,
+      "net_return": 0.49372557648488513,
+      "gross_return": 0.8518711358786691,
+      "total_cost": 0.38280000000000003,
+      "avg_net_return": 0.0014704424322215326,
+      "max_drawdown": 0.23680460664423797
+    },
+    "beats_baseline": false,
+    "side": "both",
+    "confidence": 0.5,
+    "costs": {
+      "fee_rate": 0.0004,
+      "slippage_rate": 0.0002
+    }
+  }
+}

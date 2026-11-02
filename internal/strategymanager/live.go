@@ -8,10 +8,15 @@ import (
 	"time"
 
 	"tradingview-bot/internal/backtest"
-	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/strategies"
 )
+
+// StrategyNone deja el motor sin estrategia: recibe velas pero no evalúa ni
+// publica señales. Es la selección explícita de una sesión que solo debe
+// operar con Investing Bulls, para que Chandelier nunca actúe como sustituto.
+const StrategyNone = "none"
 
 // SignalPublisher es el bus que recibe las señales generadas por una estrategia.
 type SignalPublisher interface {
@@ -83,6 +88,9 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 		return nil
 	}
 	sid, symbol, timeframe := e.Selection()
+	if sid == StrategyNone {
+		return nil
+	}
 	if !strings.EqualFold(k.Symbol, symbol) || !strings.EqualFold(k.Timeframe, timeframe) {
 		return nil
 	}
@@ -134,8 +142,12 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 		}
 		if strings.HasPrefix(st.Source, "investing_bulls_learn_mtf") {
 			ev, ok, err := investingbulls.EvaluateLive(ctx, e.candles, st, k)
-			if err != nil { return fmt.Errorf("evaluando Investing Bulls %s: %w", sid, err) }
-			if !ok { return nil }
+			if err != nil {
+				return fmt.Errorf("evaluando Investing Bulls %s: %w", sid, err)
+			}
+			if !ok {
+				return nil
+			}
 			return e.publisher.Publish(ctx, ev)
 		}
 		spec, err := ParseSpec(st.Spec)

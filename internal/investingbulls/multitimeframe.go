@@ -216,8 +216,8 @@ func learnMultiTimeframeWindow(main, entry, confirm []domain.Kline, cfg LearnCon
 
 	if bestScore == math.Inf(-1) {
 		return MultiTimeframeLearnResult{
-			Accepted: false,
-			Reason: noCandidateReason(cfg, diag),
+			Accepted:    false,
+			Reason:      noCandidateReason(cfg, diag),
 			Diagnostics: diag,
 			Model: MultiTimeframeModel{
 				Version: 1, Family: "investing_bulls_mtf", Symbol: cfg.Symbol,
@@ -234,8 +234,8 @@ func learnMultiTimeframeWindow(main, entry, confirm []domain.Kline, cfg LearnCon
 		Version: 1, Family: "investing_bulls_mtf", Symbol: cfg.Symbol,
 		Timeframes: mtf, Search: space, ConfirmSkipReason: confirmSkipReason,
 		Base: bestModel, AllowedSetups: allowed,
-		SetupStats: statsBySetup(bestTrades, cfg.InitialBalance),
-		DatasetHash: digest,
+		SetupStats:   statsBySetup(bestTrades, cfg.InitialBalance),
+		DatasetHash:  digest,
 		DatasetStart: entry[0].Start, DatasetEnd: entry[len(entry)-1].Start,
 		DatasetBars: len(entry), CodeVersion: CodeVersion, LearnedAt: time.Now().UTC(),
 	}
@@ -770,7 +770,7 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 		AverageWin: m.averageWin, AverageLoss: m.averageLoss, Expectancy: m.expectancy,
 		GrossProfit: m.grossProfit, GrossLoss: m.grossLoss, FeesPaid: m.feesPaid,
 		TestBars: lastOOS - int(math.Floor(float64(len(entry))*wcfg.TrainPct)),
-		Passed: passed, Folds: len(folds), OOSFolds: folds,
+		Passed:   passed, Folds: len(folds), OOSFolds: folds,
 		Status: "paper_observation_100_trades", MetricsAt: now,
 	}
 	if err := store.SaveBacktest(ctx, bt); err != nil {
@@ -779,7 +779,7 @@ func ValidateMultiTimeframeCandidate(ctx context.Context, store LearnerStore, st
 
 	st.UpdatedAt = now
 	st.Status = domain.StrategyActive
-	st.Error = fmt.Sprintf("PAPER en observación: %d operaciones cerradas requeridas; OOS histórico %s (%d/%d folds positivos)", 100, map[bool]string{true:"superado", false:"no superado"}[historicalPass], positive, len(folds))
+	st.Error = fmt.Sprintf("PAPER en observación: %d operaciones cerradas requeridas; OOS histórico %s (%d/%d folds positivos)", 100, map[bool]string{true: "superado", false: "no superado"}[historicalPass], positive, len(folds))
 	if err := store.UpsertStrategy(ctx, st); err != nil {
 		return domain.BacktestResult{}, err
 	}

@@ -5,13 +5,13 @@
 > estrategia *Investing Bulls*). El detalle de cada fase vive en los `MEMORIA_*.md`
 > enlazados al final.
 
-- **Fecha:** 2026-10-21
+- **Fecha:** 2026-10-29
 - **Módulo Go:** `tradingview-bot` (Go 1.26.2)
 - **Repositorio:** https://github.com/JoelVargas08/TradingBot
-- **Rama de trabajo:** `fix/telegram-controller` (sin fusionar en `main`)
-- **Verificación (última):** `go build ./...`, `go vet ./...` limpios y
-  `go test ./... -count=1` → **32 paquetes OK**, 0 fallos; controlador Python →
-  **45 tests OK**.
+- **Rama de trabajo:** `feat/cierre-plan-paper` (PR a `main`; incluye `fix/telegram-controller`)
+- **Verificación (última, 2026-10-29):** `go build ./...`, `go vet ./...` limpios y
+  `go test -count=1 ./...` → **35 paquetes OK**, 0 fallos; scripts de Actions
+  (controlador + estado) → **77 tests OK**; ML → **27 tests OK**.
 - **Trading real:** **deshabilitado** por defecto (LIVE off); todo corre en PAPER.
 
 ---
@@ -249,13 +249,15 @@ go vet ./...
 go test ./... -count=1        # 32 paquetes OK
 gofmt -l <archivos nuevos>    # limpio (varios .go pre-existentes son CRLF: no reformatear)
 py -3 -m unittest discover -s .github/scripts -p "test_*.py"   # 45 tests del controlador
-py -3 -m unittest discover -s tests/ml -p "test_*.py"          # 13 tests ML
+py -3 -m unittest discover -s tests/ml -p "test_*.py"          # 27 tests ML
 ```
 
 Histórico profundo para ML (WEEX `/historyKlines`, paginado):
 
 ```powershell
 go run ./cmd/mlhistory -db <db-temporal> -symbol BTCUSDT -timeframe 1h -bars 5000
+# histórico profundo con tolerancia a velas corruptas:
+go run ./cmd/mlhistory -db <db-temporal> -symbol BTCUSDT -timeframe 1h -bars 30000 -skip-invalid
 ```
 
 Validación IB end-to-end sin Telegram:
@@ -273,6 +275,9 @@ go run ./cmd/ibvalidate -db <db-temporal> -symbol BTCUSDT -timeframes 1h,15m,5m 
 - **Flujo/uso IB:** `docs/INVESTING_BULLS.md`.
 - **Memoria IB (detallada):** `MEMORIA_FASE_IB_ASIMILACION.md`.
 - **Histórico WEEX para ML (Fase 10):** `MEMORIA_FASE_10_HISTORICO_WEEX.md`.
+- **Mejora de señal NN y validación externa (Fase 11):** `MEMORIA_FASE_11_MEJORA_SENAL.md`.
+- **Estabilidad y baselines NN (Fase 12):** `MEMORIA_FASE_12_ESTABILIDAD_Y_BASELINES.md`.
+- **Datos 30k, ensemble y holdout final (Fase 13):** `MEMORIA_FASE_13_DATOS_30K_Y_ENSEMBLE.md`.
 - **Planes IB:** `PLAN_IMPLEMENTACION_INVESTING_BULLS.md`,
   `PLAN_ASIMILAR_ESTRATEGIA_INVESTING_BULLS.md`.
 - **Fuente IB:** `docs/source/estrategia_investing_bulls_p34.txt`.
@@ -311,3 +316,77 @@ Corrida a escala (8000 velas 1h, 80 épocas, 4 folds): 0 huecos; holdout de 1590
 `--conf 0.6` no hay trades (`inconclusive`); con `--conf 0.3` hay 7 trades y net -7.01 % vs
 baseline +6.31 %. Walk-forward negativo en ambos casos. La falta de datos ya no bloquea; el
 siguiente paso es mejorar la señal (Fase 11), no descargar más velas.
+
+---
+
+## 12. Fase 11 - Mejora de señal y validación externa (2026-10-26)
+
+Se añadieron 40 features NN scale-free, filtrado por dirección, calibración walk-forward robusta,
+temperature scaling y validación externa opcional. La corrida con ETH 30k (24,994 velas, 60
+épocas, 4 folds) eligió `short/0.40`: 27 trades, 62.96 % de acierto y **+15.32 %** walk-forward
+con 4/4 folds positivos. Sin embargo, en la validación externa BTC (8k velas) el modelo hizo 7
+trades con **-7.39 %** neto (baseline -31.86 %), por lo que `external_gate=false`. El holdout ETH
+de este conjunto de features **no se evaluó** y no se promocionó ningún modelo. La señal no
+generaliza al segundo activo. Detalle en `MEMORIA_FASE_11_MEJORA_SENAL.md`.
+
+---
+
+## 13. Fase 12 - Estabilidad y baselines (2026-10-26)
+
+Cinco semillas sobre ETH 30k dieron walk-forward positivo (media +25.43 %, sd 10.89 %), pero
+solo **1/5** pasó la validación externa BTC y la dirección/confianza cambió con la semilla. Se
+añadieron reglas simples (`always_long`, `always_short`, `momentum_24`, `rsi_30_70`, `macd_hist`)
+y una puerta `--reference`. En ETH el walk-forward de MACD fue **+153.6 %** y en BTC **+15.1 %**;
+la NN quedó en +11.5 % a +40.6 % y +7.3 % respectivamente, así que no supera la referencia. No se
+promociona y el holdout ETH sigue intacto. Detalle en
+`MEMORIA_FASE_12_ESTABILIDAD_Y_BASELINES.md`.
+
+---
+
+## 14. Fase 13 - Datos 30k, ensemble y holdout final (2026-10-26)
+
+Se añadió `-skip-invalid` a `cmd/mlhistory` para descartar velas históricas corruptas sin abortar
+la descarga. Se obtuvieron BTC 29,999; SOL 26,328; BNB 25,635; XRP 25,636 y ADA 25,636 velas 1h
+(2023-2026). En 30k, MACD pierde en todos los activos (-51 % a -98 %); solo `momentum_24` en XRP
+queda positivo (+9.46 %). Las semillas individuales a `conf=0.35` fueron positivas en BTC 5/5,
+BNB 5/5 y SOL 3/5, pero inestables en los últimos 8k.
+
+Se añadió `ml/nn_ensemble.py` (voto 3/5 de 5 semillas). Con `conf=0.25`, el ensemble fijo dio:
+BTC 30k +155.3 % (134 trades, DD 7.5 %); BTC 8k +15.8 %; SOL 30k +28.1 %; SOL 8k +13.6 %;
+BNB 30k +60.0 %; BNB 8k -2.3 %; XRP 30k +30.1 %; XRP 8k +24.1 %; ADA 30k +117.1 %; ADA 8k
++23.3 %. XRP/ADA fueron el test externo fijo y ambos pasaron. Sin embargo, el holdout ETH
+reservado (2026-03-31 a 2026-10-25) dio **-7.4 %**, 17 trades, DD 13.3 %, MACD +4.0 % y
+`gate=false`. **No se promociona**: el holdout ETH negativo es decisivo. Los DD de 30k en
+SOL/XRP/ADA (53-77 %) también son inaceptables. El holdout ETH queda consumido para esta
+configuración. Detalle en `MEMORIA_FASE_13_DATOS_30K_Y_ENSEMBLE.md`.
+
+---
+
+## 15. Cierre del plan PAPER: arranque 08:00, Telegram, selección IB y persistencia (2026-10-29)
+
+Plan: `PLAN_OPENCODE_CIERRE_TRADINGBOT_2026-10-28`. Detalle y evidencias en
+`MEMORIA_SESION_2026-10-29.md`.
+
+- **Causa del arranque tardío (medida con la API de Actions):** el cron `*/5` del controlador
+  corrió 2–7 veces/día y el `0 8 * * 1-5` de PAPER disparó entre 11:57 y 13:58 de La Habana.
+  El controlador pasa a **relevo continuo** (jobs de 5h30m que despachan su sucesor; cron solo
+  vigilante) y despacha la sesión en < 1 min tras las 08:00. Se elimina el `schedule` de
+  `paper-session.yml` (podía arrancar tras un `/stop`).
+- **Reintentos que nunca ocurrían:** el controlador buscaba `status == "failed"`; GitHub usa
+  `status=completed` + `conclusion`. Corregido, con tests en vocabulario real.
+- **Telegram:** confirmación honesta de despacho/parada, sin doble despacho en un lote, comandos
+  de la sesión anterior y caducados ignorados, estado desconocido = en cola, logs con
+  `utc/local/run/event`; el runner exige `TELEGRAM_ADMIN_CHAT_ID` para comandos de control.
+- **Investing Bulls:** selector estable `investing-bulls-mtf` (activa más reciente compatible con
+  símbolo/timeframes/feed); ID explícito validado; sin resolución no opera nada y Chandelier no
+  actúa como sustituto (`LIVE_STRATEGY=none`).
+- **Bug crítico del libro PAPER:** `UNIQUE(strategy_id, symbol, timeframe, status)` impedía
+  cerrar una segunda operación de la misma estrategia: el máximo real era 1 operación cerrada.
+  Migración idempotente a índice único parcial sobre posiciones abiertas. El conteo de 100
+  operaciones ahora acumula entre sesiones e informa PF, DD, costes y long/short.
+- **Persistencia:** restauración verificada (`data/bot.db` + `integrity_check`), parada limpia
+  antes del límite de 6 h, base corrupta nunca sustituye al último estado bueno, resumen del job.
+- **NN (WEEX BTCUSDT 1h, 8 000 velas, dev-only):** baselines con costes todas negativas; NN
+  walk-forward −2.1 % (11 trades) frente a MACD +15.2 % → `gate=false`. RAM pico 97 MB. No se
+  promociona; holdout intacto.
+

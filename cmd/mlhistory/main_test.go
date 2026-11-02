@@ -69,7 +69,7 @@ func TestRunDownloadsAndExportsCSV(t *testing.T) {
 	dbPath := filepath.Join(dir, "bot.db")
 	csvPath := filepath.Join(dir, "candles.csv")
 	var rep report
-	if err := run(context.Background(), dbPath, "BTCUSDT", "1h", total, srv.URL, csvPath, &rep); err != nil {
+	if err := run(context.Background(), dbPath, "BTCUSDT", "1h", total, srv.URL, csvPath, false, &rep); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if rep.Stored != total {

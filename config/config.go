@@ -83,6 +83,10 @@ type Config struct {
 	WeexPriceType      string
 	TradingSymbol      string
 	TradingTimeframe   string
+	// LiveStrategy es la estrategia del motor compartido (TradingView/WEEX):
+	// "none", "chandelier" o un ID. Vacío = "none" si se pidió Investing Bulls
+	// y "chandelier" en caso contrario (despliegues anteriores a IB).
+	LiveStrategy string
 
 	// Modo LIVE con broker real WEEX (Fases 6-7).
 	WeexAPIKey         string
@@ -181,6 +185,7 @@ func Load() (*Config, error) {
 		WeexPriceType:      getEnv("WEEX_PRICE_TYPE", "LAST_PRICE"),
 		TradingSymbol:      getEnv("TRADING_SYMBOL", "BTCUSDT"),
 		TradingTimeframe:   getEnv("TRADING_TIMEFRAME", "1h"),
+		LiveStrategy:       strings.TrimSpace(os.Getenv("LIVE_STRATEGY")),
 		WeexAPIKey:         os.Getenv("WEEX_API_KEY"),
 		WeexAPISecret:      os.Getenv("WEEX_API_SECRET"),
 		WeexTestnet:        getEnvBool("WEEX_TESTNET", false),

@@ -105,6 +105,18 @@ func TestHandleSessionReportsStoppedSession(t *testing.T) {
 	}
 }
 
+func TestHandleSessionIncludesStrategyAndFeedDetails(t *testing.T) {
+	for _, active := range []bool{true, false} {
+		sender := &fakeSender{}
+		h := newTestHandler(sender, &fakeSession{active: active}, nil)
+		h.SetSessionDetails(func() string { return "Estrategia: ib-1\nÚltima vela 15m: 10:45" })
+		h.HandleSession(42)
+		if !strings.Contains(sender.last(), "Estrategia: ib-1") || !strings.Contains(sender.last(), "Última vela 15m") {
+			t.Fatalf("active=%t: faltan detalles de estrategia/feed: %q", active, sender.last())
+		}
+	}
+}
+
 func TestHandleSessionReportsRemainingWindow(t *testing.T) {
 	sender := &fakeSender{}
 	session := &fakeSessionWithWindow{remaining: 2*time.Hour + 15*time.Minute}
