@@ -71,12 +71,31 @@ func TestStrategyLinesReportSelectedIB(t *testing.T) {
 }
 
 func TestLiveFeedTimeframesOnlyForWEEX(t *testing.T) {
-	cfg := &config.Config{MarketDataProvider: "weex", TradingTimeframe: "1h", IBEntryTimeframe: "15m", IBConfirmTimeframe: "5m"}
-	if got := strings.Join(liveFeedTimeframes(cfg), ","); got != "1h,15m,5m" {
+	cfg := &config.Config{MarketDataProvider: "weex", TradingTimeframe: "1h", IBMainTimeframe: "4h", IBEntryTimeframe: "15m", IBConfirmTimeframe: "5m"}
+	if got := strings.Join(liveFeedTimeframes(cfg), ","); got != "1h,4h,15m,5m" {
 		t.Fatalf("feed = %s", got)
 	}
 	if liveFeedTimeframes(&config.Config{}) != nil {
 		t.Fatal("sin WEEX no se restringen los timeframes")
+	}
+}
+
+func TestIBCommandArgsParsesStrategyAndLimit(t *testing.T) {
+	cases := []struct {
+		args    string
+		wantSub string
+		wantLim int
+	}{
+		{"", "defecto", 5},
+		{"10", "defecto", 10},
+		{"mi-estrategia", "mi-estrategia", 5},
+		{"mi-estrategia 50", "mi-estrategia", 20},
+	}
+	for _, c := range cases {
+		sub, limit := ibCommandArgs(c.args, "defecto", 5, 20)
+		if sub != c.wantSub || limit != c.wantLim {
+			t.Errorf("ibCommandArgs(%q) = %q,%d; want %q,%d", c.args, sub, limit, c.wantSub, c.wantLim)
+		}
 	}
 }
 
@@ -149,6 +168,9 @@ func TestDispatcherRestrictsControlCommandsToAdmin(t *testing.T) {
 		{cmd(7, "start", "100"), true},
 		{cmd(7, "strategy", "chandelier"), true},
 		{cmd(7, "validateibmtf", "x"), true},
+		{cmd(7, "ibstatus", ""), true},
+		{cmd(7, "ibevals", "10"), true},
+		{cmd(7, "ibops", "x"), true},
 		{cmd(7, "ping", ""), false},
 		{cmd(7, "session", ""), false},
 		{cmd(7, "positions", ""), false},

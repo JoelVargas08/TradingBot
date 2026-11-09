@@ -39,7 +39,7 @@ var adminOnlyCommands = map[string]bool{
 	"session_start": true, "session_stop": true, "stop": true,
 	"strategy": true, "symbol": true, "timeframe": true, "activate": true, "backtest": true,
 	"learn": true, "learnib": true, "validateib": true, "learnibmtf": true, "validateibmtf": true,
-	"ibdiag": true,
+	"ibdiag": true, "ibstatus": true, "ibevals": true, "ibops": true,
 }
 
 // restricted indica si el mensaje solo puede venir del chat administrador.
@@ -119,6 +119,15 @@ func (d *telegramDispatcher) Handle(ctx context.Context, m tginternal.Message) e
 			args = d.ibDiagDefault
 		}
 		go runInvestingBullsDiag(ctx, d.store, d.telegram, chatID, args)
+	case "ibstatus":
+		strategy, _ := ibCommandArgs(args, firstField(d.ibDiagDefault), 0, 0)
+		go runIBStatus(ctx, d.store, d.telegram, chatID, strategy)
+	case "ibevals":
+		strategy, limit := ibCommandArgs(args, firstField(d.ibDiagDefault), 5, 20)
+		go runIBEvaluations(ctx, d.store, d.telegram, chatID, strategy, limit)
+	case "ibops":
+		subject, limit := ibCommandArgs(args, firstField(d.ibDiagDefault), 10, 20)
+		go runIBOperations(ctx, d.store, d.telegram, chatID, subject, limit)
 	case "strategies":
 		if d.strategyCommands != nil {
 			d.strategyCommands.HandleStrategies(chatID)

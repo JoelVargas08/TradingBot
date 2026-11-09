@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/ibeval"
 )
 
 // Config define los costes simulados del paper trading.
@@ -41,18 +42,21 @@ func (c Config) withDefaults() Config {
 // Engine es el motor de paper trading: abre/cierra posiciones, vigila
 // SL/TP con velas cerradas, actualiza equity intratrade y calcula métricas.
 type pendingEntry struct {
-	Key        string
-	StrategyID string
-	Symbol     string
-	Timeframe  string
-	Side       domain.Direction
-	Price      float64
-	StopLoss   float64
-	TakeProfit float64
-	PartialTP  float64
-	Quantity   float64
-	RiskAmount float64
-	BarTS      time.Time
+	Key           string
+	StrategyID    string
+	Symbol        string
+	Timeframe     string
+	Side          domain.Direction
+	Price         float64
+	StopLoss      float64
+	TakeProfit    float64
+	PartialTP     float64
+	Quantity      float64
+	RiskAmount    float64
+	BarTS         time.Time
+	EvaluationKey string
+	SignalKey     string
+	OutboxKey     string
 }
 
 type orderStore interface {
@@ -114,6 +118,11 @@ func (e *Engine) recoverPending(ctx context.Context) error {
 			Price: o.Price, StopLoss: o.StopLoss, TakeProfit: o.TakeProfit, PartialTP: o.PartialTP,
 			Quantity: o.Quantity, RiskAmount: 0, BarTS: o.Time,
 		}
+		if e.tracer != nil {
+			if key, err := e.tracer.EvaluationKeyForOrder(ctx, o.ClientID); err == nil {
+				p.EvaluationKey = key
+			}
+		}
 		e.pending[o.ClientID] = append(e.pending[o.ClientID], p)
 		count++
 	}
@@ -132,6 +141,7 @@ type Engine struct {
 	mu        sync.Mutex
 	pending   map[string][]pendingEntry
 	entryGate func() bool
+	tracer    ibeval.PaperRecorder
 }
 
 // New crea un Engine que persiste en store y delega la decisión en riskCtrl.
@@ -168,6 +178,57 @@ func (e *Engine) SetSessionGate(g interface{ IsActive() bool }) *Engine {
 func (e *Engine) SetEntryGate(g func() bool) *Engine {
 	e.entryGate = g
 	return e
+}
+
+// SetTracer activa el registro de órdenes/posiciones relacionadas con una
+// evaluación IB. Es opcional: sin tracer, la lógica PAPER no cambia.
+func (e *Engine) SetTracer(t ibeval.PaperRecorder) *Engine {
+	e.tracer = t
+	return e
+}
+
+func (e *Engine) trace(ctx context.Context, ev ibeval.PaperEvent) {
+	if e.tracer == nil || ev.EvaluationKey == "" {
+		return
+	}
+	if ev.CreatedAt.IsZero() {
+		ev.CreatedAt = time.Now().UTC()
+	}
+	if err := e.tracer.RecordPaperEvent(ctx, ev); err != nil {
+		log.Printf("paper: registrando evento %s: %v", ev.Kind, err)
+	}
+}
+
+func (e *Engine) traceOrder(ctx context.Context, p pendingEntry, kind string) {
+	e.trace(ctx, ibeval.PaperEvent{
+		EvaluationKey: p.EvaluationKey, SignalKey: p.SignalKey, OutboxKey: p.OutboxKey,
+		Kind: kind, OrderClientID: p.Key, Price: p.Price, Quantity: p.Quantity,
+	})
+}
+
+func (e *Engine) positionEvaluationKey(ctx context.Context, positionID int64) string {
+	if e.tracer == nil {
+		return ""
+	}
+	key, err := e.tracer.EvaluationKeyForPosition(ctx, positionID)
+	if err != nil {
+		return ""
+	}
+	return key
+}
+
+func (e *Engine) traceClosed(ctx context.Context, positionID int64, kind, reason string, price, qty float64) {
+	if e.tracer == nil {
+		return
+	}
+	key := e.positionEvaluationKey(ctx, positionID)
+	if key == "" {
+		return
+	}
+	e.trace(ctx, ibeval.PaperEvent{
+		EvaluationKey: key, Kind: kind, PositionID: positionID,
+		Price: price, Quantity: qty, Detail: map[string]any{"reason": reason},
+	})
 }
 
 // OnCandle fills the first staged Investing Bulls limit touched by a later
@@ -216,10 +277,17 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
 			Direction: p.Side, Price: p.Price, BarTS: k.Start,
 			Meta: limitFillMeta(p),
 		}
-		if err := e.openPending(ctx, ev, p.Quantity, p.RiskAmount); err != nil {
+		positionID, err := e.openPending(ctx, ev, p.Quantity, p.RiskAmount)
+		if err != nil {
 			log.Printf("paper: limit IB %.8f no ejecutada: %v", p.Price, err)
 			continue
 		}
+		e.traceOrder(ctx, p, "filled")
+		e.trace(ctx, ibeval.PaperEvent{
+			EvaluationKey: p.EvaluationKey, SignalKey: p.SignalKey, OutboxKey: p.OutboxKey,
+			Kind: "opened", PositionID: positionID, Price: p.Price, Quantity: p.Quantity,
+			Detail: map[string]any{"reason": "limit_fill"},
+		})
 		e.updatePendingOrder(p.Key, "filled")
 		e.mu.Lock()
 		for key, entries := range e.pending {
@@ -243,16 +311,16 @@ func (e *Engine) OnCandle(ctx context.Context, k domain.Kline) {
 	}
 }
 
-func (e *Engine) openPending(ctx context.Context, ev domain.SignalEvent, quantity, riskAmount float64) error {
+func (e *Engine) openPending(ctx context.Context, ev domain.SignalEvent, quantity, riskAmount float64) (int64, error) {
 	if e.riskCtrl == nil {
-		return fmt.Errorf("controlador de riesgo no configurado")
+		return 0, fmt.Errorf("controlador de riesgo no configurado")
 	}
 	decision, err := e.riskCtrl.EvaluateSignal(ctx, ev)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if !decision.Allowed {
-		return fmt.Errorf("señal rechazada: %s", decision.Reason)
+		return 0, fmt.Errorf("señal rechazada: %s", decision.Reason)
 	}
 	if quantity > 0 {
 		decision.Quantity = quantity
@@ -260,7 +328,7 @@ func (e *Engine) openPending(ctx context.Context, ev domain.SignalEvent, quantit
 	if riskAmount > 0 {
 		decision.RiskAmount = riskAmount
 	}
-	_, err = e.store.OpenPosition(ctx, domain.Position{
+	id, err := e.store.OpenPosition(ctx, domain.Position{
 		StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe,
 		Side: decision.Side, EntryTS: time.Now(), EntryPrice: decision.EntryPrice,
 		StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit,
@@ -268,9 +336,9 @@ func (e *Engine) openPending(ctx context.Context, ev domain.SignalEvent, quantit
 		Quantity:  decision.Quantity, RiskAmount: decision.RiskAmount, Status: domain.PositionOpen,
 	})
 	if err != nil {
-		return fmt.Errorf("abriendo posición límite: %w", err)
+		return 0, fmt.Errorf("abriendo posición límite: %w", err)
 	}
-	return nil
+	return id, nil
 }
 
 // OnSignal aplica el flujo de ejecución paper sobre una señal:
@@ -287,6 +355,9 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	zoneLow, hasLow := paperMetaFloat(ev.Meta, "entry_zone_low")
 	zoneHigh, hasHigh := paperMetaFloat(ev.Meta, "entry_zone_high")
 	twoLimits := hasLow && hasHigh && zoneLow > 0 && zoneHigh > zoneLow
+	evaluationKey := ibeval.MetaString(ev.Meta, ibeval.MetaEvaluationKey)
+	signalKey := ev.IdempotencyKey()
+	outboxKey := ibeval.MetaString(ev.Meta, ibeval.MetaOutboxKey)
 
 	open, err := e.store.OpenPositions(ctx)
 	if err != nil {
@@ -306,6 +377,7 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 		if err := e.closePosition(ctx, p.ID, exitPrice, time.Now(), domain.CloseOptions{Reason: "signal-contrary"}); err != nil {
 			return fmt.Errorf("cerrando posición %d (señal contraria): %w", p.ID, err)
 		}
+		e.traceClosed(ctx, p.ID, "closed", "signal-contrary", exitPrice, p.Quantity)
 	}
 
 	key := ev.IdempotencyKey()
@@ -333,10 +405,15 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	}
 
 	if !twoLimits {
-		_, err = e.store.OpenPosition(ctx, domain.Position{StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: decision.Side, EntryTS: time.Now(), EntryPrice: decision.EntryPrice, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: metaPartialTP(ev.Meta), Quantity: decision.Quantity, RiskAmount: decision.RiskAmount, Status: domain.PositionOpen})
-		if err != nil {
-			return fmt.Errorf("abriendo posición: %w", err)
+		id, oerr := e.store.OpenPosition(ctx, domain.Position{StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: decision.Side, EntryTS: time.Now(), EntryPrice: decision.EntryPrice, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: metaPartialTP(ev.Meta), Quantity: decision.Quantity, RiskAmount: decision.RiskAmount, Status: domain.PositionOpen})
+		if oerr != nil {
+			return fmt.Errorf("abriendo posición: %w", oerr)
 		}
+		e.trace(ctx, ibeval.PaperEvent{
+			EvaluationKey: evaluationKey, SignalKey: signalKey, OutboxKey: outboxKey,
+			Kind: "opened", PositionID: id, Price: decision.EntryPrice, Quantity: decision.Quantity,
+			Detail: map[string]any{"reason": "market"},
+		})
 		return nil
 	}
 
@@ -347,8 +424,8 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	halfQty, halfRisk := decision.Quantity/2, decision.RiskAmount/2
 	partialTP := metaPartialTP(ev.Meta)
 	entries := []pendingEntry{
-		{Key: key + "|1", StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: ev.Direction, Price: first, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: partialTP, Quantity: halfQty, RiskAmount: halfRisk, BarTS: ev.BarTS},
-		{Key: key + "|2", StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: ev.Direction, Price: second, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: partialTP, Quantity: halfQty, RiskAmount: halfRisk, BarTS: ev.BarTS},
+		{Key: key + "|1", StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: ev.Direction, Price: first, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: partialTP, Quantity: halfQty, RiskAmount: halfRisk, BarTS: ev.BarTS, EvaluationKey: evaluationKey, SignalKey: signalKey, OutboxKey: outboxKey},
+		{Key: key + "|2", StrategyID: ev.StrategyID, Symbol: ev.Symbol, Timeframe: ev.Timeframe, Side: ev.Direction, Price: second, StopLoss: decision.StopLoss, TakeProfit: decision.TakeProfit, PartialTP: partialTP, Quantity: halfQty, RiskAmount: halfRisk, BarTS: ev.BarTS, EvaluationKey: evaluationKey, SignalKey: signalKey, OutboxKey: outboxKey},
 	}
 	// Both entries remain armed and are filled independently. The first level
 	// follows the natural approach into the zone: high boundary for longs,
@@ -358,6 +435,7 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 	e.mu.Unlock()
 	for _, p := range entries {
 		e.persistPending(p)
+		e.traceOrder(ctx, p, "armed")
 	}
 	log.Printf("paper: zona armada %s %s %.8f-%.8f con 2 límites", ev.Symbol, ev.Direction, zoneLow, zoneHigh)
 	return nil
@@ -543,7 +621,7 @@ func (e *Engine) fillPending(ctx context.Context, k domain.Kline) {
 		}
 		return
 	}
-	_, err = e.store.OpenPosition(ctx, domain.Position{
+	positionID, err := e.store.OpenPosition(ctx, domain.Position{
 		StrategyID: touched.StrategyID, Symbol: touched.Symbol, Timeframe: touched.Timeframe, Side: touched.Side,
 		EntryTS: k.Start, EntryPrice: touched.Price, StopLoss: touched.StopLoss, TakeProfit: touched.TakeProfit,
 		PartialTP: touched.PartialTP, Quantity: touched.Quantity, RiskAmount: touched.RiskAmount, Status: domain.PositionOpen})
@@ -551,6 +629,12 @@ func (e *Engine) fillPending(ctx context.Context, k domain.Kline) {
 		log.Printf("paper: ejecutando límite %.8f: %v", touched.Price, err)
 		return
 	}
+	e.traceOrder(ctx, *touched, "filled")
+	e.trace(ctx, ibeval.PaperEvent{
+		EvaluationKey: touched.EvaluationKey, SignalKey: touched.SignalKey, OutboxKey: touched.OutboxKey,
+		Kind: "opened", PositionID: positionID, Price: touched.Price, Quantity: touched.Quantity,
+		Detail: map[string]any{"reason": "limit_fill"},
+	})
 
 	e.mu.Lock()
 	for key, entries := range e.pending {
@@ -614,6 +698,7 @@ func (e *Engine) checkPosition(ctx context.Context, p domain.Position, k domain.
 			log.Printf("paper: cerrando %d por stop (ambiguo=%v): %v", p.ID, ambiguous, err)
 			return
 		}
+		e.traceClosed(ctx, p.ID, "closed", "stop", p.StopLoss, p.Quantity)
 		log.Printf("paper: posición %d cerrada por stop (SL=%v vela L/H=%v/%v)", p.ID, p.StopLoss, k.Low, k.High)
 		return
 	}
@@ -631,6 +716,8 @@ func (e *Engine) checkPosition(ctx context.Context, p domain.Position, k domain.
 	if hitTarget {
 		if err := e.Close(ctx, p.ID, p.TakeProfit, k.Start, "take-profit"); err != nil {
 			log.Printf("paper: cerrando %d por take-profit: %v", p.ID, err)
+		} else {
+			e.traceClosed(ctx, p.ID, "closed", "take-profit", p.TakeProfit, p.Quantity)
 		}
 	}
 }
@@ -659,6 +746,7 @@ func (e *Engine) applyPartial(ctx context.Context, p domain.Position, k domain.K
 	if err != nil {
 		return err
 	}
+	e.traceClosed(ctx, p.ID, "partial", "partial-take-profit", p.PartialTP, qty)
 	log.Printf("paper: TP parcial posición %d: cerrado %.8f en %.8f, resto %.8f protegido en %.8f", p.ID, qty, p.PartialTP, updated.Quantity, updated.StopLoss)
 	return nil
 }
@@ -925,6 +1013,8 @@ func limitFillMeta(p pendingEntry) map[string]any {
 	if p.PartialTP > 0 {
 		meta[domain.MetaKeyPartialTP] = p.PartialTP
 	}
+	ibeval.SetMetaString(meta, ibeval.MetaEvaluationKey, p.EvaluationKey)
+	ibeval.SetMetaString(meta, ibeval.MetaOutboxKey, p.OutboxKey)
 	return meta
 }
 

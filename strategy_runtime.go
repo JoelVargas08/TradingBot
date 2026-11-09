@@ -52,7 +52,7 @@ func liveFeedTimeframes(cfg *config.Config) []string {
 	}
 	var out []string
 	seen := map[string]bool{}
-	for _, tf := range []string{cfg.TradingTimeframe, cfg.IBEntryTimeframe, cfg.IBConfirmTimeframe} {
+	for _, tf := range []string{cfg.TradingTimeframe, cfg.IBMainTimeframe, cfg.IBEntryTimeframe, cfg.IBConfirmTimeframe} {
 		tf = strings.TrimSpace(tf)
 		if tf != "" && !seen[strings.ToLower(tf)] {
 			seen[strings.ToLower(tf)] = true

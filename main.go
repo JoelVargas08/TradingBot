@@ -24,6 +24,7 @@ import (
 	"tradingview-bot/internal/evaluator"
 	"tradingview-bot/internal/githubactions"
 	"tradingview-bot/internal/health"
+	"tradingview-bot/internal/ibeval"
 	"tradingview-bot/internal/ingest"
 	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/jobqueue"
@@ -78,6 +79,17 @@ func main() {
 	if err := sqliteStore.IntegrityCheck(startupCtx); err != nil {
 		startupCancel()
 		log.Fatalf("Base de datos SQLite no íntegra: %v", err)
+	}
+	// Recuperación IB: una evaluación `running` más antigua que el TTL quedó
+	// interrumpida por un cierre inesperado. Se marca terminal y nunca se
+	// reevalúa ni publica automáticamente.
+	if cfg.IBPersistenceEnabled && cfg.IBRunningTTL > 0 {
+		staleBefore := time.Now().UTC().Add(-cfg.IBRunningTTL)
+		if n, err := sqliteStore.MarkInterrupted(startupCtx, staleBefore); err != nil {
+			log.Printf("recuperación IB: %v", err)
+		} else if n > 0 {
+			log.Printf("recuperación IB: %d evaluaciones interrumpidas marcadas", n)
+		}
 	}
 	startupCancel()
 
@@ -185,13 +197,15 @@ func main() {
 	// activa más reciente del símbolo). Si no resuelve, IB no arranca y nada la
 	// sustituye: el motor compartido solo opera Chandelier si se pide de forma
 	// explícita (LIVE_STRATEGY).
-	var investingBullsLive *strategymanager.LiveEngine
 	liveSymbol := strings.TrimSpace(os.Getenv("INVESTING_BULLS_SYMBOL"))
 	if liveSymbol == "" {
 		liveSymbol = "BTCUSDT"
 	}
 	strategies := strategyRuntime{IBRequested: strings.TrimSpace(os.Getenv("INVESTING_BULLS_STRATEGY_ID"))}
 	strategies.Shared, strategies.SharedReason = sharedStrategyFor(cfg.LiveStrategy, strategies.IBRequested != "")
+	sharedSymbol := cfg.TradingSymbol
+	sharedTimeframe := cfg.TradingTimeframe
+	var ibSelection *investingbulls.LiveSelection
 	if selection, err := investingbulls.ResolveLive(ctx, sqliteStore, investingbulls.LiveRequest{
 		Requested:        strategies.IBRequested,
 		Symbol:           liveSymbol,
@@ -202,13 +216,36 @@ func main() {
 	}); err != nil {
 		strategies.IBErr = err
 	} else {
-		engine := strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
-		if err := engine.SetSelection(selection.Strategy.ID, liveSymbol, selection.Model.Timeframes.EntryTimeframe); err != nil {
-			strategies.IBErr = err
+		ibSelection = &selection
+	}
+	// Un único motor compartido: Investing Bulls usa la selección resuelta; no
+	// se crea un segundo LiveEngine evaluando el mismo modelo. Si LIVE_STRATEGY
+	// elige explícitamente otra estrategia, esa decisión manda y IB no se evalúa
+	// en paralelo (se informa como conflicto, nunca como fallback silencioso).
+	if ibSelection != nil {
+		explicitOther := cfg.LiveStrategy != "" &&
+			!strings.EqualFold(cfg.LiveStrategy, ibSelection.Strategy.ID) &&
+			!strings.EqualFold(cfg.LiveStrategy, investingbulls.LiveAlias)
+		if explicitOther {
+			strategies.IBErr = fmt.Errorf("LIVE_STRATEGY=%s tiene prioridad; Investing Bulls no se evalúa en paralelo", cfg.LiveStrategy)
+			log.Printf("ADVERTENCIA: %v", strategies.IBErr)
 		} else {
-			investingBullsLive = engine
-			strategies.IB = &selection
+			strategies.IB = ibSelection
+			strategies.Shared = ibSelection.Strategy.ID
+			strategies.SharedReason = "Investing Bulls resuelto en el motor compartido"
+			if symbol := strings.TrimSpace(ibSelection.Model.Symbol); symbol != "" {
+				sharedSymbol = symbol
+			} else {
+				sharedSymbol = liveSymbol
+			}
+			sharedTimeframe = ibSelection.Model.Timeframes.EntryTimeframe
 		}
+	}
+	if ibSelection == nil && strings.EqualFold(cfg.LiveStrategy, investingbulls.LiveAlias) {
+		// El alias no resolvió: dejarlo como estrategia activa solo haría que
+		// cada vela fallara al buscar la estrategia. Sin fallback, motor vacío.
+		strategies.Shared = strategymanager.StrategyNone
+		strategies.SharedReason = "alias Investing Bulls no resuelto: sin estrategia"
 	}
 	for _, line := range strategies.LogLines() {
 		log.Println(line)
@@ -239,6 +276,7 @@ func main() {
 		riskManager = risk.New(sqliteStore, riskCfg)
 		paperEngine = paper.New(sqliteStore, riskManager, paper.Config{}).
 			SetMarkStore(sqliteStore).
+			SetTracer(sqliteStore).
 			SetSessionGate(tradingSession).
 			SetEntryGate(func() bool {
 				return tradingSession == nil || tradingSession.IsActive()
@@ -276,6 +314,10 @@ func main() {
 		processorPositionController = paperEngine
 	}
 	processorSvc := processor.New(eventBus, sqliteStore, evaluatorSvc, notifierSvc, processorPositionController, tradingSession, 10000)
+	if cfg.IBPersistenceEnabled {
+		processorSvc.SetIBReceipts(sqliteStore)
+		processorSvc.SetIBPaperLease(cfg.IBPaperLease)
+	}
 	processorSvc.Start(ctx)
 
 	// Validador PAPER de Investing Bulls: la decisión definitiva se toma
@@ -289,8 +331,40 @@ func main() {
 	// el mismo bus que ya consume el processor/paper engine. Su estrategia es
 	// una decisión explícita (strategies.Shared), nunca un fallback.
 	liveEngine := strategymanager.NewLiveEngine(sqliteStore, sqliteStore, eventBus)
-	if err := liveEngine.SetSelection(strategies.Shared, cfg.TradingSymbol, cfg.TradingTimeframe); err != nil {
+	if cfg.IBPersistenceEnabled {
+		liveEngine.SetIBRecorder(sqliteStore)
+	}
+	if err := liveEngine.SetSelection(strategies.Shared, sharedSymbol, sharedTimeframe); err != nil {
 		log.Fatalf("estrategia del motor compartido inválida: %v", err)
+	}
+	// Outbox IB: publica en el mismo bus que consume el processor. Si el proceso
+	// cae entre publicar y confirmar, el lease vence y se reintenta; el recibo
+	// duradero evita duplicar notificación/PAPER.
+	if cfg.IBPersistenceEnabled {
+		outboxWorker := ibeval.NewOutboxWorker(sqliteStore, eventBus, ibeval.WorkerConfig{
+			Lease:        cfg.IBOutboxLease,
+			Visibility:   cfg.IBOutboxVisibility,
+			MaxAttempts:  cfg.IBOutboxMaxAttempts,
+			PollInterval: cfg.IBOutboxWorkerInterval,
+		})
+		go outboxWorker.Run(ctx)
+		go func() {
+			ticker := time.NewTicker(24 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					n, err := sqliteStore.PruneIB(ctx, time.Now().UTC(), cfg.IBOutboxRetention, cfg.IBEvaluationRetention)
+					if err != nil {
+						log.Printf("retención IB: %v", err)
+					} else if n > 0 {
+						log.Printf("retención IB: %d registros podados", n)
+					}
+				}
+			}
+		}()
 	}
 
 	// Modo de ejecución (Fase 6)
@@ -385,10 +459,8 @@ func main() {
 					if err := sqliteStore.SaveCandle(ctx, k); err != nil && !errors.Is(err, domain.ErrDuplicate) {
 						log.Printf("guardando vela %s %s: %v", k.Symbol, k.Timeframe, err)
 					}
-					if investingBullsLive != nil {
-						if err := investingBullsLive.OnCandle(ctx, k); err != nil {
-							log.Printf("Investing Bulls live %s %s: %v", k.Symbol, k.Timeframe, err)
-						}
+					if err := liveEngine.OnCandle(ctx, k); err != nil {
+						log.Printf("motor compartido live %s %s: %v", k.Symbol, k.Timeframe, err)
 					}
 					if paperEngine != nil && k.Closed {
 						paperEngine.OnCandle(ctx, k)
@@ -459,15 +531,11 @@ func main() {
 			WSURL:     cfg.WeexWSURL,
 			PriceType: cfg.WeexPriceType,
 		})
-		// Investing Bulls live también recibe el feed WEEX: un fanout mantiene
-		// el motor compartido (chandelier/TradingView) e IB alimentados por la
-		// misma fuente sin mezclar sus selecciones. El motor ML se suscribe al
-		// timeframe primario para no aplicar un modelo 1h a velas 5m/15m.
+		// El motor compartido recibe el feed WEEX (incluido Investing Bulls ya
+		// integrado en él). El motor ML se suscribe al timeframe primario para
+		// no aplicar un modelo 1h a velas 5m/15m.
 		var weexSink ingest.CandleSink = liveEngine
-		feeds := make([]ingest.CandleSink, 0, 2)
-		if investingBullsLive != nil {
-			feeds = append(feeds, investingBullsLive)
-		}
+		feeds := make([]ingest.CandleSink, 0, 1)
 		if mlEngine != nil {
 			feeds = append(feeds, ml.NewSignalSink(mlEngine, eventBus, sqliteStore, cfg.TradingSymbol, cfg.TradingTimeframe))
 		}
@@ -481,9 +549,9 @@ func main() {
 		// puede ejecutarse antes de activar una estrategia LIVE, por lo que el
 		// backfill MTF no debe depender de investingBullsLive != nil.
 		var extras []string
-		for _, tf := range []string{cfg.IBEntryTimeframe, cfg.IBConfirmTimeframe} {
+		for _, tf := range []string{cfg.TradingTimeframe, cfg.IBMainTimeframe, cfg.IBEntryTimeframe, cfg.IBConfirmTimeframe} {
 			tf = strings.TrimSpace(tf)
-			if tf != "" && !strings.EqualFold(tf, cfg.TradingTimeframe) {
+			if tf != "" && !strings.EqualFold(tf, sharedTimeframe) {
 				extras = append(extras, tf)
 			}
 		}
@@ -492,7 +560,7 @@ func main() {
 				log.Fatalf("timeframes MTF inválidos (%v): %v", extras, err)
 			}
 		}
-		if err := marketDataService.SetSelection(strategies.Shared, cfg.TradingSymbol, cfg.TradingTimeframe); err != nil {
+		if err := marketDataService.SetSelection(strategies.Shared, sharedSymbol, sharedTimeframe); err != nil {
 			log.Fatalf("selección de mercado WEEX inválida: %v", err)
 		}
 		liveEngine.SetSource("weex")
@@ -501,10 +569,10 @@ func main() {
 				log.Printf("market data service finalizado: %v", err)
 			}
 		}()
-		log.Printf("Fuente de mercado WEEX activa: %s %s %s (backfill %d velas)", cfg.TradingSymbol, cfg.TradingTimeframe, cfg.WeexPriceType, cfg.WeexBackfillBars)
+		log.Printf("Fuente de mercado WEEX activa: %s %s %s (backfill %d velas)", sharedSymbol, sharedTimeframe, cfg.WeexPriceType, cfg.WeexBackfillBars)
 		// Cortafuegos por feed stale (sec 32): si el feed no tiene datos
 		// frescos, las señales se registran pero no abren posiciones nuevas.
-		period, perr := health.ParsePeriod(cfg.TradingTimeframe)
+		period, perr := health.ParsePeriod(sharedTimeframe)
 		if perr != nil {
 			period = time.Hour
 		}
