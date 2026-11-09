@@ -274,6 +274,9 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/validateibmtf <strategy_id> <symbol> [limit] - Validar OOS fijo y activar\n" +
 		"/validateib <strategy_id> <symbol> <tf> [limit] - Validar OOS y activar si pasa\n" +
 		"/ibdiag <strategy_id> <symbol> [bars] - Diagnóstico del pipeline (no opera)\n" +
+		"/ibstatus [strategy_id] - Resumen de evaluaciones, Outbox y recibos PAPER\n" +
+		"/ibevals [strategy_id] [limit] - Últimas evaluaciones IB persistidas\n" +
+		"/ibops [strategy_id|evaluation_key] [limit] - Eventos PAPER IB recientes\n" +
 		"/strategies - Listar estrategias aprendidas\n" +
 		"/strategy <id> - Detalle de una estrategia\n" +
 		"/backtest <id> - Re-validar una estrategia (OOS)\n" +

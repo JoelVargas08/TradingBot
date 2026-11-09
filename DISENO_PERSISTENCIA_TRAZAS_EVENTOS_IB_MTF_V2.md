@@ -4,7 +4,7 @@
 **Rama:** `integration/ib-shared-engine`  
 **Worktree:** `C:\Users\Administrador\AppData\Local\Temp\opencode\tradingbot-ib-shared-engine`  
 **Reemplaza a:** `DISENO_PERSISTENCIA_TRAZAS_EVENTOS_IB_MTF.md` (V1, conservado como historial)  
-**Estado:** Propuesta técnica V2. No implementada.  
+**Estado:** Implementada en `integration/ib-shared-engine` (fases 2–7).  
 **Objetivo:** Cerrar el punto 5 sin aceptar evaluaciones sin señal, sin perder señales si el publicador se interrumpe, sin duplicar operaciones PAPER y soportando relación uno-a-varios evaluación → órdenes/posiciones.
 
 ---

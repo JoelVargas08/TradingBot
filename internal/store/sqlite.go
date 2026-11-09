@@ -322,7 +322,10 @@ func migrate(db *sql.DB) error {
 	if _, err := db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_idem ON signals(idem_key) WHERE idem_key <> ''"); err != nil {
 		return fmt.Errorf("creando índice idem de señales: %w", err)
 	}
-	return migratePositions(db)
+	if err := migratePositions(db); err != nil {
+		return err
+	}
+	return migrateIB(db)
 }
 
 // migratePositions reconstruye la tabla positions de las bases antiguas sin la

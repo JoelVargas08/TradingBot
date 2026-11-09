@@ -112,16 +112,19 @@ tiempo al archivado del estado.
 En el **controlador** solo atiende `TELEGRAM_ADMIN_CHAT_ID`. En el **runner**,
 los comandos de control (`/session_start`, `/start` sin argumento,
 `/session_stop`, `/stop`, `/strategy`, `/symbol`, `/timeframe`, `/activate`,
-`/backtest`, `/learn*`, `/validate*`, `/ibdiag` y los PDF) también están
-reservados al chat administrador; `/start <chat_id>` solo puede suscribir el
-propio chat a las alertas.
+`/backtest`, `/learn*`, `/validate*`, `/ibdiag`, `/ibstatus`, `/ibevals`,
+`/ibops` y los PDF) también están reservados al chat administrador;
+`/start <chat_id>` solo puede suscribir el propio chat a las alertas.
 
 | Comando | Quién responde | Comportamiento |
 | --- | --- | --- |
 | `/session` | controlador o runner | Controlador: último run, próximo arranque. Runner: estado, estrategia, feed y última vela por timeframe. |
 | `/session_start`, `/start` | controlador | Despacha PAPER si no hay sesión activa ni en cola; responde con el `run_id` o "pendiente de confirmación". |
 | `/session_stop`, `/stop` | controlador o runner | Cancela el run; responde "Parada confirmada" o "Cancelación solicitada (asíncrona)". |
-| `/ibdiag` | runner | Sin argumentos usa la estrategia Investing Bulls de la sesión. |
+| `/ibdiag` | runner | Sin argumentos usa la estrategia Investing Bulls de la sesión. No altera PAPER/LIVE. |
+| `/ibstatus [strategy_id]` | runner | Resumen persistido: evaluaciones aceptadas/rechazadas/error, Outbox y recibos PAPER. Sin argumento usa la estrategia IB de la sesión. |
+| `/ibevals [strategy_id] [limit]` | runner | Últimas evaluaciones IB con estado, barra, modelo y motivo (máx. 20). |
+| `/ibops [strategy_id\|evaluation_key] [limit]` | runner | Eventos PAPER recientes (armado, ejecución, apertura, cierre, parcial) y sus enlaces a orden/posición. |
 | `/ping`, `/help` | ambos | Estado del bot. |
 
 ## Persistencia
@@ -136,6 +139,25 @@ propio chat a las alertas.
   `tradingbot-state-corrupt` y no sustituye al último estado bueno.
 - El resumen del job muestra el run restaurado, si se guardó el estado, velas
   por timeframe, estrategias y operaciones PAPER cerradas por estrategia.
+
+### Persistencia IB V2
+
+La migración crea `ib_evaluations`, `ib_outbox`, `ib_signal_receipts`,
+`ib_order_links`, `ib_position_links` y `ib_paper_events` sin reconstruir las
+tablas existentes. Cada evaluación aceptada y su mensaje Outbox se guardan en
+la misma transacción; el worker publica con lease y reintento, y el processor
+usa el recibo duradero para no repetir notificación ni PAPER.
+
+| Variable | Default | Uso |
+| --- | --- | --- |
+| `IB_PERSISTENCE_ENABLED` | `true` | Activa evaluaciones, Outbox, recibos y trazabilidad PAPER IB. |
+| `IB_OUTBOX_LEASE_SECONDS` | `30` | Lease al reclamar un mensaje del Outbox. |
+| `IB_OUTBOX_VISIBILITY_SECONDS` | `60` | Espera antes de reintentar un mensaje ya publicado sin ack. |
+| `IB_OUTBOX_MAX_ATTEMPTS` | `10` | Intentos antes de marcar el mensaje como `dead`. |
+| `IB_PAPER_LEASE_SECONDS` | `120` | Lease para reclamar la ejecución PAPER de un recibo. |
+| `IB_OUTBOX_RETENTION_DAYS` | `7` | Retención de Outbox confirmado o muerto. |
+| `IB_EVALUATION_RETENTION_DAYS` | `90` | Retención de evaluaciones sin trabajo pendiente. |
+| `IB_OUTBOX_WORKER_SECONDS` | `1` | Intervalo de sondeo del worker Outbox. |
 
 ## Configuración en GitHub
 
