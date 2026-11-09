@@ -119,7 +119,9 @@ Pruebas nuevas relevantes:
   `TestIBReceiptRecoversPaperAfterExpiredLease`,
   `TestIBPaperFailureRetriesWithoutRenotifying`.
 - PAPER: `TestIBPaperTwoLimitsLinkAllOrders`, `TestIBPaperImmediateLinksPosition`,
-  `TestIBPaperCloseLinksOpeningEvaluation`.
+  `TestIBPaperCloseLinksOpeningEvaluation`,
+  `TestIBPaperRecoversArmedOrdersAfterCrash`,
+  `TestIBPaperReplayAfterPositionOpenDoesNotDuplicate`.
 - Pipeline completo: `TestIBPipelineFromCandleToPaperPosition`.
 - Aislamiento: `TestPhase2StrategyNoneDoesNotRecordOrPublish`,
   `TestSharedStrategyNeverFallsBackToChandelierWhenIBIsRequested`.

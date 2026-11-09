@@ -21,7 +21,8 @@ Base: `origin/fix/telegram-controller` (`3d47946`)
   `IB_RUNNING_TTL_MINUTES`; poda por retención.
 - Comandos `/ibstatus`, `/ibevals`, `/ibops`.
 - Pruebas nuevas de identidad, Outbox, reserva, concurrencia, recibos, PAPER y
-  pipeline completo.
+  pipeline completo, incluida recuperación tras caída con órdenes armadas y
+  replay tras abrir posición.
 
 ## Validación
 
@@ -42,7 +43,6 @@ Base: `origin/fix/telegram-controller` (`3d47946`)
 ## Pendiente
 
 - Ejecutar `go test -race` en CI con cgo/gcc.
-- Añadir pruebas de caída inyectada tras crear orden y tras abrir posición.
 - Prueba PAPER controlada 24–48 h y puerta de 100 operaciones cerradas antes del
   criterio de 75 % WR.
 - Revisar PR; no fusionar todavía.

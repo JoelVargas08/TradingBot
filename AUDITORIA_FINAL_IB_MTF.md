@@ -49,17 +49,15 @@ Alcance: fases 2–7 del diseño V2 y condiciones A–H del plan de continuidad.
 | Después de publicar y antes de actualizar Outbox | PASS | `TestOutboxWorkerCrashAfterPublishRedeliversUntilAck` |
 | Después de guardar la señal | PASS | `TestIBConcurrentSaveSignalSingleReceipt`, `TestIBReceiptPreventsDuplicateDeliveryEffects` |
 | Durante el procesamiento PAPER | PASS | `TestIBPaperFailureRetriesWithoutRenotifying` |
-| Después de crear una orden | PARCIAL | `TestIBPaperTwoLimitsLinkAllOrders` y `persistPending`; no hay prueba de caída exacta entre crear y enlazar |
-| Después de abrir una posición | PARCIAL | `TestIBPaperImmediateLinksPosition`, `TestIBPaperCloseLinksOpeningEvaluation`; enlace persistido, falta prueba de caída exacta tras `OpenPosition` |
+| Después de crear una orden | PASS | `TestIBPaperRecoversArmedOrdersAfterCrash`: reinicio recupera las 2 órdenes armadas y ejecuta una sola |
+| Después de abrir una posición | PASS | `TestIBPaperReplayAfterPositionOpenDoesNotDuplicate`: replay tras reinicio no duplica posición ni evento |
 | Antes de completar el recibo | PASS | lease PAPER vencido → reintento sin duplicar notificación |
 | Antes de confirmar el ack | PASS | `TestOutboxAckIsIdempotent`, reentrega hasta ack |
 
 **Limitación documentada:** el bus y SQLite no ofrecen exactamente-una-vez de
 extremo a extremo. Se garantiza **al menos una vez** y se demuestra la
 idempotencia de los efectos persistibles (evaluación, Outbox, señal, recibo,
-órdenes, posiciones, eventos). Los dos puntos marcados PARCIAL quedan como
-riesgo residual y se recomienda añadir pruebas de caída inyectada antes de
-fusionar.
+órdenes, posiciones, eventos) en los ocho puntos críticos.
 
 ## 4. Restricciones (D)
 
@@ -86,7 +84,7 @@ fusionar.
 | `go test -race ./internal/...` | **NO EJECUTADO**: sin `gcc`/cgo en el entorno |
 | Migración SQLite temporal | PASS (`TestIBMigrationIsIdempotentAndPreservesLegacyTables`) |
 | Concurrencia y duplicados | PASS (`TestIBConcurrentClaimHasSingleOwner`, `TestIBConcurrentSaveSignalSingleReceipt`) |
-| Recuperación ante interrupciones | PASS/PARCIAL según C.2 |
+| Recuperación ante interrupciones | PASS (ocho puntos críticos de C.2) |
 | Pipeline completo MTF | PASS (`TestPhase1SharedEngine*`, `TestIBPipelineFromCandleToPaperPosition`) |
 | Vela → operación PAPER | PASS (`TestIBPipelineFromCandleToPaperPosition`) |
 | `StrategyNone` sin señales | PASS (`TestPhase2StrategyNoneDoesNotRecordOrPublish`, `TestPhase1StrategyNoneDoesNotReadOrPublish`) |
@@ -107,14 +105,11 @@ fusionar.
 ## 7. Riesgos y limitaciones
 
 1. **`-race` no ejecutado localmente.** Debe correrse en CI con cgo/gcc.
-2. **Cobertura PARCIAL de caída después de crear orden/posición.** El diseño es
-   idempotente, pero falta una prueba de fallo inyectado exactamente en ese
-   intervalo.
-3. **Prueba PAPER real de 24–48 h no ejecutada.** No se activaron sesiones
+2. **Prueba PAPER real de 24–48 h no ejecutada.** No se activaron sesiones
    reales por restricción del plan.
-4. **Puerta de 100 operaciones cerradas no alcanzada.** El código y las pruebas
+3. **Puerta de 100 operaciones cerradas no alcanzada.** El código y las pruebas
    de formato existen; falta la muestra real.
-5. **Entrega al menos una vez.** Los efectos persistentes son idempotentes, pero
+4. **Entrega al menos una vez.** Los efectos persistentes son idempotentes, pero
    no se afirma exactamente-una-vez extremo a extremo.
 
 ## 8. Comparación con la arquitectura original de Pedro
@@ -134,16 +129,14 @@ duplica el controlador de sesión y mantiene las restricciones administrativas.
 ## 9. Qué falta para una prueba PAPER controlada
 
 1. Ejecutar `go test -race` en CI con cgo/gcc.
-2. Añadir pruebas de caída inyectada tras crear orden y tras abrir posición.
-3. Desplegar la rama en el entorno PAPER controlado y observar 24–48 h:
+2. Desplegar la rama en el entorno PAPER controlado y observar 24–48 h:
    `/ibstatus`, `/ibevals`, `/ibops`, ausencia de duplicados y un solo motor.
-4. Acumular 100 operaciones cerradas antes de evaluar el criterio de 75 % WR.
-5. Revisar y fusionar el PR solo después de 1–4.
+3. Acumular 100 operaciones cerradas antes de evaluar el criterio de 75 % WR.
+4. Revisar y fusionar el PR solo después de 1–3.
 
 ## 10. Conclusión
 
 La implementación V2 está completa a nivel de código, compila, pasa `go vet` y
 toda la suite `go test -count=1 ./...`. La entrega es al menos una vez con
-efectos idempotentes demostrados en los puntos críticos principales. No se
-declara validación operativa hasta completar `-race`, las dos pruebas de caída
-pendientes y la prueba PAPER controlada.
+efectos idempotentes demostrados en los ocho puntos críticos. No se declara
+validación operativa hasta completar `-race` y la prueba PAPER controlada.
