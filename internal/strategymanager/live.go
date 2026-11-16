@@ -39,6 +39,13 @@ type LiveEngine struct {
 	timeframe  string
 	source     string
 	lastBar    map[string]int64
+
+	// Auditoría del motor: estado observable, errores recientes y protección
+	// frente a velas recuperadas demasiado tarde para operar.
+	maxBarLag time.Duration
+	events    ibeval.EngineEventRecorder
+	now       func() time.Time
+	audit     liveAudit
 }
 
 func NewLiveEngine(candles CandleSource, strategyStore domain.StrategyStore, publisher SignalPublisher) *LiveEngine {
@@ -118,6 +125,7 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 	}
 	e.lastBar[key] = ts
 	e.mu.Unlock()
+	e.noteCandle(k)
 
 	ks, err := e.candles.RecentCandles(ctx, k.Symbol, k.Timeframe, 300)
 	if err != nil {
@@ -145,6 +153,7 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 		}
 		st, err := e.strategies.GetStrategy(ctx, sid)
 		if err != nil {
+			e.noteError(ctx, ibeval.EngineEventStoreError, sid, k, "", err)
 			return fmt.Errorf("leyendo estrategia %s: %w", sid, err)
 		}
 		if st.Status != domain.StrategyActive {
@@ -178,6 +187,7 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 					e.mu.Lock()
 					e.lastBar[key] = 0
 					e.mu.Unlock()
+					e.noteError(ctx, ibeval.EngineEventReserveError, sid, k, evaluationKey, berr)
 					return fmt.Errorf("reservando evaluación IB %s: %w", sid, berr)
 				}
 				if !started {
@@ -185,10 +195,23 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 				}
 			}
 
+			// Una vela que cierra mucho antes de llegar (recuperada tras una
+			// caída) no se evalúa: se registra como dato atrasado, no como
+			// rechazo de la estrategia, y nunca produce una señal PAPER.
+			if stale, decision, _ := e.barIsStale(k); stale {
+				return e.recordStaleBar(ctx, ibeval.EvaluationRecord{
+					EvaluationKey: evaluationKey, PublicationKey: publicationKey, StrategyID: sid,
+					Symbol: k.Symbol, Timeframe: k.Timeframe, BarTS: k.Start, ModelFingerprint: fingerprint,
+					ModelVersion: modelVersion, CreatedAt: now,
+				}, k, decision, canReserve, reserver)
+			}
+
 			ev, ok, trace, err := investingbulls.EvaluateLiveWithTrace(ctx, e.candles, st, k)
+			trace.EvaluationKey, trace.ModelVersion = evaluationKey, modelVersion
 			signalKey := ""
 			if ok {
 				signalKey = ev.IdempotencyKey()
+				trace.SignalKey = signalKey
 			}
 			status := ibeval.EvalAccepted
 			reason := trace.FinalReason
@@ -202,6 +225,10 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 					reason = "rechazada_sin_motivo"
 				}
 			}
+			e.noteEvaluation(status, reason, evaluationKey)
+			if err != nil {
+				e.noteError(ctx, ibeval.EngineEventEvalError, sid, k, evaluationKey, err)
+			}
 			var msg *ibeval.OutboxMessage
 			if ok {
 				if ev.Meta == nil {
@@ -211,6 +238,7 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 				ev.Meta[ibeval.MetaModelVersion] = modelVersion
 				msg, err = ibeval.NewOutboxMessage(ev, evaluationKey, publicationKey, now)
 				if err != nil {
+					e.noteError(ctx, ibeval.EngineEventPersistError, sid, k, evaluationKey, err)
 					return fmt.Errorf("preparando Outbox IB %s: %w", sid, err)
 				}
 			}
@@ -233,7 +261,9 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 				if canReserve {
 					if _, ferr := reserver.FinishEvaluation(ctx, rec, msg); ferr != nil {
 						// La reserva queda `running` y la recuperación la marcará
-						// `interrupted`: no se publica ni se reejecuta.
+						// `interrupted`: no se publica ni se reejecuta. El fallo
+						// queda registrado como error observable del motor.
+						e.noteError(ctx, ibeval.EngineEventPersistError, sid, k, evaluationKey, ferr)
 						return fmt.Errorf("cerrando evaluación IB %s: %w", sid, ferr)
 					}
 					return nil
@@ -246,6 +276,7 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 					e.mu.Lock()
 					e.lastBar[key] = 0
 					e.mu.Unlock()
+					e.noteError(ctx, ibeval.EngineEventPersistError, sid, k, evaluationKey, rerr)
 					return fmt.Errorf("persistiendo evaluación IB %s: %w", sid, rerr)
 				}
 				_ = created

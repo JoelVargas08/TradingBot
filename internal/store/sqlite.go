@@ -325,7 +325,10 @@ func migrate(db *sql.DB) error {
 	if err := migratePositions(db); err != nil {
 		return err
 	}
-	return migrateIB(db)
+	if err := migrateIB(db); err != nil {
+		return err
+	}
+	return migrateOps(db)
 }
 
 // migratePositions reconstruye la tabla positions de las bases antiguas sin la
