@@ -228,6 +228,9 @@ type LearnedModel struct {
 // configuraciones se evaluaron y cuál fue la mejor. Sin esto, un fallo del
 // comando /learn* solo informaba de que no hubo candidata.
 type LearnDiagnostics struct {
+	MainCandles             int
+	EntryCandles            int
+	ConfirmCandles          int
 	Candles                 int
 	MinTrades               int
 	TrendBars               int
@@ -253,8 +256,11 @@ type LearnDiagnostics struct {
 // Summary es el informe legible que se devuelve cuando no hay candidata.
 func (d LearnDiagnostics) Summary() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Learn base:\n")
-	fmt.Fprintf(&b, "  velas evaluadas: %d\n", d.Candles)
+	fmt.Fprintf(&b, "Diagnóstico de aprendizaje:\n")
+	if d.MainCandles > 0 || d.EntryCandles > 0 || d.ConfirmCandles > 0 {
+		fmt.Fprintf(&b, "  velas recibidas: 1H=%d | 15m=%d | 5m=%d\n", d.MainCandles, d.EntryCandles, d.ConfirmCandles)
+	}
+	fmt.Fprintf(&b, "  velas de entrada evaluadas: %d\n", d.Candles)
 	fmt.Fprintf(&b, "  velas con tendencia definida: %d\n", d.TrendBars)
 	fmt.Fprintf(&b, "  setups detectados: %d\n", d.SetupsDetected)
 	fmt.Fprintf(&b, "  setups con Fibonacci: %d\n", d.SetupsWithFibonacci)
