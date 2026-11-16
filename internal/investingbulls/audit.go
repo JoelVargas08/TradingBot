@@ -457,6 +457,14 @@ func auditZone(ks []domain.Kline, fib Fibonacci, e ConfluenceEvidence, cfg Confl
 	za.Valid = ok && setup.Valid
 	if ok {
 		za.Score = setup.Score
+	} else {
+		// Sin setup (faltan obligatorios) se informa la puntuación parcial:
+		// cuántos componentes sí confluyen.
+		for _, counted := range []bool{fibOK, imbOK, obOK, sdOK} {
+			if counted {
+				za.Score++
+			}
+		}
 	}
 	for _, comp := range c.Mode.RequiredComponents() {
 		counted := map[ConfluenceComponent]bool{ComponentFibonacci: fibOK, ComponentImbalance: imbOK, ComponentOrderBlock: obOK, ComponentSupplyDemand: sdOK}[comp]

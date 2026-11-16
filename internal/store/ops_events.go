@@ -293,6 +293,23 @@ func (s *Store) IBEvaluationByKey(ctx context.Context, key string) (ibeval.Evalu
 	return r, true, nil
 }
 
+// IBEvaluationByBar devuelve la evaluación de una vela concreta (la más
+// reciente si hubo varias, p. ej. con modelos distintos). strategyID vacío no
+// filtra por estrategia.
+func (s *Store) IBEvaluationByBar(ctx context.Context, strategyID string, barTS time.Time) (ibeval.EvaluationRecord, bool, error) {
+	var key string
+	err := s.db.QueryRowContext(ctx, `SELECT evaluation_key FROM ib_evaluations
+		WHERE bar_ts = ? AND (? = '' OR strategy_id = ?) ORDER BY id DESC LIMIT 1`,
+		barTS.UnixMilli(), strategyID, strategyID).Scan(&key)
+	if err == sql.ErrNoRows {
+		return ibeval.EvaluationRecord{}, false, nil
+	}
+	if err != nil {
+		return ibeval.EvaluationRecord{}, false, fmt.Errorf("buscando evaluación IB por vela: %w", err)
+	}
+	return s.IBEvaluationByKey(ctx, key)
+}
+
 // IBEvaluationByPrefix resuelve un ID abreviado (como el que muestra Telegram)
 // a la evaluación más reciente cuya clave lo contiene.
 func (s *Store) IBEvaluationByPrefix(ctx context.Context, fragment string) (ibeval.EvaluationRecord, bool, error) {

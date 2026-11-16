@@ -3,7 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"html"
+	"strconv"
 	"strings"
 	"time"
 	_ "time/tzdata" // America/Havana disponible aunque el sistema no tenga tzdata
@@ -56,25 +56,45 @@ func auditAge(now, t time.Time) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-func esc(s string) string { return html.EscapeString(s) }
+// htmlEscaper escapa solo lo que exige el modo HTML de Telegram (&, <, >): las
+// comillas quedan legibles también si el mensaje se reenvía como texto plano.
+var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
 
-func escf(format string, args ...any) string { return html.EscapeString(fmt.Sprintf(format, args...)) }
+func esc(s string) string { return htmlEscaper.Replace(s) }
 
-// shortKey abrevia una evaluation_key para mostrarla: los comandos aceptan el
-// fragmento final (hash) para volver a consultarla.
+// shortKey devuelve el ID corto de una evaluación: los minutos Unix de la vela
+// evaluada en base 36 (p. ej. "hssbo"). Es único por vela y estrategia y los
+// comandos lo resuelven directamente por bar_ts. La huella del modelo (último
+// segmento de la clave) NO sirve: es la misma para todas las evaluaciones.
 func shortKey(key string) string {
 	key = strings.TrimSpace(key)
-	if i := strings.LastIndex(key, "|"); i >= 0 && i < len(key)-1 {
-		tail := key[i+1:]
-		if len(tail) > 12 {
-			tail = tail[:12]
+	parts := strings.Split(key, "|")
+	if len(parts) >= 4 {
+		if ms, err := strconv.ParseInt(parts[3], 10, 64); err == nil && ms > 0 {
+			return strconv.FormatInt(ms/60000, 36)
 		}
-		return tail
 	}
 	if len(key) > 16 {
 		return key[len(key)-16:]
 	}
 	return key
+}
+
+// barFromShortKey decodifica un ID corto a la vela que identifica.
+func barFromShortKey(id string) (time.Time, bool) {
+	id = strings.ToLower(strings.TrimSpace(id))
+	if len(id) < 4 || len(id) > 8 {
+		return time.Time{}, false
+	}
+	m, err := strconv.ParseInt(id, 36, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	t := time.UnixMilli(m * 60000)
+	if t.Year() < 2015 || t.Year() > 2100 {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // Etiquetas de estado homogéneas: nunca se confunde ausencia de datos con un

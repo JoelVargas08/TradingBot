@@ -106,6 +106,11 @@ func noStore() []string {
 // reciente de la estrategia.
 func (a *auditSources) resolveEvaluation(ctx context.Context, fragment string, wantRejected bool) (ibeval.EvaluationRecord, bool, error) {
 	if strings.TrimSpace(fragment) != "" {
+		if bar, ok := barFromShortKey(fragment); ok {
+			if rec, found, err := a.store.IBEvaluationByBar(ctx, a.ibStrategy, bar); found || err != nil {
+				return rec, found, err
+			}
+		}
 		return a.store.IBEvaluationByPrefix(ctx, fragment)
 	}
 	rows, err := a.store.RecentIBEvaluations(ctx, a.ibStrategy, 20)
@@ -672,11 +677,14 @@ func (a *auditSources) reportIBData(ctx context.Context, args string) []string {
 				gaps += int(d/step) - 1
 			}
 		}
+		// La vela recién cerrada tarda unos segundos en confirmarse (margen de
+		// reloj + publicación REST): no es un retraso real durante 90 s.
+		justClosed := lag == 1 && now.Sub(expected.Add(step)) < 90*time.Second
 		lvl := labelOK
 		switch {
 		case lag >= 2:
 			lvl = labelFail
-		case lag == 1 || gaps > 0:
+		case (lag == 1 && !justClosed) || gaps > 0:
 			lvl = labelWarn
 		}
 		origin := "base de datos"
@@ -692,6 +700,9 @@ func (a *auditSources) reportIBData(ctx context.Context, args string) []string {
 			fmt.Fprintf(&b, "   en formación: %s\n", esc(auditTime(latest, loc)))
 		}
 		fmt.Fprintf(&b, "   retraso: %d velas · huecos en las últimas %d: %d · origen %s\n", lag, len(ks), gaps, esc(origin))
+		if justClosed {
+			b.WriteString("   (la última vela acaba de cerrar: confirmación en curso)\n")
+		}
 	}
 	b.WriteString("\nHuecos y recuperación: /weexgaps · /weexbackfill")
 	return splitTelegram(b.String(), 0)
@@ -720,12 +731,14 @@ func (a *auditSources) reportWeexData(ctx context.Context, args string) []string
 			lvl, seq = labelWarn, fmt.Sprintf("faltan %d velas cerradas", n)
 			if n >= 2 {
 				lvl = labelFail
+			} else if now.Sub(expected.Add(step)) < 90*time.Second {
+				lvl, seq = labelOK, "vela recién cerrada, confirmación en curso"
 			}
 		}
 		fmt.Fprintf(&b, "\n%s <b>%s %s</b> — %s\n", statusIcon(lvl), esc(h.Symbol), esc(h.Timeframe), esc(seq))
 		fmt.Fprintf(&b, "   cerrada: %s (fuente %s, recibida hace %s)\n", esc(auditTime(h.LastClosed, loc)), esc(h.LastClosedSource), esc(auditAge(now, h.LastClosedAt)))
 		fmt.Fprintf(&b, "   en formación: %s · último mensaje hace %s\n", esc(auditTime(h.LastOpen, loc)), esc(auditAge(now, h.LastMessageAt)))
-		fmt.Fprintf(&b, "   cerradas WS %d · REST %d · duplicadas %d · desalineadas %d\n", h.Counters.ClosedWS, h.Counters.ClosedREST, h.Counters.Duplicates, h.Counters.Misaligned)
+		fmt.Fprintf(&b, "   cerradas WS %d · REST %d · repetidas (ya entregadas) %d · desalineadas %d\n", h.Counters.ClosedWS, h.Counters.ClosedREST, h.Counters.Duplicates, h.Counters.Misaligned)
 	}
 	return splitTelegram(b.String(), 0)
 }
@@ -748,7 +761,10 @@ func (a *auditSources) reportWeexStatus(ctx context.Context, args string) []stri
 	}
 	for _, h := range feeds {
 		lvl := labelOK
+		neverStreamed := !h.Connected && h.ConnectedAt.IsZero() && h.LastDisconnectAt.IsZero()
 		switch {
+		case neverStreamed:
+			lvl = labelNoData
 		case !h.Connected:
 			lvl = labelFail
 		case h.Degraded:
@@ -757,6 +773,10 @@ func (a *auditSources) reportWeexStatus(ctx context.Context, args string) []stri
 			lvl = labelWarn
 		}
 		fmt.Fprintf(&b, "\n%s <b>%s %s</b> %s\n", statusIcon(lvl), esc(h.Symbol), esc(h.Timeframe), lvl)
+		if neverStreamed {
+			b.WriteString("   sin suscripción WS en este proceso (solo histórico)\n")
+			continue
+		}
 		fmt.Fprintf(&b, "   WS: %s desde %s · último mensaje hace %s\n", map[bool]string{true: "conectado", false: "desconectado"}[h.Connected],
 			esc(auditTime(h.ConnectedAt, loc)), esc(auditAge(now, h.LastMessageAt)))
 		fmt.Fprintf(&b, "   reconexiones %d · pings %d / pongs %d\n", h.Reconnects, h.Counters.Pings, h.Counters.Pongs)
@@ -1014,6 +1034,8 @@ func (a *auditSources) reportIBHealth(ctx context.Context, args string) []string
 		var wsText, restText, bfText []string
 		for _, h := range feeds {
 			switch {
+			case !h.Connected && h.ConnectedAt.IsZero() && h.LastDisconnectAt.IsZero():
+				wsText = append(wsText, h.Timeframe+" sin suscripción")
 			case !h.Connected:
 				ws = labelFail
 				wsText = append(wsText, h.Timeframe+" desconectado")

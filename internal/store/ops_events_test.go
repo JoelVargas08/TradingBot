@@ -148,3 +148,27 @@ func TestIBEvaluationLookupAndReasonCounts(t *testing.T) {
 }
 
 var _ = sql.ErrNoRows
+
+func TestIBEvaluationByBarPrefersStrategy(t *testing.T) {
+	s, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	bar := time.Date(2026, 11, 15, 10, 0, 0, 0, time.UTC)
+	for _, sid := range []string{"ib-a", "ib-b"} {
+		key := fmt.Sprintf("%s|BTCUSDT|15m|%d|samefp", sid, bar.UnixMilli())
+		if _, _, err := s.RecordEvaluation(ctx, ibeval.EvaluationRecord{EvaluationKey: key, PublicationKey: key, StrategyID: sid,
+			Symbol: "BTCUSDT", Timeframe: "15m", BarTS: bar, Status: ibeval.EvalRejected, Reason: sid}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, ok, err := s.IBEvaluationByBar(ctx, "ib-a", bar)
+	if err != nil || !ok || r.StrategyID != "ib-a" {
+		t.Fatalf("filtro por estrategia: %+v ok=%v err=%v", r, ok, err)
+	}
+	if _, ok, _ := s.IBEvaluationByBar(ctx, "", bar.Add(time.Minute)); ok {
+		t.Fatal("una vela sin evaluación no debe resolver")
+	}
+}

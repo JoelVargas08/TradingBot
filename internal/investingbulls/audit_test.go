@@ -105,6 +105,9 @@ func TestAuditZoneAgreesWithSetupDecision(t *testing.T) {
 		if sok && counted != setup.Score {
 			t.Fatalf("componentes contados %d != score %d", counted, setup.Score)
 		}
+		if counted != za.Score {
+			t.Fatalf("la puntuación mostrada (%d) debe ser la parcial real (%d)", za.Score, counted)
+		}
 	}
 }
 

@@ -131,7 +131,7 @@ func TestIBAuditShowsFoundationsFromTheRealEvaluation(t *testing.T) {
 	f := newAuditFixture(t)
 	out := joined(f.a.reportIBAudit(context.Background(), ""))
 	for _, want := range []string{
-		"AUDITORÍA INVESTING BULLS", "Evaluación: <code>3f9a2c7b1d0e</code>", "BTCUSDT", "1h / 15m / 5m", "Estado: <b>RECHAZADA</b>",
+		"AUDITORÍA INVESTING BULLS", "Evaluación: <code>" + shortKey(f.rejected) + "</code>", "BTCUSDT", "1h / 15m / 5m", "Estado: <b>RECHAZADA</b>",
 		"CONTEXTO 1H: APROBADO", "ESTRUCTURA 15M: APROBADO", "CONFIRMACIÓN 5M: NO CONFIRMADO", "IMBALANCE: NO CONFIRMADO",
 		"FIBONACCI: NO EVALUADO", "MOTIVO PRINCIPAL", "Regla evaluada: último quiebre de estructura 5m en la dirección del setup",
 		"Valor observado: sell", "Umbral requerido: buy", "Vela utilizada: 2026-11-15 09:40", "Datos: válidos",
@@ -147,7 +147,7 @@ func TestIBAuditShowsFoundationsFromTheRealEvaluation(t *testing.T) {
 		}
 	}
 	// Por ID abreviado: la evaluación aceptada muestra la operación PAPER real.
-	acc := joined(f.a.reportIBAudit(context.Background(), "dd44ee55"))
+	acc := joined(f.a.reportIBAudit(context.Background(), shortKey(f.accepted)))
 	if !strings.Contains(acc, "ACEPTADA") || !strings.Contains(acc, "posición PAPER #7") {
 		t.Fatalf("auditoría de evaluación aceptada:\n%s", acc)
 	}
@@ -159,7 +159,7 @@ func TestIBWhyDistinguishesDataFromStrategy(t *testing.T) {
 	if !strings.Contains(why, "rechazo correcto") || !strings.Contains(why, "CONFIRMACIÓN 5M") || strings.Contains(why, "Problema de DATOS") {
 		t.Fatalf("/ibwhy de un rechazo de estrategia:\n%s", why)
 	}
-	stale := joined(f.a.reportIBWhy(context.Background(), "aa11bb22"))
+	stale := joined(f.a.reportIBWhy(context.Background(), shortKey(f.stale)))
 	if !strings.Contains(stale, "Problema de DATOS") || !strings.Contains(stale, "vela_atrasada") {
 		t.Fatalf("/ibwhy debe marcar la vela atrasada como problema de datos:\n%s", stale)
 	}
@@ -338,5 +338,26 @@ func TestIBTracePagination(t *testing.T) {
 	page2 := f.a.reportIBTrace(ctx, "0011223344aa 2")
 	if len(page2) != 1 || !strings.Contains(page2[0], "(2/") {
 		t.Fatalf("página 2: %v", page2)
+	}
+}
+
+// Todas las evaluaciones de un mismo modelo comparten la huella final de la
+// clave: el ID corto debe salir de la vela, ser único y resolverse a ella.
+func TestShortEvaluationIDsAreUniquePerBarAndResolve(t *testing.T) {
+	f := newAuditFixture(t)
+	ids := map[string]string{}
+	for _, k := range []string{f.rejected, f.accepted, f.stale} {
+		id := shortKey(k)
+		if prev, dup := ids[id]; dup {
+			t.Fatalf("ID corto repetido %q para %s y %s", id, prev, k)
+		}
+		ids[id] = k
+		rec, ok, err := f.a.resolveEvaluation(context.Background(), id, false)
+		if err != nil || !ok || rec.EvaluationKey != k {
+			t.Fatalf("ID %q resolvió a %q (ok=%v err=%v), want %q", id, rec.EvaluationKey, ok, err, k)
+		}
+	}
+	if _, ok := barFromShortKey("zz"); ok {
+		t.Fatal("un ID demasiado corto no debe decodificarse")
 	}
 }
