@@ -1027,3 +1027,43 @@ func TestAlignDownIntervals(t *testing.T) {
 		}
 	}
 }
+
+// TestWeexProviderOnlyCallsPublicMarketEndpoints garantiza que la ingestión
+// nunca toca endpoints de trading: solo GET públicos de mercado, sin
+// credenciales ni firmas. El bot sigue siendo exclusivamente PAPER.
+func TestWeexProviderOnlyCallsPublicMarketEndpoints(t *testing.T) {
+	step := 15 * time.Minute
+	clock := newFakeClock(t0.Add(10*step + time.Minute))
+	hist := newContractServer(clock, t0.Add(-500*step))
+	var mu sync.Mutex
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		seen = append(seen, r.Method+" "+r.URL.Path)
+		for _, h := range []string{"ACCESS-KEY", "ACCESS-SIGN", "ACCESS-PASSPHRASE", "Authorization"} {
+			if r.Header.Get(h) != "" {
+				t.Errorf("la ingestión envió la cabecera de credenciales %s", h)
+			}
+		}
+		mu.Unlock()
+		hist.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	p, _ := newGapProvider(t, srv.URL, clock)
+	ctx := context.Background()
+	if err := p.Backfill(ctx, "BTCUSDT", "15m", 50); err != nil {
+		t.Fatal(err)
+	}
+	st := seedFeed(p, "BTCUSDT", "15m", t0, time.Time{})
+	p.reconcile(ctx, st, make(chan domain.Kline, 64), time.Time{}, "reconexion")
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) == 0 {
+		t.Fatal("no se registró ninguna petición")
+	}
+	for _, s := range seen {
+		if !strings.HasPrefix(s, "GET /capi/v3/market/") {
+			t.Fatalf("petición fuera de los endpoints públicos de mercado: %s", s)
+		}
+	}
+}
