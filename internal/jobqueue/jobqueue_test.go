@@ -1,4 +1,4 @@
-package jobqueue
+﻿package jobqueue
 
 import (
 	"context"
@@ -23,7 +23,7 @@ func waitDone(t *testing.T, q *Queue, id string, timeout time.Duration) Job {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("trabajo %s no terminó en %s", id, timeout)
+	t.Fatalf("trabajo %s no terminÃ³ en %s", id, timeout)
 	return Job{}
 }
 
@@ -189,13 +189,19 @@ func TestConcurrentEnqueues(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(processed) == n {
+		mu.Lock()
+		done := len(processed)
+		mu.Unlock()
+		if done == n {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(processed) != n {
-		t.Errorf("procesados = %d, want %d", len(processed), n)
+	mu.Lock()
+	got := len(processed)
+	mu.Unlock()
+	if got != n {
+		t.Errorf("procesados = %d, want %d", got, n)
 	}
 	if q.Count(StatusDone) != n {
 		t.Errorf("done = %d, want %d", q.Count(StatusDone), n)
@@ -216,12 +222,12 @@ func TestCanceledEnqueueFails(t *testing.T) {
 	defer cancel()
 	id, err := q.Enqueue(ctx, "y", nil)
 	if err == nil {
-		t.Fatal("Enqueue debería fallar con ctx cancelado y buffer lleno")
+		t.Fatal("Enqueue deberÃ­a fallar con ctx cancelado y buffer lleno")
 	}
 	if id == blocked {
-		t.Error("el id del job cancelado no debería coincidir con el primero")
+		t.Error("el id del job cancelado no deberÃ­a coincidir con el primero")
 	}
 	if j, ok := q.Get(id); ok && j.Status != StatusFailed {
-		t.Errorf("job debería quedar failed, got %v", j.Status)
+		t.Errorf("job deberÃ­a quedar failed, got %v", j.Status)
 	}
 }
