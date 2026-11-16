@@ -314,8 +314,11 @@ func collectMTFDecisionPoints(
 	sc := DefaultSupplyDemandConfig()
 	out := make([]mtfDecisionPoint, 0)
 
+	entryStep, mainStep := stepOf(mtf.EntryTimeframe), stepOf(mtf.MainTimeframe)
 	for i := evaluationStart; i < len(entry)-1; i++ {
-		mainPrefix := closedCandlesBefore(main, entry[i].Start)
+		// Solo velas 1h cerradas al cierre de la vela 15m (mismo criterio que
+		// LIVE): la vela 1h que contiene a la 15m todavía no ha cerrado.
+		mainPrefix := mainClosedAt(main, entry[i].Start.Add(entryStep), mainStep)
 		if len(mainPrefix) < 30 {
 			continue
 		}
@@ -508,18 +511,11 @@ func closedCandlesBefore(ks []domain.Kline, ts time.Time) []domain.Kline {
 	n := sort.Search(len(ks), func(i int) bool { return !ks[i].Start.Before(ts) })
 	return ks[:n]
 }
+
+// confirmationMatches delega en confirmationDiagnostics (audit.go), que es la
+// única implementación de la regla y además explica el resultado.
 func confirmationMatches(ks []domain.Kline, ts time.Time, dir domain.Direction, c MultiTimeframeConfig) bool {
-	// En la decisión del 15m, una vela 5m que abrió exactamente en ts todavía
-	// pertenece al futuro. Solo se usan velas 5m cerradas estrictamente antes.
-	p := closedCandlesBefore(ks, ts)
-	if len(p) < 10 {
-		return false
-	}
-	s := Analyze(p, c.ConfirmSwingLeft, c.ConfirmSwingRight)
-	if len(s.Breaks) == 0 {
-		return false
-	}
-	return s.Breaks[len(s.Breaks)-1].Direction == dir
+	return confirmationDiagnostics(ks, ts, dir, c).OK
 }
 
 func statsBySetup(trades []LearnedTrade, initial float64) map[SetupType]SetupStats {
