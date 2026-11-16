@@ -1067,3 +1067,22 @@ func TestWeexProviderOnlyCallsPublicMarketEndpoints(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthHidesFeedsRetiredBySelectionChange(t *testing.T) {
+	p := wexTestProvider("ws://127.0.0.1:1/ws", "LAST_PRICE")
+	ctx, cancel := context.WithCancel(context.Background())
+	if _, err := p.Subscribe(ctx, "BTCUSDT", "1h"); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Health()) != 1 {
+		t.Fatalf("el feed activo debe listarse")
+	}
+	cancel()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(p.Health()) != 0 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if n := len(p.Health()); n != 0 {
+		t.Fatalf("un feed retirado no debe aparecer como desconectado: %d", n)
+	}
+}

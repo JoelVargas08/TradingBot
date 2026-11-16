@@ -44,6 +44,11 @@ func (p *WeexProvider) Subscribe(ctx context.Context, symbol, timeframe string) 
 	}
 	p.active[key] = true
 	p.mu.Unlock()
+	// El estado del feed existe desde que Subscribe retorna (visible en Health).
+	st := p.feed(symbol, timeframe)
+	st.mu.Lock()
+	st.retired = false
+	st.mu.Unlock()
 
 	ch := make(chan domain.Kline, 256)
 	go p.runStream(ctx, key, symbol, timeframe, ch)
@@ -51,12 +56,17 @@ func (p *WeexProvider) Subscribe(ctx context.Context, symbol, timeframe string) 
 }
 
 func (p *WeexProvider) runStream(ctx context.Context, key, symbol, timeframe string, out chan<- domain.Kline) {
+	st := p.feed(symbol, timeframe)
 	defer func() {
 		p.mu.Lock()
 		delete(p.active, key)
 		p.mu.Unlock()
+		if ctx.Err() != nil {
+			st.mu.Lock()
+			st.retired, st.connected = true, false
+			st.mu.Unlock()
+		}
 	}()
-	st := p.feed(symbol, timeframe)
 	backoff := p.cfg.ReconnectBase
 	for {
 		if ctx.Err() != nil {

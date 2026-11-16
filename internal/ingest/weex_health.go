@@ -177,6 +177,11 @@ type feedState struct {
 	lastDisconnect   string
 	reconnects       int
 
+	// retired marca un feed cuyo stream terminó por cancelación (cambio de
+	// selección o apagado): deja de listarse en Health para no mostrarlo como
+	// "desconectado" cuando ya no se usa.
+	retired bool
+
 	tail      *GapRange
 	holes     []GapRange
 	backfills []BackfillRecord
@@ -311,7 +316,12 @@ func (p *WeexProvider) Health() []FeedHealth {
 	p.mu.Lock()
 	states := make([]*feedState, 0, len(p.feeds))
 	for _, st := range p.feeds {
-		states = append(states, st)
+		st.mu.Lock()
+		retired := st.retired
+		st.mu.Unlock()
+		if !retired {
+			states = append(states, st)
+		}
 	}
 	p.mu.Unlock()
 	out := make([]FeedHealth, 0, len(states))
