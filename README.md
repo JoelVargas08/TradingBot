@@ -75,6 +75,11 @@ Nunca se suben `.env`, tokens, claves WEEX ni bases locales al repositorio.
 4. **Detener:** `/session_stop` (o `/stop`). Cierra el gate de entradas y
    cancela el run; las posiciones abiertas no se cierran automáticamente.
 5. **Diagnóstico:** `/ibdiag` (sin argumentos usa la estrategia de la sesión).
+   **Auditoría (solo lectura):** `/ibhelp` lista los comandos; `/ibaudit` y
+   `/ibwhy` explican la última evaluación por fundamento (estrategia vs datos
+   vs infraestructura); `/ibhealth`, `/ibdata` y `/weex*` muestran la salud del
+   feed WEEX y de la recuperación de huecos. Ver
+   [docs/TELEGRAM_CONTROLLER.md](docs/TELEGRAM_CONTROLLER.md#comandos-de-auditoría-solo-lectura).
 6. **Resumen de cada sesión:** pestaña *Summary* del run de *Paper Session*
    (estado restaurado/guardado, velas, estrategias, operaciones cerradas).
 

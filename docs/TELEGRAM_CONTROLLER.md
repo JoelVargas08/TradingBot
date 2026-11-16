@@ -112,9 +112,10 @@ tiempo al archivado del estado.
 En el **controlador** solo atiende `TELEGRAM_ADMIN_CHAT_ID`. En el **runner**,
 los comandos de control (`/session_start`, `/start` sin argumento,
 `/session_stop`, `/stop`, `/strategy`, `/symbol`, `/timeframe`, `/activate`,
-`/backtest`, `/learn*`, `/validate*`, `/ibdiag`, `/ibstatus`, `/ibevals`,
-`/ibops` y los PDF) también están reservados al chat administrador;
-`/start <chat_id>` solo puede suscribir el propio chat a las alertas.
+`/backtest`, `/learn*`, `/validate*`, `/ibdiag`, todos los comandos de
+auditoría `/ib*` y `/weex*`, y los PDF) también están reservados al chat
+administrador; `/start <chat_id>` solo puede suscribir el propio chat a las
+alertas.
 
 | Comando | Quién responde | Comportamiento |
 | --- | --- | --- |
@@ -122,10 +123,42 @@ los comandos de control (`/session_start`, `/start` sin argumento,
 | `/session_start`, `/start` | controlador | Despacha PAPER si no hay sesión activa ni en cola; responde con el `run_id` o "pendiente de confirmación". |
 | `/session_stop`, `/stop` | controlador o runner | Cancela el run; responde "Parada confirmada" o "Cancelación solicitada (asíncrona)". |
 | `/ibdiag` | runner | Sin argumentos usa la estrategia Investing Bulls de la sesión. No altera PAPER/LIVE. |
-| `/ibstatus [strategy_id]` | runner | Resumen persistido: evaluaciones aceptadas/rechazadas/error, Outbox y recibos PAPER. Sin argumento usa la estrategia IB de la sesión. |
-| `/ibevals [strategy_id] [limit]` | runner | Últimas evaluaciones IB con estado, barra, modelo y motivo (máx. 20). |
-| `/ibops [strategy_id\|evaluation_key] [limit]` | runner | Eventos PAPER recientes (armado, ejecución, apertura, cierre, parcial) y sus enlaces a orden/posición. |
+| `/ib*`, `/weex*` (auditoría) | runner | Ver la tabla siguiente. Sin runner, el controlador responde que el comando necesita la sesión PAPER. |
 | `/ping`, `/help` | ambos | Estado del bot. |
+
+### Comandos de auditoría (solo lectura)
+
+Ninguno inicia ni detiene la sesión, crea órdenes o modifica estado: leen la
+base persistida (`ib_evaluations`, `ops_events`, posiciones PAPER) y fotos en
+memoria del proceso (salud WEEX, estado del motor). Cada informe se genera en
+segundo plano con un límite de 20 s, no bloquea el polling y, si es largo, se
+divide en mensajes de ≤3500 caracteres con paginación `(n/m)`. Las horas se
+muestran en `America/Havana`. Estados: 🟢 OK · 🟡 WARN · 🔴 FAIL · ⚪ NO DATA
+(la ausencia de datos nunca se presenta como fallo de la estrategia). Los IDs
+de evaluación se pueden abreviar con el fragmento que muestran los informes.
+
+| Comando | Parámetros | Función |
+| --- | --- | --- |
+| `/ibstatus` | `[strategy_id]` | Estrategia activa, símbolo, marcos, sesión, proveedor y salud del motor; alerta si el motor no evalúa Investing Bulls (sin fallback a Chandelier). |
+| `/ibaudit` | `[id]` | Auditoría de la última evaluación (o de `id`): cada fundamento aprobado/rechazado/no evaluable, motivo principal con regla, valor observado, umbral, vela, calidad de datos y resultado PAPER. |
+| `/ibwhy` | `[id]` | Por qué no hubo señal, distinguiendo rechazo correcto de la estrategia, fundamento inexistente/no confirmado, problema de datos e infraestructura. |
+| `/ibtrace` | `[id] [página]` | Traza cronológica completa (datos por timeframe y cada etapa), paginada. |
+| `/ibfoundation` | `[id]` | Contexto 1h, estructura 15m, confirmación 5m, Fibonacci (swings, niveles, zonas), order blocks, imbalances, oferta/demanda y confluencia por zona. |
+| `/ibevals` | `[strategy_id] [horas]` | Evaluaciones procesadas, señales y rechazos agrupados por motivo y naturaleza (por defecto 24 h). |
+| `/ibdata` | `[symbol]` | Última vela por timeframe, retraso respecto a la esperada, huecos y origen (WS/REST). |
+| `/ibhealth` | — | Salud de WEEX WebSocket, REST, backfill, persistencia y motor. |
+| `/iberrors` | `[horas]` | Errores agrupados por componente, frecuencia, hora y severidad (memoria + persistidos). |
+| `/ibops` | `[strategy_id\|evaluation_key] [n]` | Posiciones PAPER abiertas y cerradas (motivo de salida, PnL) y eventos PAPER enlazados a la evaluación. |
+| `/ibstats` | `[strategy_id]` | Operaciones, win rate, profit factor, drawdown, PnL y largos/cortos PAPER. |
+| `/ibhelp` | — | Ayuda con parámetros y ejemplos. |
+| `/weexstatus` | — | Conexión WS por timeframe, reconexiones, pings/pongs, degradación. |
+| `/weexdata` | — | Última vela cerrada y en formación por timeframe, fuente y secuencia. |
+| `/weexgaps` | — | Huecos pendientes e irrecuperables y huecos detectados en 24 h. |
+| `/weexbackfill` | `[n]` | Últimas recuperaciones: disparador, rango, velas esperadas/recibidas/descartadas, cursor y error. |
+| `/weexerrors` | `[horas]` | Errores del proveedor con código HTTP/negocio y mensaje saneado. |
+
+Ejemplos: `/ibaudit`, `/ibwhy`, `/ibtrace 3f9a2c 2`, `/ibevals 48`,
+`/iberrors 6`, `/weexbackfill 5`.
 
 ## Persistencia
 
@@ -158,6 +191,13 @@ usa el recibo duradero para no repetir notificación ni PAPER.
 | `IB_OUTBOX_RETENTION_DAYS` | `7` | Retención de Outbox confirmado o muerto. |
 | `IB_EVALUATION_RETENTION_DAYS` | `90` | Retención de evaluaciones sin trabajo pendiente. |
 | `IB_OUTBOX_WORKER_SECONDS` | `1` | Intervalo de sondeo del worker Outbox. |
+| `IB_MAX_BAR_LAG_MINUTES` | `15` | Antigüedad máxima (desde el cierre) para evaluar una vela; una vela más vieja (recuperada tras una caída) se registra como `vela_atrasada` y no genera señal. `0` desactiva. |
+| `OPS_EVENTS_RETENTION_DAYS` | `30` | Retención de `ops_events` (eventos WEEX y errores del motor). |
+| `OPS_EVENTS_MAX_ROWS` | `50000` | Tope de filas de `ops_events`. |
+
+La migración añade también `ops_events` (aditiva, `CREATE IF NOT EXISTS`):
+huecos, recuperaciones, desconexiones WEEX y errores del motor con clave
+estable, de modo que un reintento no duplica filas.
 
 ## Configuración en GitHub
 

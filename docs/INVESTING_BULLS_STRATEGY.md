@@ -425,6 +425,19 @@ Verificadas contra la API real (`api-contract.weex.com`, 2026-10-26):
    descarga con `cmd/mlhistory` (hasta 200000 velas) y el workflow `ML History (WEEX)`.
 5. **Consecuencia:** con `RequireConfirm` (5m) se puede obtener la ventana común necesaria;
    ya no depende de acumular por streaming WS.
+6. **Contrato temporal de `/historyKlines` (verificado 2026-11-15, docs oficiales + API
+   real):** `startTime`/`endTime` en ms e inclusivos (filtran por apertura de vela);
+   **ninguno puede ser futuro** (`endTime` = ahora + 2 s ya responde
+   `-1142 Parameter 'endTime' is invalid.`); `startTime > endTime` → `-1171`; el tamaño
+   de página es **`limit` (1..100)** — `size` no existe y WEEX lo ignoraba; la respuesta
+   es descendente y nunca incluye la vela en formación.
+7. **Recuperación de huecos del stream (corregida):** el cursor es la última vela
+   **cerrada** entregada; en cada cambio de vela, reconexión o hueco WS se piden por REST
+   solo velas ya cerradas (`endTime ≤ ahora − 5 s`), con huecos pendientes/irrecuperables
+   explícitos. El canal público envía pings `{"event":"ping"}` que ahora se responden
+   (antes se ignoraban y WEEX cerraba con `session is inactive`).
+8. **Alineación MTF:** la tendencia 1h solo usa velas 1h **cerradas** en el instante de
+   decisión (cierre de la vela 15m), tanto en LIVE como en el learner/backtest.
 
 ## 7. Mantenimiento
 
