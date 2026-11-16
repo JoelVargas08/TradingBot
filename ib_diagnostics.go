@@ -1,15 +1,15 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"html"
 	"strconv"
 	"strings"
 	"time"
 
+	"tradingview-bot/config"
+	"tradingview-bot/internal/ingest"
+	"tradingview-bot/internal/session"
 	"tradingview-bot/internal/store"
-	"tradingview-bot/services"
+	"tradingview-bot/internal/strategymanager"
 )
 
 func firstField(s string) string {
@@ -48,116 +48,52 @@ func ibCommandArgs(args, fallback string, defaultLimit, maxLimit int) (string, i
 	return subject, limit
 }
 
-func ibTime(t time.Time) string {
-	if t.IsZero() || t.UnixMilli() == 0 {
-		return "sin datos"
-	}
-	return t.UTC().Format("2006-01-02 15:04 UTC")
-}
-
 func ibShort(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
 		return s
 	}
-	return s[:n] + "..."
+	cut := n
+	for cut > 0 && cut < len(s) && (s[cut]&0xC0) == 0x80 {
+		cut--
+	}
+	return s[:cut] + "..."
 }
 
-func runIBStatus(ctx context.Context, st *store.Store, tg *services.TelegramService, chatID int64, strategy string) {
-	sum, err := st.IBSummary(ctx, strategy)
-	if err != nil {
-		tg.SendMessage(chatID, "Error consultando persistencia IB: "+html.EscapeString(err.Error()))
-		return
+// newAuditSources reúne las fuentes de solo lectura de los comandos de
+// auditoría. Cualquier fuente ausente (sin WEEX, sin motor) se informa en el
+// propio informe como "no disponible", nunca como fallo de la estrategia.
+func newAuditSources(cfg *config.Config, st *store.Store, engine *strategymanager.LiveEngine, weex *ingest.WeexProvider,
+	market *ingest.MarketDataService, sess *session.Manager, rt strategyRuntime, symbol string) *auditSources {
+	a := &auditSources{store: st, symbol: symbol, now: time.Now, loc: havanaLocation()}
+	defaults := []string{"1h", "15m", "5m"}
+	for i, tf := range []string{cfg.IBMainTimeframe, cfg.IBEntryTimeframe, cfg.IBConfirmTimeframe} {
+		if strings.TrimSpace(tf) == "" {
+			tf = defaults[i]
+		}
+		a.timeframes = append(a.timeframes, strings.TrimSpace(tf))
 	}
-	scope := "todas las estrategias"
-	if strategy != "" {
-		scope = strategy
+	if engine != nil {
+		a.engine, a.engineErrs = engine.Status, engine.RecentErrors
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "<b>Persistencia IB</b>\nEstrategia: %s\n\n", html.EscapeString(scope))
-	fmt.Fprintf(&b, "Evaluaciones: %d | aceptadas %d | rechazadas %d | errores %d\n",
-		sum.Evaluations, sum.Accepted, sum.Rejected, sum.Errors)
-	fmt.Fprintf(&b, "Última evaluación: %s\nÚltima barra aceptada: %s\n\n",
-		ibTime(sum.LastEvaluation), ibTime(sum.LastAcceptedBarTS))
-	fmt.Fprintf(&b, "Outbox: pending %d | dispatched %d | acked %d | dead %d\n",
-		sum.OutboxPending, sum.OutboxDispatched, sum.OutboxAcked, sum.OutboxDead)
-	fmt.Fprintf(&b, "Recibos PAPER: pending %d | processing %d | done %d | skipped %d",
-		sum.ReceiptsPending, sum.ReceiptsProcess, sum.ReceiptsDone, sum.ReceiptsSkipped)
-	tg.SendMessage(chatID, b.String())
-}
-
-func runIBEvaluations(ctx context.Context, st *store.Store, tg *services.TelegramService, chatID int64, strategy string, limit int) {
-	rows, err := st.RecentIBEvaluations(ctx, strategy, limit)
-	if err != nil {
-		tg.SendMessage(chatID, "Error consultando evaluaciones IB: "+html.EscapeString(err.Error()))
-		return
+	if weex != nil {
+		a.feeds, a.feedErrors = weex.Health, weex.RecentErrors
 	}
-	if len(rows) == 0 {
-		tg.SendMessage(chatID, "No hay evaluaciones IB registradas para ese filtro.")
-		return
+	if market != nil {
+		a.market = market.Status
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "<b>Evaluaciones IB (%d)</b>\n", len(rows))
-	for _, r := range rows {
-		fmt.Fprintf(&b, "\n[%s] %s %s %s\n",
-			html.EscapeString(r.Status), html.EscapeString(r.Symbol), html.EscapeString(r.Timeframe), ibTime(r.BarTS))
-		fmt.Fprintf(&b, "  Estrategia: %s | modelo: %s\n",
-			html.EscapeString(r.StrategyID), html.EscapeString(ibShort(r.ModelVersion, 24)))
-		if r.Reason != "" {
-			fmt.Fprintf(&b, "  Motivo: %s\n", html.EscapeString(ibShort(r.Reason, 160)))
+	if sess != nil {
+		a.session = func() string {
+			return sess.StatusText() + " · horario " + sess.ScheduleText() + " (" + sess.TimezoneName() + ")"
 		}
 	}
-	tg.SendMessage(chatID, strings.TrimRight(b.String(), "\n"))
-}
-
-func runIBOperations(ctx context.Context, st *store.Store, tg *services.TelegramService, chatID int64, subject string, limit int) {
-	var (
-		rows []ibevalPaperEvent
-		err  error
-	)
-	if strings.Contains(subject, "|") {
-		events, qerr := st.RecentIBPaperEvents(ctx, subject, limit)
-		err = qerr
-		for _, ev := range events {
-			rows = append(rows, ibevalPaperEvent{ev.Kind, ev.EvaluationKey, ev.OrderClientID, ev.PositionID, ev.Price, ev.Quantity, ev.CreatedAt})
-		}
-	} else {
-		events, qerr := st.RecentIBPaperEventsForStrategy(ctx, subject, limit)
-		err = qerr
-		for _, ev := range events {
-			rows = append(rows, ibevalPaperEvent{ev.Kind, ev.EvaluationKey, ev.OrderClientID, ev.PositionID, ev.Price, ev.Quantity, ev.CreatedAt})
-		}
+	switch {
+	case rt.IB != nil:
+		a.ibStrategy = rt.IB.Strategy.ID
+	case rt.IBErr != nil:
+		a.ibReason = rt.IBErr.Error()
+	default:
+		a.ibReason = "INVESTING_BULLS_STRATEGY_ID vacío"
 	}
-	if err != nil {
-		tg.SendMessage(chatID, "Error consultando operaciones IB: "+html.EscapeString(err.Error()))
-		return
-	}
-	if len(rows) == 0 {
-		tg.SendMessage(chatID, "No hay eventos PAPER IB registrados para ese filtro.")
-		return
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "<b>Operaciones PAPER IB (%d)</b>\n", len(rows))
-	for _, ev := range rows {
-		fmt.Fprintf(&b, "\n%s | %s\n", html.EscapeString(ev.kind), ibTime(ev.createdAt))
-		if ev.orderClientID != "" {
-			fmt.Fprintf(&b, "  Orden: %s\n", html.EscapeString(ev.orderClientID))
-		}
-		if ev.positionID > 0 {
-			fmt.Fprintf(&b, "  Posición: %d\n", ev.positionID)
-		}
-		fmt.Fprintf(&b, "  Precio: %.8g | Cantidad: %.8g\n", ev.price, ev.quantity)
-		fmt.Fprintf(&b, "  Evaluación: %s\n", html.EscapeString(ibShort(ev.evaluationKey, 72)))
-	}
-	tg.SendMessage(chatID, strings.TrimRight(b.String(), "\n"))
-}
-
-type ibevalPaperEvent struct {
-	kind          string
-	evaluationKey string
-	orderClientID string
-	positionID    int64
-	price         float64
-	quantity      float64
-	createdAt     time.Time
+	return a
 }

@@ -334,6 +334,25 @@ func main() {
 	if cfg.IBPersistenceEnabled {
 		liveEngine.SetIBRecorder(sqliteStore)
 	}
+	// Auditoría del motor: errores persistidos en ops_events y protección
+	// frente a velas recuperadas demasiado tarde (no se opera con precios viejos).
+	liveEngine.SetEngineEventRecorder(sqliteStore).SetMaxBarLag(cfg.IBMaxBarLag)
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if n, err := sqliteStore.PruneOps(ctx, time.Now().UTC(), cfg.OpsEventsRetention, cfg.OpsEventsMaxRows); err != nil {
+					log.Printf("retención ops_events: %v", err)
+				} else if n > 0 {
+					log.Printf("retención ops_events: %d registros podados", n)
+				}
+			}
+		}
+	}()
 	if err := liveEngine.SetSelection(strategies.Shared, sharedSymbol, sharedTimeframe); err != nil {
 		log.Fatalf("estrategia del motor compartido inválida: %v", err)
 	}
@@ -522,15 +541,19 @@ func main() {
 	var marketDataService *ingest.MarketDataService
 	var marketCommands *handlers.MarketCommands
 	var feedMonitor *health.Monitor
+	var weexProvider *ingest.WeexProvider
 	if cfg.MarketDataProvider == "weex" {
 		if cfg.IngestEnabled {
 			log.Println("ADVERTENCIA: MARKET_DATA_PROVIDER=weex e INGEST_ENABLED=true; dos fuentes podrían escribir la misma serie")
 		}
-		weexProvider := ingest.NewWEEXProvider(sqliteStore, ingest.WeexConfig{
+		weexProvider = ingest.NewWEEXProvider(sqliteStore, ingest.WeexConfig{
 			RestURL:   cfg.WeexRestURL,
 			WSURL:     cfg.WeexWSURL,
 			PriceType: cfg.WeexPriceType,
 		})
+		// Eventos de ingestión (huecos, recuperaciones, desconexiones) en
+		// ops_events para auditarlos desde Telegram tras un reinicio.
+		weexProvider.SetEventSink(sqliteStore)
 		// El motor compartido recibe el feed WEEX (incluido Investing Bulls ya
 		// integrado en él). El motor ML se suscribe al timeframe primario para
 		// no aplicar un modelo 1h a velas 5m/15m.
@@ -754,6 +777,7 @@ func main() {
 	if strategies.IB != nil {
 		dispatcher.ibDiagDefault = strategies.IB.Strategy.ID + " " + liveSymbol
 	}
+	dispatcher.audit = newAuditSources(cfg, sqliteStore, liveEngine, weexProvider, marketDataService, tradingSession, strategies, liveSymbol)
 	listener := tginternal.New(
 		tginternal.NewBotFetcher(bot),
 		dispatcher,

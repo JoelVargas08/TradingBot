@@ -121,6 +121,13 @@ type Config struct {
 	IBOutboxRetention      time.Duration
 	IBEvaluationRetention  time.Duration
 	IBOutboxWorkerInterval time.Duration
+	// IBMaxBarLag es la antigüedad máxima (desde el cierre) con la que una vela
+	// se evalúa en vivo; una vela más vieja se registra como dato atrasado.
+	IBMaxBarLag time.Duration
+	// OpsEventsRetention es la retención de ops_events (eventos WEEX y errores
+	// del motor) y OpsEventsMaxRows su tope de filas.
+	OpsEventsRetention time.Duration
+	OpsEventsMaxRows   int
 }
 
 func Load() (*Config, error) {
@@ -230,6 +237,9 @@ func Load() (*Config, error) {
 		IBOutboxRetention:      time.Duration(getEnvInt("IB_OUTBOX_RETENTION_DAYS", 7)) * 24 * time.Hour,
 		IBEvaluationRetention:  time.Duration(getEnvInt("IB_EVALUATION_RETENTION_DAYS", 90)) * 24 * time.Hour,
 		IBOutboxWorkerInterval: time.Duration(getEnvInt("IB_OUTBOX_WORKER_SECONDS", 1)) * time.Second,
+		IBMaxBarLag:            time.Duration(getEnvInt("IB_MAX_BAR_LAG_MINUTES", 15)) * time.Minute,
+		OpsEventsRetention:     time.Duration(getEnvInt("OPS_EVENTS_RETENTION_DAYS", 30)) * 24 * time.Hour,
+		OpsEventsMaxRows:       getEnvInt("OPS_EVENTS_MAX_ROWS", 50000),
 	}
 	if cfg.Mode == "" {
 		cfg.Mode = "paper"

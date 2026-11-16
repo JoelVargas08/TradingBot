@@ -5,6 +5,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"tradingview-bot/config"
 	"tradingview-bot/handlers"
@@ -30,6 +31,90 @@ type telegramDispatcher struct {
 	// ibDiagDefault son los argumentos de /ibdiag sin parámetros: la
 	// estrategia Investing Bulls que opera en esta sesión y su símbolo.
 	ibDiagDefault string
+	// audit son las fuentes de solo lectura de los comandos de auditoría
+	// (/ib*, /weex*). nil si el proceso no las tiene (p. ej. en pruebas).
+	audit *auditSources
+}
+
+// auditCommands son los comandos de auditoría: solo lectura, nunca inician ni
+// detienen la sesión, y quedan reservados al chat administrador.
+var auditCommands = map[string]bool{
+	"ibstatus": true, "ibaudit": true, "ibwhy": true, "ibtrace": true, "ibfoundation": true,
+	"ibevals": true, "ibdata": true, "ibhealth": true, "iberrors": true, "ibops": true,
+	"ibstats": true, "ibhelp": true,
+	"weexstatus": true, "weexdata": true, "weexgaps": true, "weexbackfill": true, "weexerrors": true,
+}
+
+// auditReport devuelve el generador de un comando de auditoría.
+func (d *telegramDispatcher) auditReport(command string) (func(context.Context, string) []string, bool) {
+	a := d.audit
+	switch command {
+	case "ibhelp":
+		return func(context.Context, string) []string { return splitTelegram(ibHelpText(), 0) }, true
+	case "ibstatus":
+		return a.reportIBStatus, true
+	case "ibaudit":
+		return a.reportIBAudit, true
+	case "ibwhy":
+		return a.reportIBWhy, true
+	case "ibtrace":
+		return a.reportIBTrace, true
+	case "ibfoundation":
+		return a.reportIBFoundation, true
+	case "ibevals":
+		return a.reportIBEvals, true
+	case "ibdata":
+		return a.reportIBData, true
+	case "ibhealth":
+		return a.reportIBHealth, true
+	case "iberrors":
+		return a.reportIBErrors, true
+	case "ibops":
+		return a.reportIBOps, true
+	case "ibstats":
+		return a.reportIBStats, true
+	case "weexstatus":
+		return a.reportWeexStatus, true
+	case "weexdata":
+		return a.reportWeexData, true
+	case "weexgaps":
+		return a.reportWeexGaps, true
+	case "weexbackfill":
+		return a.reportWeexBackfill, true
+	case "weexerrors":
+		return a.reportWeexErrors, true
+	}
+	return nil, false
+}
+
+// runAudit genera y envía un informe en segundo plano: nunca bloquea el loop
+// de polling, acota el tiempo de consulta y un pánico en un informe no tumba
+// el bot (se responde con un error claro).
+func (d *telegramDispatcher) runAudit(ctx context.Context, chatID int64, command, args string) {
+	build, ok := d.auditReport(command)
+	if !ok {
+		return
+	}
+	if d.audit == nil && command != "ibhelp" {
+		d.telegram.SendMessage(chatID, "⚪ Auditoría no disponible en este proceso (motor o controlador no iniciado).")
+		return
+	}
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("Telegram: pánico generando /%s: %v", command, r)
+				d.telegram.SendMessage(chatID, "🔴 Error interno generando el informe /"+command+". El bot sigue operativo.")
+			}
+		}()
+		rctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		defer cancel()
+		for _, chunk := range build(rctx, args) {
+			if err := d.telegram.SendMessage(chatID, chunk); err != nil {
+				log.Printf("Telegram: no se pudo enviar /%s: %v", command, err)
+				return
+			}
+		}
+	}()
 }
 
 // adminOnlyCommands controlan la sesión o el workflow, cambian la estrategia o
@@ -40,6 +125,12 @@ var adminOnlyCommands = map[string]bool{
 	"strategy": true, "symbol": true, "timeframe": true, "activate": true, "backtest": true,
 	"learn": true, "learnib": true, "validateib": true, "learnibmtf": true, "validateibmtf": true,
 	"ibdiag": true, "ibstatus": true, "ibevals": true, "ibops": true,
+}
+
+func init() {
+	for c := range auditCommands {
+		adminOnlyCommands[c] = true
+	}
 }
 
 // restricted indica si el mensaje solo puede venir del chat administrador.
@@ -119,15 +210,10 @@ func (d *telegramDispatcher) Handle(ctx context.Context, m tginternal.Message) e
 			args = d.ibDiagDefault
 		}
 		go runInvestingBullsDiag(ctx, d.store, d.telegram, chatID, args)
-	case "ibstatus":
-		strategy, _ := ibCommandArgs(args, firstField(d.ibDiagDefault), 0, 0)
-		go runIBStatus(ctx, d.store, d.telegram, chatID, strategy)
-	case "ibevals":
-		strategy, limit := ibCommandArgs(args, firstField(d.ibDiagDefault), 5, 20)
-		go runIBEvaluations(ctx, d.store, d.telegram, chatID, strategy, limit)
-	case "ibops":
-		subject, limit := ibCommandArgs(args, firstField(d.ibDiagDefault), 10, 20)
-		go runIBOperations(ctx, d.store, d.telegram, chatID, subject, limit)
+	case "ibstatus", "ibaudit", "ibwhy", "ibtrace", "ibfoundation", "ibevals", "ibdata", "ibhealth",
+		"iberrors", "ibops", "ibstats", "ibhelp",
+		"weexstatus", "weexdata", "weexgaps", "weexbackfill", "weexerrors":
+		d.runAudit(ctx, chatID, m.Command, args)
 	case "strategies":
 		if d.strategyCommands != nil {
 			d.strategyCommands.HandleStrategies(chatID)

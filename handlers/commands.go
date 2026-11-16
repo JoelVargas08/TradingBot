@@ -274,9 +274,19 @@ func (ch *CommandsHandler) HandleHelp(chatID int64) {
 		"/validateibmtf <strategy_id> <symbol> [limit] - Validar OOS fijo y activar\n" +
 		"/validateib <strategy_id> <symbol> <tf> [limit] - Validar OOS y activar si pasa\n" +
 		"/ibdiag <strategy_id> <symbol> [bars] - Diagnóstico del pipeline (no opera)\n" +
-		"/ibstatus [strategy_id] - Resumen de evaluaciones, Outbox y recibos PAPER\n" +
-		"/ibevals [strategy_id] [limit] - Últimas evaluaciones IB persistidas\n" +
-		"/ibops [strategy_id|evaluation_key] [limit] - Eventos PAPER IB recientes\n" +
+		"/ibhelp - Ayuda de los comandos de auditoría (parámetros y ejemplos)\n" +
+		"/ibstatus [strategy_id] - Estrategia, símbolo, marcos, sesión, proveedor y salud del motor\n" +
+		"/ibaudit [id] - Auditoría por fundamento de la última evaluación\n" +
+		"/ibwhy [id] - Por qué no hubo señal (estrategia, datos o infraestructura)\n" +
+		"/ibtrace [id] [página] - Traza cronológica de una evaluación\n" +
+		"/ibfoundation [id] - Fibonacci, OB, imbalance, oferta/demanda y estructura\n" +
+		"/ibevals [strategy_id] [horas] - Evaluaciones, señales y rechazos por motivo\n" +
+		"/ibdata [symbol] - Última vela por timeframe, retraso, huecos y origen\n" +
+		"/ibhealth - Salud de WEEX, backfill, persistencia y motor\n" +
+		"/iberrors [horas] - Errores recientes agrupados\n" +
+		"/ibops [strategy_id|evaluation_key] [limit] - Operaciones PAPER y motivos\n" +
+		"/ibstats [strategy_id] - Win rate, profit factor, drawdown y PnL PAPER\n" +
+		"/weexstatus · /weexdata · /weexgaps · /weexbackfill · /weexerrors - Auditoría WEEX\n" +
 		"/strategies - Listar estrategias aprendidas\n" +
 		"/strategy <id> - Detalle de una estrategia\n" +
 		"/backtest <id> - Re-validar una estrategia (OOS)\n" +
