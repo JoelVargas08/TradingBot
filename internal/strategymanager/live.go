@@ -9,6 +9,7 @@ import (
 
 	"tradingview-bot/internal/backtest"
 	"tradingview-bot/internal/domain"
+	"tradingview-bot/internal/ibeval"
 	"tradingview-bot/internal/investingbulls"
 	"tradingview-bot/internal/strategies"
 )
@@ -30,6 +31,7 @@ type LiveEngine struct {
 	candles    CandleSource
 	strategies domain.StrategyStore
 	publisher  SignalPublisher
+	recorder   ibeval.Recorder
 
 	mu         sync.RWMutex
 	strategyID string
@@ -37,6 +39,13 @@ type LiveEngine struct {
 	timeframe  string
 	source     string
 	lastBar    map[string]int64
+
+	// Auditoría del motor: estado observable, errores recientes y protección
+	// frente a velas recuperadas demasiado tarde para operar.
+	maxBarLag time.Duration
+	events    ibeval.EngineEventRecorder
+	now       func() time.Time
+	audit     liveAudit
 }
 
 func NewLiveEngine(candles CandleSource, strategyStore domain.StrategyStore, publisher SignalPublisher) *LiveEngine {
@@ -50,6 +59,14 @@ func NewLiveEngine(candles CandleSource, strategyStore domain.StrategyStore, pub
 		source:     "tradingview",
 		lastBar:    make(map[string]int64),
 	}
+}
+
+// SetIBRecorder activa el registro persistente de evaluaciones y el Outbox
+// recuperable para Investing Bulls. Sin recorder se conserva la publicación
+// directa (útil en pruebas y en despliegues sin persistencia V2).
+func (e *LiveEngine) SetIBRecorder(r ibeval.Recorder) *LiveEngine {
+	e.recorder = r
+	return e
 }
 
 // SetSource identifica el origen de los datos (tradingview | weex) en el Meta
@@ -108,6 +125,7 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 	}
 	e.lastBar[key] = ts
 	e.mu.Unlock()
+	e.noteCandle(k)
 
 	ks, err := e.candles.RecentCandles(ctx, k.Symbol, k.Timeframe, 300)
 	if err != nil {
@@ -135,13 +153,135 @@ func (e *LiveEngine) OnCandle(ctx context.Context, k domain.Kline) error {
 		}
 		st, err := e.strategies.GetStrategy(ctx, sid)
 		if err != nil {
+			e.noteError(ctx, ibeval.EngineEventStoreError, sid, k, "", err)
 			return fmt.Errorf("leyendo estrategia %s: %w", sid, err)
 		}
 		if st.Status != domain.StrategyActive {
 			return nil
 		}
 		if strings.HasPrefix(st.Source, "investing_bulls_learn_mtf") {
-			ev, ok, err := investingbulls.EvaluateLive(ctx, e.candles, st, k)
+			fingerprint := ibeval.Fingerprint(st.Spec)
+			modelVersion := ibeval.ModelVersion(st.Spec)
+			evaluationKey := ibeval.EvaluationKey(sid, k.Symbol, k.Timeframe, k.Start, fingerprint)
+			publicationKey := ibeval.PublicationKey(sid, k.Symbol, k.Timeframe, k.Start)
+			now := time.Now().UTC()
+			// La reserva SQLite es la autoridad: si la barra ya fue evaluada,
+			// está en curso o quedó interrumpida, no se reevalúa ni publica.
+			reserver, canReserve := e.recorder.(ibeval.ReservationStore)
+			if e.recorder != nil && canReserve {
+				started, berr := reserver.BeginEvaluation(ctx, ibeval.EvaluationRecord{
+					EvaluationKey:    evaluationKey,
+					PublicationKey:   publicationKey,
+					StrategyID:       sid,
+					Symbol:           k.Symbol,
+					Timeframe:        k.Timeframe,
+					BarTS:            k.Start,
+					ModelFingerprint: fingerprint,
+					ModelVersion:     modelVersion,
+					Status:           ibeval.EvalRunning,
+					CreatedAt:        now,
+				})
+				if berr != nil {
+					// Un fallo de reserva no deja estado: permitir que una
+					// reentrega de la misma vela lo reintente.
+					e.mu.Lock()
+					e.lastBar[key] = 0
+					e.mu.Unlock()
+					e.noteError(ctx, ibeval.EngineEventReserveError, sid, k, evaluationKey, berr)
+					return fmt.Errorf("reservando evaluación IB %s: %w", sid, berr)
+				}
+				if !started {
+					return nil
+				}
+			}
+
+			// Una vela que cierra mucho antes de llegar (recuperada tras una
+			// caída) no se evalúa: se registra como dato atrasado, no como
+			// rechazo de la estrategia, y nunca produce una señal PAPER.
+			if stale, decision, _ := e.barIsStale(k); stale {
+				return e.recordStaleBar(ctx, ibeval.EvaluationRecord{
+					EvaluationKey: evaluationKey, PublicationKey: publicationKey, StrategyID: sid,
+					Symbol: k.Symbol, Timeframe: k.Timeframe, BarTS: k.Start, ModelFingerprint: fingerprint,
+					ModelVersion: modelVersion, CreatedAt: now,
+				}, k, decision, canReserve, reserver)
+			}
+
+			ev, ok, trace, err := investingbulls.EvaluateLiveWithTrace(ctx, e.candles, st, k)
+			trace.EvaluationKey, trace.ModelVersion = evaluationKey, modelVersion
+			signalKey := ""
+			if ok {
+				signalKey = ev.IdempotencyKey()
+				trace.SignalKey = signalKey
+			}
+			status := ibeval.EvalAccepted
+			reason := trace.FinalReason
+			switch {
+			case err != nil:
+				status = ibeval.EvalError
+				reason = err.Error()
+			case !ok:
+				status = ibeval.EvalRejected
+				if reason == "" {
+					reason = "rechazada_sin_motivo"
+				}
+			}
+			e.noteEvaluation(status, reason, evaluationKey)
+			if err != nil {
+				e.noteError(ctx, ibeval.EngineEventEvalError, sid, k, evaluationKey, err)
+			}
+			var msg *ibeval.OutboxMessage
+			if ok {
+				if ev.Meta == nil {
+					ev.Meta = map[string]any{}
+				}
+				ev.Meta[ibeval.MetaModelHash] = fingerprint
+				ev.Meta[ibeval.MetaModelVersion] = modelVersion
+				msg, err = ibeval.NewOutboxMessage(ev, evaluationKey, publicationKey, now)
+				if err != nil {
+					e.noteError(ctx, ibeval.EngineEventPersistError, sid, k, evaluationKey, err)
+					return fmt.Errorf("preparando Outbox IB %s: %w", sid, err)
+				}
+			}
+			if e.recorder != nil {
+				rec := ibeval.EvaluationRecord{
+					EvaluationKey:    evaluationKey,
+					PublicationKey:   publicationKey,
+					StrategyID:       sid,
+					Symbol:           k.Symbol,
+					Timeframe:        k.Timeframe,
+					BarTS:            k.Start,
+					ModelFingerprint: fingerprint,
+					ModelVersion:     modelVersion,
+					Status:           status,
+					Reason:           reason,
+					SignalKey:        signalKey,
+					Trace:            trace,
+					CreatedAt:        now,
+				}
+				if canReserve {
+					if _, ferr := reserver.FinishEvaluation(ctx, rec, msg); ferr != nil {
+						// La reserva queda `running` y la recuperación la marcará
+						// `interrupted`: no se publica ni se reejecuta. El fallo
+						// queda registrado como error observable del motor.
+						e.noteError(ctx, ibeval.EngineEventPersistError, sid, k, evaluationKey, ferr)
+						return fmt.Errorf("cerrando evaluación IB %s: %w", sid, ferr)
+					}
+					return nil
+				}
+				created, _, rerr := e.recorder.RecordEvaluation(ctx, rec, msg)
+				if rerr != nil {
+					// Permitir que una reentrega de la misma vela reintente el
+					// registro; sin esto, un fallo transitorio de SQLite perdería
+					// la evaluación hasta la siguiente barra.
+					e.mu.Lock()
+					e.lastBar[key] = 0
+					e.mu.Unlock()
+					e.noteError(ctx, ibeval.EngineEventPersistError, sid, k, evaluationKey, rerr)
+					return fmt.Errorf("persistiendo evaluación IB %s: %w", sid, rerr)
+				}
+				_ = created
+				return nil
+			}
 			if err != nil {
 				return fmt.Errorf("evaluando Investing Bulls %s: %w", sid, err)
 			}

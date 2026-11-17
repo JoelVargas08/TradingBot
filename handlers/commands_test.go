@@ -208,7 +208,7 @@ func TestHandleHelpDocumentsAliases(t *testing.T) {
 	h := newTestHandler(sender, &fakeSession{}, nil)
 	h.HandleHelp(42)
 	help := sender.last()
-	for _, want := range []string{"/stop", "/session_stop", "/session_start", "/start"} {
+	for _, want := range []string{"/stop", "/session_stop", "/session_start", "/start", "/ibstatus", "/ibevals", "/ibops"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("la ayuda no documenta %q", want)
 		}

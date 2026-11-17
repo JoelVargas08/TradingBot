@@ -75,6 +75,11 @@ Nunca se suben `.env`, tokens, claves WEEX ni bases locales al repositorio.
 4. **Detener:** `/session_stop` (o `/stop`). Cierra el gate de entradas y
    cancela el run; las posiciones abiertas no se cierran automáticamente.
 5. **Diagnóstico:** `/ibdiag` (sin argumentos usa la estrategia de la sesión).
+   **Auditoría (solo lectura):** `/ibhelp` lista los comandos; `/ibaudit` y
+   `/ibwhy` explican la última evaluación por fundamento (estrategia vs datos
+   vs infraestructura); `/ibhealth`, `/ibdata` y `/weex*` muestran la salud del
+   feed WEEX y de la recuperación de huecos. Ver
+   [docs/TELEGRAM_CONTROLLER.md](docs/TELEGRAM_CONTROLLER.md#comandos-de-auditoría-solo-lectura).
 6. **Resumen de cada sesión:** pestaña *Summary* del run de *Paper Session*
    (estado restaurado/guardado, velas, estrategias, operaciones cerradas).
 
@@ -94,6 +99,10 @@ Go 1.26.2. En Windows, los tests del controlador necesitan el paquete
 
 - [docs/TELEGRAM_CONTROLLER.md](docs/TELEGRAM_CONTROLLER.md) — controlador, comandos, persistencia.
 - [docs/INVESTING_BULLS_STRATEGY.md](docs/INVESTING_BULLS_STRATEGY.md) — especificación canónica R01–R26.
+- [docs/INVESTING_BULLS.md](docs/INVESTING_BULLS.md) — operación, diagnóstico y persistencia IB V2.
+- [DISENO_PERSISTENCIA_TRAZAS_EVENTOS_IB_MTF_V2.md](DISENO_PERSISTENCIA_TRAZAS_EVENTOS_IB_MTF_V2.md) — diseño de evaluaciones, Outbox y recibos.
+- [ESTADO_INTEGRACION_IB_MTF.md](ESTADO_INTEGRACION_IB_MTF.md) — estado de la integración y pendientes.
+- [AUDITORIA_FINAL_IB_MTF.md](AUDITORIA_FINAL_IB_MTF.md) — auditoría, evidencia y riesgos.
 - [PLAN_EJECUCION_RED_NEURONAL.md](PLAN_EJECUCION_RED_NEURONAL.md) — red neuronal.
 - [PROGRESO.md](PROGRESO.md) — progreso por fases.
 - [DEPLOYMENT.md](DEPLOYMENT.md) — despliegue fuera de GitHub Actions.

@@ -168,10 +168,11 @@ func TestWeexChannelName(t *testing.T) {
 
 func TestWeexBackfillUsesHistoryEndpoint(t *testing.T) {
 	const nowMs = int64(1704067200000)
-	var path, size string
+	var path, limit, size string
 	var start, end int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path = r.URL.Path
+		limit = r.URL.Query().Get("limit")
 		size = r.URL.Query().Get("size")
 		start = queryInt(r, "startTime")
 		end = queryInt(r, "endTime")
@@ -188,11 +189,14 @@ func TestWeexBackfillUsesHistoryEndpoint(t *testing.T) {
 	if path != "/capi/v3/market/historyKlines" {
 		t.Errorf("path = %q, want /capi/v3/market/historyKlines", path)
 	}
-	if size != "100" {
-		t.Errorf("size = %s, want 100", size)
+	// Contrato verificado (docs oficiales + sondeo real): el tamaño de página es
+	// `limit` (1..100); `size` no existe y WEEX lo ignoraba en silencio.
+	if limit != "100" || size != "" {
+		t.Errorf("limit = %q size = %q, want limit=100 y sin size", limit, size)
 	}
-	if end != nowMs {
-		t.Errorf("endTime = %d, want %d", end, nowMs)
+	// endTime nunca puede ser futuro: se recorta a now - ClockSkew.
+	if want := nowMs - HistoryClockSkew.Milliseconds(); end != want {
+		t.Errorf("endTime = %d, want %d (now - skew)", end, want)
 	}
 	if start != nowMs-300*3600000 {
 		t.Errorf("startTime = %d, want %d", start, nowMs-300*3600000)
@@ -379,7 +383,10 @@ func writeWexCandle(t *testing.T, conn *websocket.Conn, symbol string, openT, cl
 }
 
 func TestWexWS_subscribePingPongAndCandles(t *testing.T) {
-	const nowMs = int64(1704067300000)
+	// Velas alineadas a la hora como las de WEEX; now = 00:01:40 de la vela
+	// en formación que abrió a las 00:00.
+	const openMs = int64(1704067200000)
+	const nowMs = openMs + 100000
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn := upgrade(t, w, r)
 		if conn == nil {
@@ -406,8 +413,8 @@ func TestWexWS_subscribePingPongAndCandles(t *testing.T) {
 		}
 
 		// vela cerrada y luego vela en formación
-		writeWexCandle(t, conn, "BTCUSDT", nowMs-2*3600000, nowMs-3600000, 50000)
-		writeWexCandle(t, conn, "BTCUSDT", nowMs-7200000, nowMs+3600000, 50100)
+		writeWexCandle(t, conn, "BTCUSDT", openMs-3600000, openMs-1, 50000)
+		writeWexCandle(t, conn, "BTCUSDT", openMs, openMs+3600000-1, 50100)
 	}))
 	defer srv.Close()
 
@@ -443,7 +450,8 @@ func readWexKline(t *testing.T, ch <-chan domain.Kline) domain.Kline {
 }
 
 func TestWexWS_reconnect(t *testing.T) {
-	const nowMs = int64(1704067300000)
+	const openMs = int64(1704067200000)
+	const nowMs = openMs + 100000
 	var dials atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := dials.Add(1)
@@ -459,7 +467,7 @@ func TestWexWS_reconnect(t *testing.T) {
 		if n == 1 {
 			return // primera conexión: cerrar inmediatamente
 		}
-		writeWexCandle(t, conn, "BTCUSDT", nowMs-3600000, nowMs-1, 50000)
+		writeWexCandle(t, conn, "BTCUSDT", openMs-3600000, openMs-1, 50000)
 	}))
 	defer srv.Close()
 

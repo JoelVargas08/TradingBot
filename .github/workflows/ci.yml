@@ -55,3 +55,24 @@ jobs:
         run: python -m pip install -r ml/requirements-train.txt -r ml/requirements-inference.txt
       - name: Run ML unit tests
         run: python -m unittest discover -s tests/ml -p "test_*.py" -v
+  race:
+    name: Go race detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.26.2"
+          cache: true
+      - name: Verify C compiler
+        run: |
+          gcc --version
+          go env CGO_ENABLED
+      - name: Race tests
+        run: go test -race -count=1 ./...
+        
