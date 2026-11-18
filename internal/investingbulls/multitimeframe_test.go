@@ -211,7 +211,9 @@ func TestSimulateMTFRespectsMainTrendDirection(t *testing.T) {
 		if tr.EntryBar >= len(entry) {
 			t.Fatalf("entry outside the dataset: %+v", tr)
 		}
-		prefix := closedCandlesBefore(main, entry[tr.EntryBar-1].Start)
+		// La dirección se decide en la vela de señal; la orden límite de la zona
+		// solo se ejecuta en una vela posterior.
+		prefix := mainClosedAt(main, entry[tr.SignalBar].Start.Add(stepOf(mtf.EntryTimeframe)), stepOf(mtf.MainTimeframe))
 		if len(prefix) < 30 {
 			continue
 		}
@@ -222,9 +224,11 @@ func TestSimulateMTFRespectsMainTrendDirection(t *testing.T) {
 		case ms.Trend == TrendBearish && tr.Direction != domain.DirectionSell:
 			t.Fatalf("a short against a bearish 1h trend: %+v", tr)
 		}
-		// La entrada MTF se produce al cierre de la vela de decisión, igual que LIVE.
-		if tr.EntryBar < minLearningBars || tr.EntryBar >= len(entry)-1 {
-			t.Fatalf("unexpected entry bar %d", tr.EntryBar)
+		if tr.SignalBar < minLearningBars || tr.SignalBar >= len(entry)-1 {
+			t.Fatalf("unexpected signal bar %d", tr.SignalBar)
+		}
+		if tr.EntryBar <= tr.SignalBar || tr.EntryBar >= len(entry) {
+			t.Fatalf("limit entry must fill on a later candle: %+v", tr)
 		}
 		if tr.Components == "" {
 			t.Fatalf("MTF trade without confluence evidence: %+v", tr)
