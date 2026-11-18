@@ -278,14 +278,18 @@ func allMTFSetups() []SetupType {
 
 type mtfDecisionPoint struct {
 	index     int
-	entryBar  int
 	direction domain.Direction
 	setupType SetupType
 	// evidences mide la confluencia de AMBAS zonas Fibonacci: la zona ganadora
 	// se decide por configuración con SelectSetupFromEvidence, igual que en el
 	// learner base y en LIVE.
 	evidences [2]ConfluenceEvidence
-	levels    planInputs
+	// fib, structure y blocks quedan resueltos en la vela de decisión para que
+	// el simulador construya el plan anclado al precio de la orden límite (la
+	// zona Fibonacci), igual que LIVE, en vez de al cierre de la vela.
+	fib       Fibonacci
+	structure Structure
+	blocks    []OrderBlock
 }
 
 // collectMTFDecisionPoints construye las oportunidades usando el mismo pipeline
@@ -371,18 +375,13 @@ func collectMTFDecisionPoints(
 			continue
 		}
 
-		// LIVE recibe la señal al cierre de la vela 15m. El learner MTF usa
-		// exactamente ese mismo precio de decisión; la siguiente vela solo
-		// resuelve el resultado de la operación.
-		entryPrice := entry[i].Close
-		if entryPrice <= 0 {
+		// El precio de decisión es el cierre de la vela 15m (igual que LIVE),
+		// pero la entrada es una orden límite en la zona Fibonacci que solo se
+		// ejecuta cuando una vela posterior la toca. El plan (stop/objetivo) se
+		// resuelve en el simulador anclado a ese precio de zona.
+		if entry[i].Close <= 0 {
 			continue
 		}
-
-		levels := resolvePlanInputs(Setup{
-			Index: i, Direction: candidate.Direction,
-			OrderBlockIndex: evidences[0].OrderBlockIndex,
-		}, fib, entryPrice, es, blocks)
 
 		if diag != nil {
 			diag.SetupsDetected++
@@ -398,9 +397,9 @@ func collectMTFDecisionPoints(
 		}
 
 		out = append(out, mtfDecisionPoint{
-			index: i, entryBar: i,
+			index: i,
 			direction: candidate.Direction, setupType: candidate.SetupType,
-			evidences: evidences, levels: levels,
+			evidences: evidences, fib: fib, structure: es, blocks: blocks,
 		})
 	}
 	return out
@@ -430,6 +429,13 @@ func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, 
 		start = minLearningBars
 	}
 
+	// Orden límite pendiente: se arma al cierre de la vela de decisión y solo se
+	// ejecuta cuando una vela POSTERIOR toca el precio de la zona Fibonacci
+	// (zoneHigh en compra, zoneLow en venta), igual que PAPER/LIVE. La vela de la
+	// señal nunca llena retroactivamente; una señal nueva reemplaza la orden
+	// pendiente y, si la zona nunca se toca, no hay operación.
+	var pending *pendingLimit
+
 	for i := start; i < len(ks)-1; i++ {
 		if inTrade {
 			if t, done := sim.onCandle(ks[i], i, cfg); done {
@@ -437,6 +443,30 @@ func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, 
 				inTrade = false
 			}
 			continue
+		}
+
+		if pending != nil {
+			touched := (pending.direction == domain.DirectionBuy && ks[i].Low <= pending.price) ||
+				(pending.direction == domain.DirectionSell && ks[i].High >= pending.price)
+			if touched {
+				sim = tradeSim{
+					open: LearnedTrade{
+						Direction:  pending.direction,
+						SignalBar:  pending.signalBar,
+						EntryBar:   i,
+						EntryPrice: pending.price,
+						FeePct:     cfg.FeePct,
+						Setup:      pending.setupType,
+						Components: pending.setup.Components,
+					},
+					stop:     pending.plan.StopLoss,
+					target:   pending.plan.TakeProfit,
+					fraction: partialFraction(cfg),
+				}
+				inTrade = true
+				pending = nil
+				continue
+			}
 		}
 
 		idx, ok := byBar[i]
@@ -448,25 +478,27 @@ func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, 
 		if !ok || setup.Direction != d.direction {
 			continue
 		}
-		plan, ok := buildPlan(d.levels, cfg.TradePlan)
+		zoneLow, zoneHigh, ok := fibZoneBounds(d.fib, setup.FibZone)
 		if !ok {
 			continue
 		}
-
-		sim = tradeSim{
-			open: LearnedTrade{
-				Direction:  d.direction,
-				EntryBar:   d.entryBar,
-				EntryPrice: d.levels.Entry * entryMultiplier(d.direction, cfg.SlippagePct),
-				FeePct:     cfg.FeePct,
-				Setup:      d.setupType,
-				Components: setup.Components,
-			},
-			stop:     plan.StopLoss,
-			target:   plan.TakeProfit,
-			fraction: partialFraction(cfg),
+		price := zoneHigh
+		if d.direction == domain.DirectionSell {
+			price = zoneLow
 		}
-		inTrade = true
+		if price <= 0 {
+			continue
+		}
+		plan, ok := buildPlan(resolvePlanInputs(Setup{
+			Index: d.index, Direction: d.direction, OrderBlockIndex: setup.OrderBlockIndex,
+		}, d.fib, price, d.structure, d.blocks), cfg.TradePlan)
+		if !ok {
+			continue
+		}
+		pending = &pendingLimit{
+			price: price, direction: d.direction, setup: setup,
+			setupType: d.setupType, plan: plan, signalBar: d.index,
+		}
 	}
 
 	if inTrade {
@@ -474,6 +506,28 @@ func simulateMTFDecisionPoints(ks []domain.Kline, decisions []mtfDecisionPoint, 
 		out = append(out, sim.finalize(len(ks)-1, last.Close, "end", cfg))
 	}
 	return out
+}
+
+// pendingLimit es una orden límite IB armada al cierre de la vela de señal y
+// pendiente de que el precio entre en la zona Fibonacci.
+type pendingLimit struct {
+	price     float64
+	direction domain.Direction
+	setup     Setup
+	setupType SetupType
+	plan      TradePlan
+	signalBar int
+}
+
+// fibZoneBounds devuelve los bordes de la zona Fibonacci 1 o 2.
+func fibZoneBounds(fib Fibonacci, zone int) (low, high float64, ok bool) {
+	switch zone {
+	case 1:
+		return fib.Zone1Low, fib.Zone1High, true
+	case 2:
+		return fib.Zone2Low, fib.Zone2High, true
+	}
+	return 0, 0, false
 }
 
 // simulateMultiTimeframe conserva la API usada por LIVE/tests y ahora comparte

@@ -305,7 +305,10 @@ type LearnResult struct {
 }
 
 type LearnedTrade struct {
-	Direction  domain.Direction
+	Direction domain.Direction
+	// SignalBar es la vela de decisión (cierre de la señal); EntryBar es la vela
+	// en la que la orden límite de la zona Fibonacci se ejecutó (>= SignalBar).
+	SignalBar  int
 	EntryBar   int
 	EntryPrice float64
 	ExitBar    int
