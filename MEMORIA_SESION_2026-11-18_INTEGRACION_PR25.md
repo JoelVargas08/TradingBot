@@ -43,10 +43,21 @@
 - `go vet ./...` OK.
 - `go test -count=1 ./...` OK (todos los paquetes).
 - `py -m unittest discover -s .github/scripts -p "test_*.py"`: 77 tests OK.
+- CI del PR #27 y de `main`: build/vet/test, race detector, controlador Telegram
+  y ML, todo en verde.
+- `internal/store/ib_events_test.go`: corregido un falso fallo del race detector
+  en `TestIBConcurrentClaimHasSingleOwner` (el `now` del test podía quedar por
+  debajo de `available_at`, que `RecordEvaluation` fija con su propio reloj y
+  cruza el límite del milisegundo bajo instrumentación).
 
-## Estado y pendientes
-- Rama de integración lista y publicada; PR abierto hacia `main` (no fusionado).
-- La sesión PAPER del 2026-11-18 arrancó con el código anterior de `main`; el
-  próximo arranque usará estos cambios cuando el PR se fusione a `main`
-  (`TRADINGBOT_DISPATCH_REF=main`).
+## Estado final
+- PR #27 fusionado a `main` (`b951cc0`); `main` ya contiene PR #25 (Pedro) y los
+  fixes. CI de `main` en verde.
+- Sesión PAPER `44309288767` (arrancada a las 13:00 UTC con el `main` anterior)
+  cancelada.
+- `main` efectivo: `LIVE_STRATEGY=investing-bulls-mtf`, `WEEX_BACKFILL_BARS=500`
+  y `feedStartStagger=300 ms`. El próximo arranque PAPER
+  (`TRADINGBOT_DISPATCH_REF=main`) usará Investing Bulls activo y backfill
+  acotado.
+- Rama `integration/main-pr25-final` eliminada (local y remota) tras el merge.
 - PRs abiertos antiguos (#3, #7, #22) no relacionados; revisar por separado.
