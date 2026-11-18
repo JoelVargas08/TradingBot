@@ -233,7 +233,11 @@ func TestIBReservationAcceptedIsAtomic(t *testing.T) {
 func TestIBConcurrentClaimHasSingleOwner(t *testing.T) {
 	s := newTestStore(t)
 	ctx := context.Background()
-	now := time.Now().UTC()
+	// `now` en el futuro cercano garantiza que `available_at` (fijado por
+	// RecordEvaluation con su propio time.Now) quede por debajo del instante de
+	// reclamo incluso bajo el detector de carreras, donde el sembrado puede
+	// cruzar el límite del milisegundo. Sin esto, el reclamo podía devolver 0.
+	now := time.Now().UTC().Add(time.Second)
 	bar := now.Add(-time.Minute)
 	evalKey := ibeval.EvaluationKey("ib_investing", "BTCUSDT", "15m", bar, "fp-conc")
 	pubKey := ibeval.PublicationKey("ib_investing", "BTCUSDT", "15m", bar)
