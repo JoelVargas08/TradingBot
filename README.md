@@ -57,8 +57,12 @@ Nunca se suben `.env`, tokens, claves WEEX ni bases locales al repositorio.
   WEEX entrega. Las demás se listan como descartadas con su motivo.
 - Un ID explícito debe existir, estar `active`, ser de la fuente
   `investing_bulls_learn_mtf`, del símbolo y timeframes configurados.
-- Si no se resuelve ninguna, Investing Bulls **no** arranca y **nada la
-  sustituye**: el motor compartido corre con `LIVE_STRATEGY=none`. Chandelier
+- `paper-session.yml` activa el motor con `LIVE_STRATEGY=investing-bulls-mtf`
+  (el alias): Investing Bulls queda evaluando en el motor compartido. Antes el
+  workflow fijaba `LIVE_STRATEGY=none`, que tiene prioridad y dejaba IB
+  deshabilitado.
+- Si el alias no resuelve ninguna estrategia, Investing Bulls **no** arranca y
+  **nada la sustituye**: el motor compartido queda sin estrategia. Chandelier
   solo opera con `LIVE_STRATEGY=chandelier` explícito.
 - El aviso de arranque en Telegram, el log y `/session` muestran la estrategia
   elegida (ID, fuente, símbolo, timeframes) o el motivo del rechazo.
