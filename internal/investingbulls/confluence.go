@@ -314,13 +314,9 @@ func CollectConfluenceEvidenceZones(
 func (e ConfluenceEvidence) Setup(cfg ConfluenceConfig) (Setup, bool) {
 	c := cfg.Normalize()
 
-	fibOK := e.FibZone > 0 && (e.FibInZone || (e.FibForced && e.DistanceToFibonacci <= c.MaxZoneDistancePct))
-	imbOK := e.ImbalanceIndex >= 0 && e.DistanceToImbalance <= c.MaxZoneDistancePct
-	obOK := e.OrderBlockIndex >= 0 && e.DistanceToOrderBlock <= c.MaxZoneDistancePct
-	if obOK && c.ExcludeTestedOrderBlock && e.OrderBlockTested {
-		obOK = false
-	}
-	sdOK := e.SupplyDemandIndex >= 0 && e.DistanceToSupplyDemand <= c.MaxZoneDistancePct
+	// La medición de cada componente es compartida con la auditoría
+	// (auditZone): la explicación no puede divergir de la decisión.
+	fibOK, imbOK, obOK, sdOK := e.componentFlags(c)
 
 	// Incluso en los modos por recuento, Fibonacci es el ancla de zona de la
 	// estrategia: se permite Fib+OB o Fib+Imbalance, pero nunca OB+Imbalance

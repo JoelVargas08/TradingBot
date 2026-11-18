@@ -189,13 +189,19 @@ func TestConcurrentEnqueues(t *testing.T) {
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(processed) == n {
+		mu.Lock()
+		done := len(processed)
+		mu.Unlock()
+		if done == n {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(processed) != n {
-		t.Errorf("procesados = %d, want %d", len(processed), n)
+	mu.Lock()
+	got := len(processed)
+	mu.Unlock()
+	if got != n {
+		t.Errorf("procesados = %d, want %d", got, n)
 	}
 	if q.Count(StatusDone) != n {
 		t.Errorf("done = %d, want %d", q.Count(StatusDone), n)

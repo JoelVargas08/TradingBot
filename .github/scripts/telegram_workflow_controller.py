@@ -129,7 +129,9 @@ HELP_TEXT = (
     "/session_start - Arrancar la sesión PAPER (alias: /start)\n"
     "/session_stop - Detener la sesión PAPER (alias: /stop)\n\n"
     "Los comandos de trading (/positions, /risk, /performance, ...) requieren "
-    "una sesión PAPER activa; se responden desde el runner."
+    "una sesión PAPER activa; se responden desde el runner.\n"
+    "Los comandos de auditoría (/ibhelp, /ibaudit, /ibwhy, /ibhealth, /weex*, ...) "
+    "son de solo lectura y también los responde el runner."
 )
 
 RETRY_DELAYS = (1.0, 3.0, 7.0)
