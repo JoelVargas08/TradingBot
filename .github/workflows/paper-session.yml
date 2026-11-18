@@ -51,7 +51,11 @@ jobs:
       TRADING_SYMBOL: BTCUSDT
       TRADING_TIMEFRAME: 1h
       WEEX_PRICE_TYPE: LAST_PRICE
-      WEEX_BACKFILL_BARS: 5000
+      # Backfill acotado: la evaluación IB en vivo solo necesita ~300 velas por
+      # timeframe. Pedir miles de golpe agotaba el rate limit de WEEX; con 500
+      # son ~5 páginas por timeframe y el resto lo cubre el stream y la
+      # recuperación de huecos.
+      WEEX_BACKFILL_BARS: 500
       INGEST_ENABLED: "false"
       WATCH_TRADES: "false"
 
@@ -93,9 +97,11 @@ jobs:
       # explícito (input o variable del repo) se valida y, si no es válido,
       # Investing Bulls no arranca: nunca se sustituye por otra estrategia.
       INVESTING_BULLS_STRATEGY_ID: ${{ inputs.strategy_id || vars.INVESTING_BULLS_STRATEGY_ID || 'investing-bulls-mtf' }}
-      # El motor compartido no opera ninguna estrategia: Chandelier solo
-      # actuaría si se selecciona de forma explícita (LIVE_STRATEGY=chandelier).
-      LIVE_STRATEGY: none
+      # El motor compartido opera Investing Bulls: LIVE_STRATEGY con el alias
+      # estable resuelve la estrategia MTF activa y la activa. Con "none" IB
+      # quedaba deshabilitado (el alias tiene prioridad y bloqueaba la
+      # evaluación). Chandelier solo actuaría si se pide de forma explícita.
+      LIVE_STRATEGY: investing-bulls-mtf
 
       RISK_ENABLED: "true"
       DB_FILE: data/bot.db

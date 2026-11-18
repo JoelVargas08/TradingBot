@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,8 +18,6 @@ import (
 	"unicode"
 
 	"tradingview-bot/internal/domain"
-
-	"github.com/gorilla/websocket"
 )
 
 // WeexConfig configura el acceso REST/WS al exchange WEEX (docus 1, 4-7).
@@ -39,6 +38,24 @@ type WeexConfig struct {
 	// SkipInvalidHistory descarta velas históricas corruptas (OHLCV inválido)
 	// en lugar de abortar toda la descarga. Solo se aplica al backfill.
 	SkipInvalidHistory bool
+	// ClockSkew se resta al reloj local antes de usarlo como endTime para no
+	// enviar nunca un límite futuro al servidor (-1142).
+	ClockSkew time.Duration
+	// GapRecoveryTimeout acota cuánto puede bloquear el stream una recuperación
+	// de hueco por REST; al agotarse, el intervalo queda pendiente y explícito.
+	GapRecoveryTimeout time.Duration
+	// MaxGapRetries es el número de intentos tras el cual un hueco que WEEX no
+	// devuelve se marca como irrecuperable (estado degradado explícito).
+	MaxGapRetries int
+	// GapRetryMax es la espera máxima entre reintentos de un hueco pendiente.
+	GapRetryMax time.Duration
+	// GapUnrecoverableAfter es el margen tras el cierre de la última vela de un
+	// hueco antes de poder declararlo irrecuperable: evita confundir el retraso
+	// normal de publicación REST con una ausencia real de datos.
+	GapUnrecoverableAfter time.Duration
+	// UserAgent identifica al cliente en el handshake del canal público (WEEX
+	// exige cabecera User-Agent). Es genérico: no incluye datos del usuario.
+	UserAgent string
 }
 
 const (
@@ -84,6 +101,24 @@ func (c WeexConfig) withDefaults() WeexConfig {
 	if c.HistoryPageDelay <= 0 {
 		c.HistoryPageDelay = 50 * time.Millisecond
 	}
+	if c.ClockSkew <= 0 {
+		c.ClockSkew = HistoryClockSkew
+	}
+	if c.GapRecoveryTimeout <= 0 {
+		c.GapRecoveryTimeout = 20 * time.Second
+	}
+	if c.MaxGapRetries <= 0 {
+		c.MaxGapRetries = 6
+	}
+	if c.GapRetryMax <= 0 {
+		c.GapRetryMax = 60 * time.Second
+	}
+	if c.GapUnrecoverableAfter <= 0 {
+		c.GapUnrecoverableAfter = 2 * time.Minute
+	}
+	if c.UserAgent == "" {
+		c.UserAgent = "tradingview-bot-weex-ingest/1.0"
+	}
 	if c.HTTPClient != nil {
 		return c
 	}
@@ -99,9 +134,17 @@ type WeexProvider struct {
 	client *http.Client
 	store  domain.CandleStore
 	now    func() time.Time
+	// sleep espera d o hasta que se cancele ctx (false). Inyectable en tests
+	// para verificar backoff y Retry-After sin esperas reales.
+	sleep func(ctx context.Context, d time.Duration) bool
 
 	mu     sync.Mutex
 	active map[string]bool
+	feeds  map[string]*feedState
+	sink   IngestEventSink
+
+	errMu sync.Mutex
+	errs  []ProviderError
 }
 
 func NewWEEXProvider(store domain.CandleStore, cfg WeexConfig) *WeexProvider {
@@ -111,7 +154,9 @@ func NewWEEXProvider(store domain.CandleStore, cfg WeexConfig) *WeexProvider {
 		client: cfg.HTTPClient,
 		store:  store,
 		now:    time.Now,
+		sleep:  waitOrDone,
 		active: make(map[string]bool),
+		feeds:  make(map[string]*feedState),
 	}
 }
 
@@ -132,19 +177,51 @@ func (p *WeexProvider) Backfill(ctx context.Context, symbol, timeframe string, l
 		limit = MaxBackfillBars
 	}
 	step := parseInterval(timeframe)
-	current := p.now().Truncate(step)
+	began := time.Now()
+	current := alignDown(p.now(), step)
 	start := current.Add(-time.Duration(limit) * step)
+	st := p.feed(symbol, timeframe)
+	rec := BackfillRecord{At: p.now(), Trigger: "inicial", Symbol: symbol, Timeframe: timeframe,
+		From: start, To: current.Add(-step), Expected: limit,
+		Request: describeHistoryRequest(symbol, timeframe, start, current, HistoryMaxBars)}
 	rows, err := p.GetKlines(ctx, symbol, timeframe, start, current, limit)
 	if err != nil {
+		rec.Outcome, rec.Error, rec.Duration = "fallido", sanitizeMessage(err.Error()), time.Since(began)
+		st.mu.Lock()
+		rec.CursorBefore, rec.CursorAfter = st.lastClosed, st.lastClosed
+		st.addBackfill(rec)
+		st.counters.RecoveryFailures++
+		st.mu.Unlock()
+		p.emitEvent(ctx, st, IngestEvent{Key: eventKey("backfill_inicial", symbol, timeframe, start, rec.At), Symbol: symbol, Timeframe: timeframe,
+			Kind: EventBackfillFailed, Severity: SeverityFail, From: start, To: rec.To, Expected: limit, Message: rec.Error})
 		return fmt.Errorf("weex backfill %s %s: %w", symbol, timeframe, err)
 	}
 	seen := 0
+	var newest time.Time
 	for _, k := range rows {
 		if err := p.store.SaveCandle(ctx, k); err != nil && !errors.Is(err, domain.ErrDuplicate) {
 			return err
 		}
 		seen++
+		if k.Start.After(newest) {
+			newest = k.Start
+		}
 	}
+	// El backfill inicial siembra el cursor del stream: a partir de aquí, la
+	// reconexión y el cambio de vela recuperan solo lo posterior a esta vela.
+	st.mu.Lock()
+	rec.CursorBefore = st.lastClosed
+	if !newest.IsZero() {
+		st.markClosed(newest, "rest", p.now())
+	}
+	rec.CursorAfter = st.lastClosed
+	rec.Received, rec.Emitted, rec.Duration = seen, seen, time.Since(began)
+	rec.Outcome = "ok"
+	if seen < limit {
+		rec.Outcome = "parcial"
+	}
+	st.addBackfill(rec)
+	st.mu.Unlock()
 	if seen < limit {
 		log.Printf("weex backfill: %s %s -> %d velas (pedidas %d); el histórico disponible en /historyKlines puede ser menor", symbol, timeframe, seen, limit)
 	} else {
@@ -166,11 +243,22 @@ func (p *WeexProvider) GetKlines(ctx context.Context, symbol, timeframe string, 
 	if start.IsZero() {
 		return nil, fmt.Errorf("start requerido")
 	}
+	now := p.now()
 	if end.IsZero() {
-		end = p.now()
+		end = now
 	}
 	if !end.After(start) {
 		return nil, fmt.Errorf("rango inválido: end debe ser posterior a start")
+	}
+	// WEEX rechaza endTime/startTime futuros (-1142). La vela en formación no
+	// se devuelve nunca, así que recortar al reloj (menos skew) no pierde datos.
+	if safeEnd := now.Add(-p.cfg.ClockSkew); end.After(safeEnd) {
+		end = safeEnd
+	}
+	if end.Before(start) {
+		// Aún no existe ninguna vela cerrada en el rango pedido: no es un error
+		// del proveedor y no se envía una petición fuera de contrato.
+		return nil, nil
 	}
 	if limit <= 0 {
 		limit = p.cfg.BackfillBars
@@ -270,68 +358,96 @@ func waitHistoryPage(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// historyURL construye la petición con el parámetro documentado `limit`
+// (1..100). El antiguo `size` no existe en la API y WEEX lo ignoraba.
 func (p *WeexProvider) historyURL(symbol, timeframe string, start, end time.Time) string {
-	return fmt.Sprintf("%s/capi/v3/market/historyKlines?symbol=%s&interval=%s&startTime=%d&endTime=%d&size=%d",
-		strings.TrimRight(p.cfg.RestURL, "/"), symbol, timeframe, start.UnixMilli(), end.UnixMilli(), HistoryMaxBars)
+	q := url.Values{}
+	q.Set("symbol", symbol)
+	q.Set("interval", timeframe)
+	q.Set("startTime", strconv.FormatInt(start.UnixMilli(), 10))
+	q.Set("endTime", strconv.FormatInt(end.UnixMilli(), 10))
+	q.Set("limit", strconv.Itoa(HistoryMaxBars))
+	return strings.TrimRight(p.cfg.RestURL, "/") + "/capi/v3/market/historyKlines?" + q.Encode()
 }
 
-// fetchHistoryPage recupera un bloque de /historyKlines y reintenta errores
-// transitorios (429/5xx) con backoff.
+// fetchHistoryPage recupera un bloque de /historyKlines. Reintenta solo
+// errores transitorios (429, 5xx, timeout, red) con backoff acotado y respeta
+// Retry-After. Los errores de negocio (400 -11xx) no se reintentan.
 func (p *WeexProvider) fetchHistoryPage(ctx context.Context, symbol, timeframe string, start, end time.Time) (historyPage, error) {
+	reqDesc := describeHistoryRequest(symbol, timeframe, start, end, HistoryMaxBars)
+	if err := validateHistoryWindow(start, end, p.now()); err != nil {
+		he := &HistoryError{Kind: HistoryErrContract, Message: err.Error(), Request: reqDesc}
+		p.recordError(ProviderError{Component: "rest", Symbol: symbol, Timeframe: timeframe, Kind: he.Kind, Message: he.Message, Severity: SeverityFail})
+		log.Printf("weex history: petición NO enviada por violar el contrato: %s (%v)", reqDesc, err)
+		return historyPage{}, he
+	}
 	var lastErr error
 	for attempt := 1; attempt <= p.cfg.MaxAttempts; attempt++ {
 		if ctx.Err() != nil {
 			return historyPage{}, ctx.Err()
 		}
-		page, retriable, err := p.doFetchHistory(ctx, symbol, timeframe, start, end)
+		page, err := p.doFetchHistory(ctx, symbol, timeframe, start, end)
 		if err == nil {
 			return page, nil
 		}
-		lastErr = err
-		if !retriable {
+		var he *HistoryError
+		if !errors.As(err, &he) {
+			// Cancelación del contexto u otro error no clasificable.
 			return historyPage{}, err
 		}
-		delay := time.Duration(1<<uint(attempt)) * 300 * time.Millisecond
-		if delay > 5*time.Second {
-			delay = 5 * time.Second
+		he.Request = reqDesc
+		lastErr = he
+		sev := SeverityWarn
+		if !he.Retriable || attempt == p.cfg.MaxAttempts {
+			sev = SeverityFail
 		}
-		log.Printf("weex history: intento %d/%d falló (%v); reintentando en %v", attempt, p.cfg.MaxAttempts, err, delay)
-		select {
-		case <-ctx.Done():
+		p.recordError(ProviderError{Component: "rest", Symbol: symbol, Timeframe: timeframe, Kind: he.Kind,
+			HTTPStatus: he.HTTPStatus, Code: he.Code, Message: he.Message, Severity: sev})
+		if !he.Retriable {
+			log.Printf("weex history: error no reintentable [%s] status=%d code=%d msg=%q petición=%s",
+				he.Kind, he.HTTPStatus, he.Code, he.Message, reqDesc)
+			return historyPage{}, he
+		}
+		if attempt == p.cfg.MaxAttempts {
+			break
+		}
+		delay := retryBackoff(attempt)
+		if he.RetryAfter > 0 {
+			delay = he.RetryAfter
+		}
+		log.Printf("weex history: intento %d/%d falló [%s] status=%d code=%d; reintentando en %v (petición=%s)",
+			attempt, p.cfg.MaxAttempts, he.Kind, he.HTTPStatus, he.Code, delay, reqDesc)
+		if !p.sleep(ctx, delay) {
 			return historyPage{}, ctx.Err()
-		case <-time.After(delay):
 		}
 	}
 	return historyPage{}, lastErr
 }
 
-// doFetchHistory ejecuta una única llamada REST. Devuelve retriable=true para
-// errores transitorios (429 o 5xx).
-func (p *WeexProvider) doFetchHistory(ctx context.Context, symbol, timeframe string, start, end time.Time) (historyPage, bool, error) {
+// doFetchHistory ejecuta una única llamada REST y clasifica su resultado.
+func (p *WeexProvider) doFetchHistory(ctx context.Context, symbol, timeframe string, start, end time.Time) (historyPage, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.historyURL(symbol, timeframe, start, end), nil)
 	if err != nil {
-		return historyPage{}, false, err
+		return historyPage{}, &HistoryError{Kind: HistoryErrContract, Message: err.Error()}
 	}
+	req.Header.Set("User-Agent", p.cfg.UserAgent)
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return historyPage{}, true, err
+		return historyPage{}, classifyTransportError(ctx, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return historyPage{}, true, err
-	}
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return historyPage{}, true, fmt.Errorf("weex history %d: %s", resp.StatusCode, string(body))
+		return historyPage{}, classifyTransportError(ctx, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return historyPage{}, false, fmt.Errorf("weex history %d: %s", resp.StatusCode, string(body))
+		return historyPage{}, classifyHistoryResponse(resp.StatusCode, body, resp.Header, p.now())
 	}
 	page, err := parseWeexKlinesPage(body, symbol, timeframe, p.cfg.SkipInvalidHistory)
 	if err != nil {
-		return historyPage{}, false, err
+		return historyPage{}, &HistoryError{Kind: HistoryErrParse, HTTPStatus: resp.StatusCode, Message: sanitizeMessage(err.Error())}
 	}
-	return page, false, nil
+	return page, nil
 }
 
 // ValidateKlinesData valida un conjunto de velas que va a ser usado por el
@@ -351,203 +467,6 @@ func ValidateKlinesData(ks []domain.Kline) error {
 		}
 	}
 	return nil
-}
-
-// Subscribe abre un canal de velas en streaming para un symbol/timeframe.
-// Gestiona internamente la reconexión con backoff y responde al ping de WEEX.
-func (p *WeexProvider) Subscribe(ctx context.Context, symbol, timeframe string) (<-chan domain.Kline, error) {
-	if symbol == "" || timeframe == "" {
-		return nil, fmt.Errorf("symbol y timeframe requeridos")
-	}
-	key := mapKey(symbol, timeframe)
-	p.mu.Lock()
-	if p.active[key] {
-		p.mu.Unlock()
-		return nil, fmt.Errorf("ya existe una suscripción activa para %s %s", symbol, timeframe)
-	}
-	p.active[key] = true
-	p.mu.Unlock()
-
-	ch := make(chan domain.Kline, 256)
-	go p.runStream(ctx, key, symbol, timeframe, ch)
-	return ch, nil
-}
-
-func (p *WeexProvider) runStream(ctx context.Context, key, symbol, timeframe string, out chan<- domain.Kline) {
-	defer func() {
-		p.mu.Lock()
-		delete(p.active, key)
-		p.mu.Unlock()
-	}()
-	backoff := p.cfg.ReconnectBase
-	lastTS := time.Time{}
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		started := time.Now()
-		err := p.runConnection(ctx, symbol, timeframe, out, &lastTS)
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		if err != nil {
-			log.Printf("weex ws: conexión finalizada (%s %s): %v", symbol, timeframe, err)
-		}
-		// Backfill del hueco: tras perder la conexión, recuperar las velas que
-		// pudieron quedar sin recibir entre la última vela y ahora.
-		if !lastTS.IsZero() {
-			p.backfillGap(ctx, symbol, timeframe, lastTS, out)
-		}
-		if time.Since(started) >= 60*time.Second {
-			backoff = p.cfg.ReconnectBase
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-		backoff *= 2
-		if backoff > p.cfg.ReconnectMax {
-			backoff = p.cfg.ReconnectMax
-		}
-	}
-}
-
-// backfillGap recupera las velas posteriores a lastTS y las emite al canal,
-// de modo que el consumidor (servicio) las persista y reenvíe si están cerradas.
-func (p *WeexProvider) backfillGap(ctx context.Context, symbol, timeframe string, lastTS time.Time, out chan<- domain.Kline) {
-	step := parseInterval(timeframe)
-	start := lastTS.Add(step)
-	end := time.Now().Add(step)
-	bars, err := p.GetKlines(ctx, symbol, timeframe, start, end, p.cfg.BackfillBars)
-	if err != nil {
-		log.Printf("weex ws: backfill de hueco %s %s falló: %v", symbol, timeframe, err)
-		return
-	}
-	for _, k := range bars {
-		if !k.Start.After(lastTS) {
-			continue
-		}
-		select {
-		case out <- k:
-		case <-ctx.Done():
-			return
-		}
-	}
-	if len(bars) > 0 {
-		log.Printf("weex ws: backfill de hueco %s %s -> %d velas", symbol, timeframe, len(bars))
-	}
-}
-
-func (p *WeexProvider) channelName(symbol, timeframe string) string {
-	return strings.ToUpper(symbol) + "@kline_" + timeframe + "_" + p.cfg.PriceType
-}
-
-func (p *WeexProvider) runConnection(ctx context.Context, symbol, timeframe string, out chan<- domain.Kline, lastTS *time.Time) error {
-	dialer := websocket.Dialer{HandshakeTimeout: p.cfg.DialTimeout}
-	conn, _, err := dialer.DialContext(ctx, p.cfg.WSURL, nil)
-	if err != nil {
-		return fmt.Errorf("dial ws: %w", err)
-	}
-	defer conn.Close()
-	conn.SetReadLimit(4 << 20)
-
-	sub := map[string]any{
-		"method": "SUBSCRIBE",
-		"params": []string{p.channelName(symbol, timeframe)},
-		"id":     1,
-	}
-	if err := conn.WriteJSON(sub); err != nil {
-		return fmt.Errorf("suscribir: %w", err)
-	}
-
-	for {
-		conn.SetReadDeadline(time.Now().Add(p.cfg.PongWait))
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			return err
-		}
-		if p.isPing(msg) {
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := conn.WriteJSON(map[string]any{"method": "PONG", "id": 1}); err != nil {
-				return fmt.Errorf("pong: %w", err)
-			}
-			continue
-		}
-		c, ok, err := p.parseWSKline(msg, symbol, timeframe)
-		if err != nil {
-			log.Printf("weex ws: mensaje kline inválido: %v", err)
-			continue
-		}
-		if !ok {
-			continue
-		}
-		if c.Start.After(*lastTS) {
-			*lastTS = c.Start
-		}
-		select {
-		case out <- c:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
-func (p *WeexProvider) isPing(msg []byte) bool {
-	var m struct {
-		Method string          `json:"method"`
-		Type   string          `json:"type"`
-		Ping   json.RawMessage `json:"ping"`
-	}
-	if err := json.Unmarshal(msg, &m); err != nil {
-		return false
-	}
-	if len(m.Ping) > 0 && string(m.Ping) != "null" {
-		return true
-	}
-	kind := strings.ToLower(m.Method + " " + m.Type)
-	return strings.Contains(kind, "ping") && !strings.Contains(kind, "pong")
-}
-
-// parseWSKline extrae una vela del mensaje de un canal kline, tolerando que
-// los campos vengan en "data" (objeto o array), en "d" (formato real de algunas
-// versiones WEEX, objeto o array bajo "d[]") o en la raíz del mensaje.
-func (p *WeexProvider) parseWSKline(msg []byte, symbol, timeframe string) (domain.Kline, bool, error) {
-	var top struct {
-		Data json.RawMessage `json:"data"`
-		D    json.RawMessage `json:"d"`
-	}
-	if err := json.Unmarshal(msg, &top); err != nil {
-		return domain.Kline{}, false, err
-	}
-	var candidates []json.RawMessage
-	for _, raw := range []json.RawMessage{top.Data, top.D} {
-		if len(raw) > 0 && string(raw) != "null" {
-			candidates = append(candidates, raw)
-		}
-	}
-
-	for _, payload := range candidates {
-		var fields weexKlineFields
-		if err := json.Unmarshal(payload, &fields); err == nil && fields.hasPrice() {
-			return buildKline(fields, symbol, timeframe, p.isClosed(fields, p.now())), true, nil
-		}
-		var arr []weexKlineFields
-		if err := json.Unmarshal(payload, &arr); err == nil && len(arr) > 0 {
-			last := arr[len(arr)-1]
-			if last.hasPrice() {
-				return buildKline(last, symbol, timeframe, p.isClosed(last, p.now())), true, nil
-			}
-		}
-	}
-
-	var fields weexKlineFields
-	if err := json.Unmarshal(msg, &fields); err == nil && fields.hasPrice() {
-		return buildKline(fields, symbol, timeframe, p.isClosed(fields, p.now())), true, nil
-	}
-	return domain.Kline{}, false, nil
 }
 
 func (p *WeexProvider) isClosed(c weexKlineFields, now time.Time) bool {

@@ -14,6 +14,11 @@ import (
 	"tradingview-bot/internal/observability"
 )
 
+// feedStartStagger separa el arranque del backfill de cada timeframe para no
+// disparar todas las primeras peticiones REST a WEEX a la vez y provocar un
+// 429 por ráfaga. Cada timeframe hace su backfill y luego pasa a streaming.
+const feedStartStagger = 300 * time.Millisecond
+
 // CandleSink recibe las velas cerradas y la selección de mercado en vivo.
 // LiveEngine la implementa; se define como interfaz para mantener la capa de
 // ingest desacoplada de strategymanager (arquitectura limpia).
@@ -186,12 +191,15 @@ func (s *MarketDataService) Run(ctx context.Context) error {
 		s.setConnected(false)
 		subCtx, cancel := context.WithCancel(ctx)
 		var wg sync.WaitGroup
-		for _, tf := range tfs {
+		for i, tf := range tfs {
 			wg.Add(1)
-			go func(tf string) {
+			go func(i int, tf string) {
 				defer wg.Done()
+				if i > 0 && !waitOrDone(subCtx, time.Duration(i)*feedStartStagger) {
+					return
+				}
 				s.runFeed(subCtx, strategyID, symbol, tf)
-			}(tf)
+			}(i, tf)
 		}
 		done := make(chan struct{})
 		go func() {

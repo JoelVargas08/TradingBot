@@ -46,11 +46,20 @@ Backfill WEEX → diagnóstico de datos (monotonía, duplicados, huecos, alineac
 
 Configura estas variables para activar explícitamente el evaluador:
 
-- `INVESTING_BULLS_STRATEGY_ID` — ID de una estrategia ya `active`.
+- `INVESTING_BULLS_STRATEGY_ID` — ID de una estrategia ya `active` o el alias `investing-bulls-mtf`.
 - `INVESTING_BULLS_SYMBOL` — símbolo; por defecto `BTCUSDT`.
 - `INVESTING_BULLS_ENTRY_TIMEFRAME` — temporalidad de entrada; por defecto `15m`.
 
 El motor publica las señales en el mismo bus que consume el pipeline de riesgo/paper trading.
+Con `IB_PERSISTENCE_ENABLED=true` (default), cada evaluación queda en
+`ib_evaluations`; las aceptadas pasan por `ib_outbox` y un recibo duradero
+protege notificación y PAPER frente a reintentos. Los comandos `/ibstatus`,
+`/ibevals` y `/ibops` consultan ese estado sin operar. Variables de ajuste:
+`IB_OUTBOX_LEASE_SECONDS`, `IB_OUTBOX_VISIBILITY_SECONDS`,
+`IB_OUTBOX_MAX_ATTEMPTS`, `IB_PAPER_LEASE_SECONDS`,
+`IB_OUTBOX_RETENTION_DAYS`, `IB_EVALUATION_RETENTION_DAYS` e
+`IB_OUTBOX_WORKER_SECONDS` (detalle en
+[TELEGRAM_CONTROLLER.md](TELEGRAM_CONTROLLER.md#persistencia-ib-v2)).
 
 ## Nota metodológica
 
