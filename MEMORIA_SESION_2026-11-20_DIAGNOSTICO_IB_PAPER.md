@@ -129,3 +129,15 @@ redundante para ese caso y es lo que bloquea las entradas en tendencia alcista.
   (`.github/workflows/ci.yml:58-77`).
 - Commit en `main`: `fix(ib): emitir por idempotency y no duplicar lotes pendientes`
   (autorizado explícitamente por el usuario).
+
+## Nota operativa: cómo aplicar el fix
+
+- El código nuevo solo corre en un **run nuevo** de `paper-session.yml` (checkout en
+  `.github/workflows/paper-session.yml:120`).
+- Procedimiento: `/stop` → esperar a que se confirme el fin del run → `/start`. El controlador no
+  despacha con un run activo o en cola y `concurrency.cancel-in-progress=false`
+  (`paper-session.yml:31-33`).
+- `/start` manual despacha con `manual_session=true` y `restore_state=true`: sesión activa desde
+  el arranque, **sin horario**, hasta el fin del job (~6 h); conserva DB, posiciones y órdenes.
+- Para mantener la ventana 08:00-14:00 hay que esperar al despacho automático de las 08:00
+  (`manual_session=false`). Un run `cancelled` no se relanza (`docs/TELEGRAM_CONTROLLER.md:92`).
