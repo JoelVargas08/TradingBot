@@ -387,12 +387,17 @@ func (e *Engine) OnSignal(ctx context.Context, ev domain.SignalEvent) error {
 		return nil
 	}
 	for k, entries := range e.pending {
-		if len(entries) > 0 && entries[0].StrategyID == ev.StrategyID && entries[0].Symbol == ev.Symbol && entries[0].Timeframe == ev.Timeframe && entries[0].Side != ev.Direction {
-			for _, old := range entries {
-				e.updatePendingOrder(old.Key, "cancelled")
-			}
-			delete(e.pending, k)
+		if len(entries) == 0 || entries[0].StrategyID != ev.StrategyID || entries[0].Symbol != ev.Symbol || entries[0].Timeframe != ev.Timeframe {
+			continue
 		}
+		if entries[0].Side == ev.Direction {
+			e.mu.Unlock()
+			return nil
+		}
+		for _, old := range entries {
+			e.updatePendingOrder(old.Key, "cancelled")
+		}
+		delete(e.pending, k)
 	}
 	e.mu.Unlock()
 

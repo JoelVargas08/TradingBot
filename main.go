@@ -250,7 +250,7 @@ func main() {
 	for _, line := range strategies.LogLines() {
 		log.Println(line)
 	}
-	evaluatorSvc := evaluator.New(sqliteStore)
+	evaluatorSvc := evaluator.NewWithPolicy(sqliteStore, evaluator.PolicyIdempotency)
 	notifierSvc := notifier.New(telegram, userManager, notifier.Config{})
 	notifierSvc.Start(ctx)
 

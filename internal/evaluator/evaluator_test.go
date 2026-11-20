@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"tradingview-bot/internal/domain"
 )
@@ -49,6 +50,40 @@ func TestEvaluatorSkipsSameDirection(t *testing.T) {
 	}
 	if emit {
 		t.Error("misma dirección no debería emitirse")
+	}
+}
+
+func TestEvaluatorIdempotencyEmitsOnNewBarSameDirection(t *testing.T) {
+	last := domain.SignalEvent{
+		StrategyID: "s", Symbol: "BTCUSDT", Timeframe: "15m",
+		Direction: domain.DirectionBuy, BarTS: time.UnixMilli(1000),
+	}
+	e := NewWithPolicy(&fakeStore{last: last}, PolicyIdempotency)
+	next := last
+	next.BarTS = time.UnixMilli(2000)
+	emit, err := e.Evaluate(context.Background(), next)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if !emit {
+		t.Error("nueva vela en la misma dirección debería emitirse")
+	}
+}
+
+func TestEvaluatorIdempotencySkipsSameSignal(t *testing.T) {
+	last := domain.SignalEvent{
+		StrategyID: "s", Symbol: "BTCUSDT", Timeframe: "15m",
+		Direction: domain.DirectionBuy, BarTS: time.UnixMilli(1000),
+		Meta: map[string]any{domain.MetaKeySetup: "choch_long"},
+	}
+	e := NewWithPolicy(&fakeStore{last: last}, PolicyIdempotency)
+	next := last
+	emit, err := e.Evaluate(context.Background(), next)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if emit {
+		t.Error("misma idempotency key no debería emitirse")
 	}
 }
 

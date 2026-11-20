@@ -37,6 +37,10 @@ func (f *flakyPosition) counts() (int, int) {
 }
 
 func newIBPipeline(t *testing.T, pos domain.PositionController) (*Processor, *recordingNotifier, *store.Store) {
+	return newIBPipelinePolicy(t, pos, evaluator.PolicyDirection)
+}
+
+func newIBPipelinePolicy(t *testing.T, pos domain.PositionController, policy evaluator.Policy) (*Processor, *recordingNotifier, *store.Store) {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -44,7 +48,7 @@ func newIBPipeline(t *testing.T, pos domain.PositionController) (*Processor, *re
 	}
 	t.Cleanup(func() { st.Close() })
 	rec := &recordingNotifier{}
-	p := New(bus.New(8), st, evaluator.New(st), rec, pos, &testGate{active: true}, 100)
+	p := New(bus.New(8), st, evaluator.NewWithPolicy(st, policy), rec, pos, &testGate{active: true}, 100)
 	p.SetIBReceipts(st)
 	return p, rec, st
 }
@@ -195,5 +199,34 @@ func TestIBRejectedSignalDoesNotNotifyOrOpenPaper(t *testing.T) {
 
 	if rec.count() != 0 || pos.count() != 0 {
 		t.Fatalf("señal rechazada notificó=%d PAPER=%d", rec.count(), pos.count())
+	}
+}
+
+func TestIBConsecutiveSameDirectionBarsReachPaper(t *testing.T) {
+	ctx := context.Background()
+	pos := &recordingPosition{}
+	p, rec, st := newIBPipelinePolicy(t, pos, evaluator.PolicyIdempotency)
+	base := time.Date(2026, 1, 2, 9, 0, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		ev := ibEvent(base.Add(time.Duration(i) * 15 * time.Minute))
+		evalKey, pubKey := queueIBEvaluation(t, st, ev, ibeval.EvalAccepted, "fp")
+		ev.Meta = map[string]any{
+			ibeval.MetaEvaluationKey: evalKey,
+			ibeval.MetaOutboxKey:     pubKey,
+		}
+		p.handle(ctx, ev)
+	}
+	if rec.count() != 2 {
+		t.Fatalf("notificaciones = %d, want 2", rec.count())
+	}
+	if pos.count() != 2 {
+		t.Fatalf("PAPER = %d, want 2", pos.count())
+	}
+	sum, err := st.IBSummary(ctx, "ib_investing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sum.ReceiptsDone != 2 || sum.ReceiptsSkipped != 0 {
+		t.Fatalf("recibos inesperados: %+v", sum)
 	}
 }

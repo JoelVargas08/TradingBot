@@ -832,3 +832,27 @@ func TestReconcileDoesNotRepeatPartialAfterRestart(t *testing.T) {
 		t.Errorf("reconcile duplicó el parcial: qty=%.4f partial=%.4f", open[0].Quantity, open[0].PartialQty)
 	}
 }
+
+func TestOnSignalDoesNotArmDuplicatePendingSameDirection(t *testing.T) {
+	ctx := context.Background()
+	e, _ := newTestEngine()
+	first := signal(domain.DirectionBuy, 105)
+	first.BarTS = time.UnixMilli(1000)
+	first.Meta = map[string]any{"entry_zone_low": 100.0, "entry_zone_high": 102.0}
+	if err := e.OnSignal(ctx, first); err != nil {
+		t.Fatalf("primera señal: %v", err)
+	}
+	second := signal(domain.DirectionBuy, 106)
+	second.BarTS = time.UnixMilli(2000)
+	second.Meta = map[string]any{"entry_zone_low": 100.0, "entry_zone_high": 102.0}
+	if err := e.OnSignal(ctx, second); err != nil {
+		t.Fatalf("segunda señal: %v", err)
+	}
+	e.mu.Lock()
+	lots := len(e.pending)
+	entries := len(e.pending[first.IdempotencyKey()])
+	e.mu.Unlock()
+	if lots != 1 || entries != 2 {
+		t.Fatalf("lotes = %d, entradas = %d, want 1 y 2", lots, entries)
+	}
+}

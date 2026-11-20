@@ -7,12 +7,27 @@ import (
 	"tradingview-bot/internal/domain"
 )
 
+type Policy string
+
+const (
+	PolicyDirection   Policy = "direction"
+	PolicyIdempotency Policy = "idempotency"
+)
+
 type StateEvaluator struct {
-	store domain.SignalStore
+	store  domain.SignalStore
+	policy Policy
 }
 
 func New(store domain.SignalStore) *StateEvaluator {
-	return &StateEvaluator{store: store}
+	return NewWithPolicy(store, PolicyDirection)
+}
+
+func NewWithPolicy(store domain.SignalStore, policy Policy) *StateEvaluator {
+	if policy == "" {
+		policy = PolicyDirection
+	}
+	return &StateEvaluator{store: store, policy: policy}
 }
 
 func (e *StateEvaluator) Evaluate(ctx context.Context, ev domain.SignalEvent) (bool, error) {
@@ -22,6 +37,9 @@ func (e *StateEvaluator) Evaluate(ctx context.Context, ev domain.SignalEvent) (b
 			return true, nil
 		}
 		return false, err
+	}
+	if e.policy == PolicyIdempotency {
+		return last.IdempotencyKey() != ev.IdempotencyKey(), nil
 	}
 	return last.Direction != ev.Direction, nil
 }

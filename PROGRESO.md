@@ -292,6 +292,7 @@ go run ./cmd/ibvalidate -db <db-temporal> -symbol BTCUSDT -timeframes 1h,15m,5m 
   `solicitud_opencode_correccion_telegram.md` (encargo original).
 - **Despliegue:** `DEPLOYMENT.md`, `TRADINGVIEW_WEBHOOK_SETUP.md`.
 - **Bitácoras de sesión:** `Bitacora_Sesion_*.md`.
+- **Diagnóstico IB PAPER (2026-11-20):** `MEMORIA_SESION_2026-11-20_DIAGNOSTICO_IB_PAPER.md`.
 
 ---
 
